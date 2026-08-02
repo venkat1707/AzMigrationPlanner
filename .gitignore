@@ -4,3 +4,4 @@ dist/
 .azure/
 *.log
 DependencyExport*.csv
+Strategy_Lift_and_shift*
