@@ -1,7 +1,14 @@
 import { useEffect, useState, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, ArrowLeft, ArrowRight, ArrowUpRight, CheckCircle2, Database, FileSpreadsheet, LayoutDashboard, Network, RefreshCw, Route, Search, Server, TableProperties, Trash2, Upload, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarRange, CheckCircle2, ClipboardList, Database, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Search, Server, Settings2, TableProperties, Trash2, Upload, UserRoundCog, X } from 'lucide-react'
 import ServerTopology from './ServerTopology'
+import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
+import MigrationWavePlanning from './MigrationWavePlanning'
+import CoreInfrastructureInput from './CoreInfrastructureInput'
+import AdminPage from './AdminPage'
+import TaskWorkspace from './TaskWorkspace'
+import type { AuthSettings, AuthUser } from './Authentication'
+import { apiFetch } from './auth-client'
 import './Dashboard.css'
 
 type Summary = { totalDependencies: number; totalConnections: number; sourceServers: number; destinationServers: number }
@@ -21,7 +28,7 @@ type Dependency = {
   ConnectionCount: number
 }
 type Page = { items: Dependency[]; total: number; page: number; pageSize: number }
-type Filters = { source: string; destination: string; application: string; port: string }
+type Filters = { server: string; ip: string; port: string }
 type ImportRun = { id: number; fileName: string; importType: 'Dependency' | 'ServerAssessment'; sheetName: string | null; status: string; rowsImported: number; startedAt: string; completedAt: string | null; errorMessage: string | null }
 type UploadResult = {
   fileName: string
@@ -31,18 +38,19 @@ type UploadResult = {
   updated?: number
   discarded?: number
   databaseServers?: number
+  warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'topology' | 'imports' | 'cleanup'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'core-infrastructure' | 'wave-planning' | 'tasks' | 'imports' | 'cleanup' | 'admin'
 type ImportKind = 'dependencies' | 'server-assessment'
 
-const emptyFilters: Filters = { source: '', destination: '', application: '', port: '' }
+const emptyFilters: Filters = { server: '', ip: '', port: '' }
 const formatNumber = new Intl.NumberFormat('en-US')
 
-export default function Dashboard() {
+export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { settings: AuthSettings; user: AuthUser | null }; onLogout: () => Promise<void>; onAuthChanged: () => Promise<void> }) {
   const [activePage, setActivePage] = useState<AppPage>(() => {
     const page = window.location.hash.slice(1)
-    return page === 'dependencies' || page === 'topology' || page === 'imports' || page === 'cleanup' ? page : 'overview'
+    return page === 'dependencies' || page === 'application-map' || page === 'topology' || page === 'core-infrastructure' || page === 'wave-planning' || page === 'tasks' || page === 'imports' || page === 'cleanup' || page === 'admin' ? page : 'overview'
   })
   const [summary, setSummary] = useState<Summary | null>(null)
   const [data, setData] = useState<Page>({ items: [], total: 0, page: 1, pageSize: 25 })
@@ -67,7 +75,7 @@ export default function Dashboard() {
   useEffect(() => {
     const selectPage = () => {
       const page = window.location.hash.slice(1)
-      setActivePage(page === 'dependencies' || page === 'topology' || page === 'imports' || page === 'cleanup' ? page : 'overview')
+      setActivePage(page === 'dependencies' || page === 'application-map' || page === 'topology' || page === 'core-infrastructure' || page === 'wave-planning' || page === 'tasks' || page === 'imports' || page === 'cleanup' || page === 'admin' ? page : 'overview')
     }
     window.addEventListener('hashchange', selectPage)
     return () => window.removeEventListener('hashchange', selectPage)
@@ -84,14 +92,14 @@ export default function Dashboard() {
   }, [databaseStatus])
 
   useEffect(() => {
-    fetch('/api/summary')
+    apiFetch('/api/summary')
       .then((response) => {
         if (!response.ok) throw new Error('Summary unavailable')
         return response.json() as Promise<Summary>
       })
       .then((nextSummary) => { setSummary(nextSummary); setDatabaseStatus('online') })
       .catch(() => { setDatabaseStatus('offline'); setError('Unable to connect to the API. Confirm the database and server are running.') })
-      fetch('/api/imports')
+      apiFetch('/api/imports')
         .then((response) => response.ok ? response.json() as Promise<{ items: ImportRun[] }> : Promise.reject())
         .then(({ items }) => setImports(items))
         .catch(() => undefined)
@@ -101,7 +109,7 @@ export default function Dashboard() {
     if (!uploading) return
     let active = true
     const refreshImportProgress = () => {
-      fetch('/api/imports')
+      apiFetch('/api/imports')
         .then((response) => response.ok ? response.json() as Promise<{ items: ImportRun[] }> : Promise.reject())
         .then(({ items }) => { if (active) setImports(items) })
         .catch(() => undefined)
@@ -115,7 +123,7 @@ export default function Dashboard() {
     const controller = new AbortController()
     const params = new URLSearchParams({ page: String(data.page), pageSize: String(data.pageSize) })
     Object.entries(query).forEach(([key, value]) => value && params.set(key, value))
-    fetch(`/api/dependencies?${params}`, { signal: controller.signal })
+    apiFetch(`/api/dependencies?${params}`, { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error('Data unavailable')
         return response.json() as Promise<Page>
@@ -165,12 +173,12 @@ export default function Dashboard() {
     try {
       const body = new FormData()
       body.append('file', assessmentFile)
-      const response = await fetch('/api/server-assessments/sheets', { method: 'POST', body })
+      const response = await apiFetch('/api/server-assessments/sheets', { method: 'POST', body })
       const payload = await response.json() as { sheets?: string[]; error?: string }
       if (!response.ok) throw new Error(payload.error ?? 'Unable to list workbook sheets.')
       const sheets = payload.sheets ?? []
       setAssessmentSheets(sheets)
-      setSelectedSheet(sheets.includes('Server_to_AzureVM') ? 'Server_to_AzureVM' : '')
+      setSelectedSheet(sheets.includes('Server_to_AzureVM') ? 'Server_to_AzureVM' : sheets.includes('All_Assessed_Machines') ? 'All_Assessed_Machines' : '')
     } catch (reason) {
       setUploadError(reason instanceof Error ? reason.message : 'Unable to list workbook sheets.')
     } finally {
@@ -206,7 +214,7 @@ export default function Dashboard() {
     }
     try {
       const endpoint = importKind === 'dependencies' ? '/api/imports' : '/api/server-assessments/import'
-      const response = await fetch(endpoint, { method: 'POST', body })
+      const response = await apiFetch(endpoint, { method: 'POST', body })
       const payload = await response.json() as { result?: UploadResult; results?: UploadResult[]; error?: string }
       if (!response.ok && response.status !== 207) throw new Error(payload.error ?? 'Upload failed.')
       setUploadResults(payload.results ?? (payload.result ? [payload.result] : []))
@@ -228,9 +236,14 @@ export default function Dashboard() {
   const pageTitles: Record<AppPage, { eyebrow: string; title: string; description: string }> = {
     overview: { eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor imported discovery data and move into the next analysis task.' },
     dependencies: { eyebrow: 'Dependency inventory', title: 'Explore network dependencies', description: 'Filter observed traffic by server, application, and destination port.' },
-    topology: { eyebrow: 'Dependency Map', title: 'Visualize server dependencies', description: 'Map observed listening services, ports, and the servers connecting to them.' },
+    'application-map': { eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application servers, core infrastructure, and cross-application traffic without exposing peer server names.' },
+    topology: { eyebrow: 'Server Info', title: 'Server configuration and dependencies', description: 'Review current infrastructure, proposed Azure sizing, and observed network connections.' },
+    'core-infrastructure': { eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
+    'wave-planning': { eyebrow: 'Migration Wave Planning', title: 'Sequence migration waves and sprints', description: 'Group ready workloads using application affinity, environments, dependencies, shared infrastructure, and data gravity.' },
+    tasks: { eyebrow: 'Delivery workspace', title: 'Wave Planning Tasks', description: 'Track assigned and unassigned sprint and cross-dependency work, status, decisions, and comment history.' },
     imports: { eyebrow: 'Data ingestion', title: 'Import Azure Migrate data', description: 'Upload dependency exports or Server Assessment data from CSV and Excel files.' },
     cleanup: { eyebrow: 'Data management', title: 'Clean up application data', description: 'Remove imported data through a controlled, observable cleanup flow.' },
+    admin: { eyebrow: 'Administration', title: 'Identity and access', description: 'Manage local users, application privileges, and Microsoft Entra ID authentication.' },
   }
   const pageTitle = pageTitles[activePage]
 
@@ -240,12 +253,17 @@ export default function Dashboard() {
         <div className="brand"><span className="brand-mark"><Network size={21} /></span><span><strong>Cloud Accelerate Factory</strong><small>Migration Planner</small></span></div>
         <nav aria-label="Primary navigation">
           <a href="#overview" className={activePage === 'overview' ? 'active' : ''}><LayoutDashboard size={18} /><span>Overview</span></a>
-          <a href="#dependencies" className={activePage === 'dependencies' ? 'active' : ''}><TableProperties size={18} /><span>Dependencies</span></a>
-          <a href="#topology" className={activePage === 'topology' ? 'active' : ''}><Route size={18} /><span>Dependency Map</span></a>
-          <a href="#imports" className={activePage === 'imports' ? 'active' : ''}><Upload size={18} /><span>Imports</span></a>
-          <a href="#cleanup" className={activePage === 'cleanup' ? 'active' : ''}><Trash2 size={18} /><span>Cleanup</span></a>
+          {(!auth.settings.authenticationEnabled || auth.user?.canModify || auth.user?.isAdmin) && <a href="#imports" className={activePage === 'imports' ? 'active' : ''}><Upload size={18} /><span>Imports</span></a>}
+          <a href="#core-infrastructure" className={activePage === 'core-infrastructure' ? 'active' : ''}><Settings2 size={18} /><span>Core Infrastructure</span></a>
+          <a href="#dependencies" className={activePage === 'dependencies' ? 'active' : ''}><TableProperties size={18} /><span>Network Dependency</span></a>
+          <a href="#application-map" className={activePage === 'application-map' ? 'active' : ''}><Boxes size={18} /><span>Application Map</span></a>
+          <a href="#topology" className={activePage === 'topology' ? 'active' : ''}><Route size={18} /><span>Server Info</span></a>
+          <a href="#wave-planning" className={activePage === 'wave-planning' ? 'active' : ''}><CalendarRange size={18} /><span>Wave Planning</span></a>
+          <a href="#tasks" className={activePage === 'tasks' ? 'active' : ''}><ClipboardList size={18} /><span>Tasks</span></a>
+          {(!auth.settings.authenticationEnabled || auth.user?.canDelete || auth.user?.isAdmin) && <a href="#cleanup" className={activePage === 'cleanup' ? 'active' : ''}><Trash2 size={18} /><span>Cleanup</span></a>}
+          {(!auth.settings.authenticationEnabled || auth.user?.isAdmin) && <a href="#admin" className={activePage === 'admin' ? 'active' : ''}><UserRoundCog size={18} /><span>Administration</span></a>}
         </nav>
-        <div className={`connection-state ${databaseStatus}`}><span><i /> Database {databaseStatus === 'online' ? 'online' : databaseStatus === 'offline' ? 'unavailable' : 'checking'}</span><small>MySQL</small></div>
+        <div className="sidebar-footer">{auth.user && <div className="signed-in-user"><span><strong>{auth.user.displayName}</strong><small>{auth.user.isAdmin ? 'Administrator' : auth.user.provider}</small></span><button type="button" title="Sign out" onClick={() => void onLogout()}><LogOut size={16} /></button></div>}<div className={`connection-state ${databaseStatus}`}><span><i /> Database {databaseStatus === 'online' ? 'online' : databaseStatus === 'offline' ? 'unavailable' : 'checking'}</span><small>MySQL</small></div></div>
       </aside>
 
       <main className="main-content">
@@ -261,23 +279,32 @@ export default function Dashboard() {
           </section>
           <section className="overview-grid">
             <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Continue working</p><h2>Choose your next task</h2></div></div><div className="action-list">
+              {(!auth.settings.authenticationEnabled || auth.user?.canModify || auth.user?.isAdmin) && <a href="#imports"><span className="action-icon"><Upload size={19} /></span><span><strong>Import discovery data</strong><small>Add Azure Migrate CSV or Excel exports to this workspace.</small></span><ArrowUpRight size={18} /></a>}
               <a href="#dependencies"><span className="action-icon"><Search size={19} /></span><span><strong>Explore dependencies</strong><small>Search server-to-server communication and application traffic.</small></span><ArrowUpRight size={18} /></a>
               <a href="#topology"><span className="action-icon"><Route size={19} /></span><span><strong>Map a server</strong><small>Visualize listening services, ports, and connected servers.</small></span><ArrowUpRight size={18} /></a>
-              <a href="#imports"><span className="action-icon"><Upload size={19} /></span><span><strong>Import discovery data</strong><small>Add Azure Migrate CSV or Excel exports to this workspace.</small></span><ArrowUpRight size={18} /></a>
+              <a href="#wave-planning"><span className="action-icon"><CalendarRange size={19} /></span><span><strong>Plan migration waves</strong><small>Sequence ready application groups into bounded migration sprints.</small></span><ArrowUpRight size={18} /></a>
+              <a href="#tasks"><span className="action-icon"><ClipboardList size={19} /></span><span><strong>Review wave planning tasks</strong><small>Assign and track sprint and cross-dependency ownership, status, and comments.</small></span><ArrowUpRight size={18} /></a>
             </div></div>
             <div className="activity-panel"><div className="section-heading"><div><p className="eyebrow">Import activity</p><h2>Latest files</h2></div><a href="#imports">View all</a></div><ImportHistory items={imports.slice(0, 5)} /></div>
           </section>
         </div>}
 
         {activePage === 'topology' && <ServerTopology refreshKey={refreshKey} />}
+        {activePage === 'application-map' && <ApplicationMap refreshKey={refreshKey} />}
+        {activePage === 'core-infrastructure' && <CoreInfrastructureInput />}
+        {activePage === 'wave-planning' && <MigrationWavePlanning />}
+        {activePage === 'tasks' && <TaskWorkspace canModify={!auth.settings.authenticationEnabled || Boolean(auth.user?.canModify || auth.user?.isAdmin)} />}
+        {activePage === 'admin' && <AdminPage onAuthChanged={onAuthChanged} />}
 
-        {activePage === 'cleanup' && <DataCleanup onComplete={() => setRefreshKey((value) => value + 1)} />}
+        {activePage === 'cleanup' && <DataCleanup onComplete={() => {
+          setImports([])
+          setRefreshKey((value) => value + 1)
+        }} />}
 
         {activePage === 'dependencies' && <div className="page dependencies-page"><section className="workspace">
         <form onSubmit={submit} className="filters">
-          <label>Source server<input value={filters.source} onChange={(event) => setFilters({ ...filters, source: event.target.value })} placeholder="e.g. UTWMSWEB8V" /></label>
-          <label>Destination server<input value={filters.destination} onChange={(event) => setFilters({ ...filters, destination: event.target.value })} placeholder="Server name" /></label>
-          <label>Application<input value={filters.application} onChange={(event) => setFilters({ ...filters, application: event.target.value })} placeholder="Source or destination" /></label>
+          <label>Source / Destination Server<input value={filters.server} onChange={(event) => setFilters({ ...filters, server: event.target.value })} placeholder="Server name" /></label>
+          <label>IP Address<input value={filters.ip} onChange={(event) => setFilters({ ...filters, ip: event.target.value })} placeholder="Source or destination IP" /></label>
           <label>Port<input inputMode="numeric" value={filters.port} onChange={(event) => setFilters({ ...filters, port: event.target.value.replace(/\D/g, '') })} placeholder="443" /></label>
           <button type="submit"><Search size={17} /> Search</button>
           <button type="button" className="icon-button" title="Reset filters" onClick={reset}><RefreshCw size={17} /></button>
@@ -365,10 +392,10 @@ function UploadResults({ items }: { items: UploadResult[] }) {
   return <div className="upload-results">{items.map((result) => {
     const isAssessmentResult = result.status === 'Completed' && result.inserted !== undefined
     if (!isAssessmentResult) {
-      return <div className={result.status.toLowerCase()} key={result.fileName}>{result.status === 'Completed' ? <CheckCircle2 size={17} /> : <AlertCircle size={17} />}<span><strong>{result.fileName}</strong><small>{result.status === 'Completed' ? `${formatNumber.format(result.rowsImported ?? 0)} rows imported` : result.error}</small></span></div>
+      return <div className={result.status.toLowerCase()} key={result.fileName}>{result.status === 'Completed' ? <CheckCircle2 size={17} /> : <AlertCircle size={17} />}<span><strong>{result.fileName}</strong><small>{result.status === 'Completed' ? `${formatNumber.format(result.rowsImported ?? 0)} rows imported${result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}` : result.error}</small></span></div>
     }
     return <section className="assessment-result" key={result.fileName}>
-      <header><CheckCircle2 size={19} /><span><strong>{result.fileName}</strong><small>Import complete · {formatNumber.format(result.rowsImported ?? 0)} records accepted</small></span></header>
+      <header><CheckCircle2 size={19} /><span><strong>{result.fileName}</strong><small>Import complete · {formatNumber.format(result.rowsImported ?? 0)} records accepted{result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}</small></span></header>
       <dl>
         <div className="inserted"><CheckCircle2 size={16} /><span><dt>Inserted</dt><dd>{formatNumber.format(result.inserted ?? 0)}</dd></span></div>
         <div className="updated"><RefreshCw size={16} /><span><dt>Updated</dt><dd>{formatNumber.format(result.updated ?? 0)}</dd></span></div>

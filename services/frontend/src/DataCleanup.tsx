@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Database, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react'
+import { apiFetch } from './auth-client'
 
 type CleanupStep = {
   key: string
@@ -23,13 +24,14 @@ const formatNumber = new Intl.NumberFormat('en-US')
 
 export default function DataCleanup({ onComplete }: { onComplete: () => void }) {
   const [cleanup, setCleanup] = useState<CleanupStatus | null>(null)
+  const completedCleanupId = useRef<string | null>(null)
   const [showConfirmation, setShowConfirmation] = useState(false)
   const [confirmation, setConfirmation] = useState('')
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch('/api/cleanup/status')
+    apiFetch('/api/cleanup/status')
       .then((response) => response.ok ? response.json() as Promise<{ cleanup: CleanupStatus | null }> : Promise.reject())
       .then(({ cleanup: status }) => setCleanup(status))
       .catch(() => setError('Unable to load cleanup status.'))
@@ -38,22 +40,27 @@ export default function DataCleanup({ onComplete }: { onComplete: () => void }) 
   useEffect(() => {
     if (cleanup?.status !== 'Running') return
     const interval = window.setInterval(() => {
-      fetch('/api/cleanup/status')
+      apiFetch('/api/cleanup/status')
         .then((response) => response.ok ? response.json() as Promise<{ cleanup: CleanupStatus | null }> : Promise.reject())
         .then(({ cleanup: status }) => {
           setCleanup(status)
-          if (status?.status === 'Completed') onComplete()
         })
         .catch(() => undefined)
     }, 500)
     return () => window.clearInterval(interval)
   }, [cleanup?.status, onComplete])
 
+  useEffect(() => {
+    if (cleanup?.status !== 'Completed' || completedCleanupId.current === cleanup.id) return
+    completedCleanupId.current = cleanup.id
+    onComplete()
+  }, [cleanup, onComplete])
+
   const beginCleanup = async () => {
     setStarting(true)
     setError('')
     try {
-      const response = await fetch('/api/cleanup', {
+      const response = await apiFetch('/api/cleanup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmation }),

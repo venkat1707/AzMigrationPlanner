@@ -1,8 +1,71 @@
 import { closeDatabase, database } from './db.js'
+import { refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
+import { seedDatabaseServerEvidence } from './database-server-evidence.js'
 import { refreshDependencyDirections } from './dependency-direction.js'
 import { refreshDependencySummary } from './dependency-summary.js'
 
 export async function migrateSchema(): Promise<void> {
+  if (!(await database.schema.hasTable('app_auth_settings'))) {
+    await database.schema.createTable('app_auth_settings', (table) => {
+      table.integer('id').unsigned().primary()
+      table.boolean('authentication_enabled').notNullable().defaultTo(false)
+      table.boolean('local_enabled').notNullable().defaultTo(true)
+      table.boolean('entra_enabled').notNullable().defaultTo(false)
+      table.string('entra_tenant_id', 100).nullable()
+      table.string('entra_client_id', 100).nullable()
+      table.string('entra_redirect_uri', 500).nullable()
+      table.boolean('entra_default_read').notNullable().defaultTo(true)
+      table.boolean('entra_default_modify').notNullable().defaultTo(false)
+      table.boolean('entra_default_delete').notNullable().defaultTo(false)
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+    })
+    await database('app_auth_settings').insert({ id: 1 })
+  }
+
+  if (!(await database.schema.hasTable('app_users'))) {
+    await database.schema.createTable('app_users', (table) => {
+      table.bigIncrements('id').primary()
+      table.string('username', 254).notNullable().unique('uq_app_users_username')
+      table.string('display_name', 200).notNullable()
+      table.string('email', 254).nullable()
+      table.string('password_hash', 500).nullable()
+      table.string('provider', 20).notNullable().defaultTo('Local')
+      table.string('entra_object_id', 100).nullable().unique('uq_app_users_entra_object_id')
+      table.boolean('enabled').notNullable().defaultTo(true)
+      table.boolean('is_admin').notNullable().defaultTo(false)
+      table.boolean('can_read').notNullable().defaultTo(true)
+      table.boolean('can_modify').notNullable().defaultTo(false)
+      table.boolean('can_delete').notNullable().defaultTo(false)
+      table.dateTime('last_login_at').nullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+      table.index(['provider', 'enabled'], 'idx_app_users_provider_enabled')
+    })
+  }
+
+  if (!(await database.schema.hasTable('app_sessions'))) {
+    await database.schema.createTable('app_sessions', (table) => {
+      table.string('id', 64).primary()
+      table.bigInteger('user_id').unsigned().notNullable().references('id').inTable('app_users').onDelete('CASCADE')
+      table.string('csrf_token', 64).notNullable()
+      table.dateTime('expires_at').notNullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.index(['user_id'], 'idx_app_sessions_user')
+      table.index(['expires_at'], 'idx_app_sessions_expiry')
+    })
+  }
+
+  if (!(await database.schema.hasTable('app_auth_flows'))) {
+    await database.schema.createTable('app_auth_flows', (table) => {
+      table.string('state', 64).primary()
+      table.string('nonce', 64).notNullable()
+      table.string('code_verifier', 128).nullable()
+      table.dateTime('expires_at').notNullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.index(['expires_at'], 'idx_app_auth_flows_expiry')
+    })
+  }
+
   if (!(await database.schema.hasTable('import_runs'))) {
     await database.schema.createTable('import_runs', (table) => {
       table.bigIncrements('id').primary()
@@ -47,12 +110,9 @@ export async function migrateSchema(): Promise<void> {
       table.integer('destination_port').unsigned().nullable()
       table.bigInteger('connection_count').unsigned().notNullable()
       table.string('direction', 20).notNullable().defaultTo('Outbound')
-      table.index(['source_server_name'], 'idx_dependencies_source_server')
-      table.index(['destination_server_name'], 'idx_dependencies_destination_server')
-      table.index(['observed_date'], 'idx_dependencies_observed_date')
+      table.index(['import_run_id'], 'idx_dependencies_import_run')
+      table.index(['source_server_name', 'destination_server_name'], 'idx_dependencies_server_pair')
       table.index(['destination_port'], 'idx_dependencies_port')
-      table.index(['destination_process'], 'idx_dependencies_destination_process')
-      table.index(['direction'], 'idx_dependencies_direction')
       table.index(
         ['destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip'],
         'idx_dependencies_inbound_topology',
@@ -80,6 +140,16 @@ export async function migrateSchema(): Promise<void> {
     .where('table_name', 'dependency_records')
     .distinct({ indexName: 'index_name' }) as Array<{ indexName: string }>
   const dependencyIndexNames = new Set(dependencyIndexes.map(({ indexName }) => indexName))
+  if (!dependencyIndexNames.has('idx_dependencies_import_run')) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.index(['import_run_id'], 'idx_dependencies_import_run')
+    })
+  }
+  if (!dependencyIndexNames.has('idx_dependencies_server_pair')) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.index(['source_server_name', 'destination_server_name'], 'idx_dependencies_server_pair')
+    })
+  }
   if (!dependencyIndexNames.has('idx_dependencies_inbound_topology')) {
     await database.schema.alterTable('dependency_records', (table) => {
       table.index(
@@ -99,6 +169,58 @@ export async function migrateSchema(): Promise<void> {
   if (!dependencyIndexNames.has('idx_dependencies_destination_process')) {
     await database.schema.alterTable('dependency_records', (table) => {
       table.index(['destination_process'], 'idx_dependencies_destination_process')
+    })
+  }
+  if (!dependencyIndexNames.has('idx_dependencies_destination_ip')) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.index(['destination_ip'], 'idx_dependencies_destination_ip')
+    })
+  }
+  if (!dependencyIndexNames.has('idx_dependencies_server_port')) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.index(['destination_server_name', 'destination_port'], 'idx_dependencies_server_port')
+    })
+  }
+  if (!dependencyIndexNames.has('idx_dependencies_server_process')) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.index(['destination_server_name', 'destination_process'], 'idx_dependencies_server_process')
+    })
+  }
+  if (!dependencyIndexNames.has('idx_dependencies_ip_port')) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.index(['destination_ip', 'destination_port'], 'idx_dependencies_ip_port')
+    })
+  }
+  if (!dependencyIndexNames.has('idx_dependencies_ip_process')) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.index(['destination_ip', 'destination_process'], 'idx_dependencies_ip_process')
+    })
+  }
+
+  if (!(await database.schema.hasTable('database_server_evidence'))) {
+    await database.schema.createTable('database_server_evidence', (table) => {
+      table.string('evidence_type', 10).notNullable()
+      table.string('value', 300).notNullable()
+      table.primary(['evidence_type', 'value'])
+    })
+    await seedDatabaseServerEvidence()
+  }
+  const redundantDependencyIndexes = [
+    'idx_dependencies_source_server',
+    'idx_dependencies_destination_server',
+    'idx_dependencies_destination_ip',
+    'idx_dependencies_observed_date',
+    'idx_dependencies_destination_process',
+    'idx_dependencies_server_port',
+    'idx_dependencies_server_process',
+    'idx_dependencies_ip_port',
+    'idx_dependencies_ip_process',
+    'idx_dependencies_direction',
+  ]
+  for (const indexName of redundantDependencyIndexes) {
+    if (!dependencyIndexNames.has(indexName)) continue
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.dropIndex([], indexName)
     })
   }
 
@@ -170,6 +292,67 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  if (!(await database.schema.hasTable('core_infrastructure_servers'))) {
+    await database.schema.createTable('core_infrastructure_servers', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('assessment_id').unsigned().notNullable().references('id').inTable('server_assessments').onDelete('CASCADE')
+      table.string('server_name', 300).notNullable()
+      table.string('category', 100).notNullable()
+      table.string('application', 500).nullable()
+      table.string('environment_type', 100).nullable()
+      table.string('operating_system_name', 500).nullable()
+      table.string('os_version', 100).nullable()
+      table.text('ip_address').nullable()
+      table.string('migration_readiness', 100).nullable()
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+      table.unique(['assessment_id', 'category'], { indexName: 'uq_core_infrastructure_assessment_category' })
+      table.index(['category', 'server_name'], 'idx_core_infrastructure_category_server')
+    })
+  }
+
+  if (!(await database.schema.hasColumn('core_infrastructure_servers', 'source'))) {
+    await database.schema.alterTable('core_infrastructure_servers', (table) => {
+      table.string('source', 20).notNullable().defaultTo('Assessment').index('idx_core_infrastructure_source')
+    })
+  }
+  await database.raw('ALTER TABLE core_infrastructure_servers MODIFY assessment_id BIGINT UNSIGNED NULL')
+  const coreInfrastructureIndexes = await database('information_schema.statistics')
+    .whereRaw('table_schema = DATABASE()')
+    .where('table_name', 'core_infrastructure_servers')
+    .distinct({ indexName: 'index_name' }) as Array<{ indexName: string }>
+  if (!coreInfrastructureIndexes.some(({ indexName }) => indexName === 'idx_core_infrastructure_assessment')) {
+    await database.schema.alterTable('core_infrastructure_servers', (table) => {
+      table.index(['assessment_id'], 'idx_core_infrastructure_assessment')
+    })
+  }
+  if (coreInfrastructureIndexes.some(({ indexName }) => indexName === 'uq_core_infrastructure_assessment_category')) {
+    await database.schema.alterTable('core_infrastructure_servers', (table) => {
+      table.dropUnique(['assessment_id', 'category'], 'uq_core_infrastructure_assessment_category')
+    })
+  }
+  if (!coreInfrastructureIndexes.some(({ indexName }) => indexName === 'uq_core_infrastructure_server_category')) {
+    await database.schema.alterTable('core_infrastructure_servers', (table) => {
+      table.unique(['server_name', 'category'], { indexName: 'uq_core_infrastructure_server_category' })
+    })
+  }
+
+  if (!(await database.schema.hasTable('core_infrastructure_networks'))) {
+    await database.schema.createTable('core_infrastructure_networks', (table) => {
+      table.string('network_type', 30).primary()
+      table.string('ip_range', 100).notNullable()
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+    })
+  }
+  if (!(await database.schema.hasTable('core_infrastructure_load_balancer_ips'))) {
+    await database.schema.createTable('core_infrastructure_load_balancer_ips', (table) => {
+      table.string('ip_address', 45).primary()
+      table.string('source', 20).notNullable().defaultTo('Manual')
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+    })
+  }
+  const coreInfrastructureCount = await database('core_infrastructure_servers').count({ count: 'id' }).first()
+  if (Number(coreInfrastructureCount?.count ?? 0) === 0) await refreshCoreInfrastructureSummary()
+
   const assessmentImportForeignKey = await database('information_schema.referential_constraints')
     .select({ constraintName: 'constraint_name', deleteRule: 'delete_rule' })
     .whereRaw('constraint_schema = DATABASE()')
@@ -210,8 +393,47 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  if (!(await database.schema.hasTable('dependency_source_servers'))) {
+    await database.schema.createTable('dependency_source_servers', (table) => {
+      table.string('server_name', 300).primary()
+    })
+    await database('dependency_source_servers').insert(
+      database('dependency_records').distinct({ server_name: 'source_server_name' }).whereNotNull('source_server_name'),
+    )
+  }
+  if (!(await database.schema.hasTable('dependency_destination_servers'))) {
+    await database.schema.createTable('dependency_destination_servers', (table) => {
+      table.string('server_name', 300).primary()
+    })
+    await database('dependency_destination_servers').insert(
+      database('dependency_records').distinct({ server_name: 'destination_server_name' }).whereNotNull('destination_server_name'),
+    )
+  }
+
   if (!(await database('dependency_summary').where({ id: 1 }).first())) {
     await refreshDependencySummary()
+  }
+
+  if (!(await database.schema.hasTable('migration_wave_plans'))) {
+    await database.schema.createTable('migration_wave_plans', (table) => {
+      table.integer('id').unsigned().primary()
+      table.json('plan_json').notNullable()
+      table.dateTime('generated_at').notNullable()
+      table.dateTime('saved_at').notNullable().defaultTo(database.fn.now())
+    })
+  }
+
+  if (!(await database.schema.hasTable('task_comment_audit'))) {
+    await database.schema.createTable('task_comment_audit', (table) => {
+      table.bigIncrements('id').primary()
+      table.string('task_key', 1000).notNullable()
+      table.string('task_type', 20).notNullable()
+      table.text('comment').notNullable()
+      table.bigInteger('actor_user_id').unsigned().nullable().references('id').inTable('app_users').onDelete('SET NULL')
+      table.string('actor_display_name', 200).notNullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.index(['task_key', 'created_at'], 'idx_task_comment_audit_task')
+    })
   }
 
   if (!(await database.schema.hasTable('windows_services_ports'))) {

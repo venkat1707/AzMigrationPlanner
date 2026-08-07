@@ -8,6 +8,7 @@
     "lint": "npm run lint --workspace frontend && npm run lint --workspace backend",
     "migrate": "npm run migrate --workspace backend",
     "import": "npm run import --workspace backend --",
+    "generate:dataset": "node scripts/generate-synthetic-dataset.mjs",
     "start": "npm run start --workspace backend"
   },
   "devDependencies": { "concurrently": "^9.2.1" }

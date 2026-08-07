@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type FormEvent } from 'react'
-import { AlertCircle, ArrowLeftRight, ArrowRight, ChevronDown, ChevronUp, Network, RefreshCw, Search, Server, Users } from 'lucide-react'
+import { AlertCircle, AppWindow, ArrowLeftRight, ArrowRight, ChevronDown, ChevronUp, Cloud, Cpu, HardDrive, MemoryStick, Network, RefreshCw, Search, Server, Users } from 'lucide-react'
+import { apiFetch } from './auth-client'
 
 type Peer = {
   name: string | null
@@ -39,12 +40,30 @@ type Topology = {
   truncated: boolean
 }
 
+type ServerConfiguration = {
+  environment: string | null
+  applications: string[]
+  operatingSystem: { name: string | null; version: string | null; architecture: string | null }
+  serverType: 'Database Server' | 'Application Server' | 'Infrastructure Server'
+  infrastructureTypes: string[]
+  current: { cpuCores: number | null; memoryMb: number | null; diskCount: number | null; storageGb: number | null }
+  proposedAzure: { vmSku: string | null; cpuCores: number | null; storageSku: string | null; storageGb: number | null }
+}
+
+type ServerProfile = {
+  server: { name: string; ipAddress: string | null }
+  configuration: ServerConfiguration
+}
+
 const formatNumber = new Intl.NumberFormat('en-US')
 
 export default function ServerTopology({ refreshKey }: { refreshKey: number }) {
   const [serverName, setServerName] = useState('')
   const [selectedServer, setSelectedServer] = useState('')
   const [topology, setTopology] = useState<Topology | null>(null)
+  const [profile, setProfile] = useState<ServerProfile | null>(null)
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileError, setProfileError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [requestKey, setRequestKey] = useState(0)
@@ -56,7 +75,7 @@ export default function ServerTopology({ refreshKey }: { refreshKey: number }) {
     if (search.length < 2) return
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
-      fetch(`/api/servers?query=${encodeURIComponent(search)}`, { signal: controller.signal })
+      apiFetch(`/api/servers?query=${encodeURIComponent(search)}`, { signal: controller.signal })
         .then((response) => response.ok ? response.json() as Promise<{ items: string[] }> : Promise.reject())
         .then(({ items }) => setSuggestions(items))
         .catch(() => undefined)
@@ -70,16 +89,42 @@ export default function ServerTopology({ refreshKey }: { refreshKey: number }) {
   useEffect(() => {
     if (!selectedServer) return
     const controller = new AbortController()
-    fetch(`/api/server-topology?server=${encodeURIComponent(selectedServer)}`, { signal: controller.signal })
-      .then((response) => {
-        if (!response.ok) throw new Error('Topology unavailable')
+    apiFetch(`/api/server-topology?server=${encodeURIComponent(selectedServer)}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null) as { error?: string } | null
+          throw new Error(payload?.error ?? 'Topology unavailable')
+        }
         return response.json() as Promise<Topology>
       })
       .then(setTopology)
       .catch((reason: unknown) => {
-        if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError('Unable to load the dependency map.')
+        if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
+          setError(reason instanceof Error ? reason.message : 'Unable to load the dependency map.')
+        }
       })
       .finally(() => setLoading(false))
+    return () => controller.abort()
+  }, [selectedServer, refreshKey, requestKey])
+
+  useEffect(() => {
+    if (!selectedServer) return
+    const controller = new AbortController()
+    apiFetch(`/api/server-profile?server=${encodeURIComponent(selectedServer)}`, { signal: controller.signal })
+      .then(async (response) => {
+        const payload = await response.json() as ServerProfile & { error?: string }
+        if (!response.ok) throw new Error(payload.error ?? 'Server configuration unavailable.')
+        return payload
+      })
+      .then(setProfile)
+      .catch((reason: unknown) => {
+        if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
+          setProfileError(reason instanceof Error ? reason.message : 'Unable to load server configuration.')
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setProfileLoading(false)
+      })
     return () => controller.abort()
   }, [selectedServer, refreshKey, requestKey])
 
@@ -88,7 +133,10 @@ export default function ServerTopology({ refreshKey }: { refreshKey: number }) {
     const server = serverName.trim()
     if (!server) return
     setTopology(null)
+    setProfile(null)
     setLoading(true)
+    setProfileLoading(true)
+    setProfileError('')
     setError('')
     setSelectedServer(server)
     setShowSuggestions(false)
@@ -107,6 +155,8 @@ export default function ServerTopology({ refreshKey }: { refreshKey: number }) {
 
   const retry = () => {
     setLoading(true)
+    setProfileLoading(true)
+    setProfileError('')
     setError('')
     setRequestKey((value) => value + 1)
   }
@@ -124,6 +174,10 @@ export default function ServerTopology({ refreshKey }: { refreshKey: number }) {
       </form>
 
       {error && <div className="error-message"><span>{error}</span><button type="button" onClick={retry}><RefreshCw size={14} /> Retry</button></div>}
+
+      {selectedServer && profileLoading && <div className="server-profile-loading"><RefreshCw className="spin" size={16} /> Loading server configuration...</div>}
+      {profileError && <div className="topology-notice">{profileError} Dependency topology may still be available.</div>}
+      {profile && <ServerConfigurationSummary profile={profile} />}
 
       {!selectedServer && <div className="topology-empty"><Network size={28} /><strong>Select a server to map its dependencies</strong><span>Observed listening services and connected servers will appear here.</span></div>}
       {selectedServer && loading && <div className="topology-empty"><RefreshCw className="spin" size={28} /><strong>Building dependency graph</strong><span>Grouping services, ports, and connected servers.</span></div>}
@@ -148,6 +202,58 @@ export default function ServerTopology({ refreshKey }: { refreshKey: number }) {
       </div>}
     </section>
   </div>
+}
+
+function ServerConfigurationSummary({ profile }: { profile: ServerProfile }) {
+  const { configuration } = profile
+  const memoryGb = configuration.current.memoryMb === null ? null : configuration.current.memoryMb / 1024
+  const formatValue = (value: number | null, suffix = '') => value === null ? 'Unavailable' : `${formatNumber.format(value)}${suffix}`
+  const operatingSystem = [configuration.operatingSystem.name, configuration.operatingSystem.version, configuration.operatingSystem.architecture].filter(Boolean).join(' · ') || 'Unavailable'
+
+  return <section className="server-configuration" aria-label="Server configuration summary">
+    <header className="server-profile-header">
+      <div className="server-profile-title">
+        <span className="server-profile-icon"><Server size={23} /></span>
+        <div><small>Selected server</small><h2>{profile.server.name}</h2><p>{profile.server.ipAddress ?? 'IP address unavailable'}</p></div>
+      </div>
+      <div className="server-profile-tags">
+        {configuration.environment && <span className="environment-badge">{configuration.environment}</span>}
+        <span className={`server-type-badge ${configuration.serverType.split(' ')[0].toLowerCase()}`}>{configuration.serverType}</span>
+      </div>
+    </header>
+
+    <section className="server-workload-summary" aria-label="Workload details">
+      <div className="workload-heading"><AppWindow size={18} /><span><small>Workload profile</small><strong>Operating system and hosted services</strong></span></div>
+      <dl>
+        <div><dt>Operating system</dt><dd>{operatingSystem}</dd></div>
+        <div><dt>Hosted applications</dt><dd>{configuration.applications.join(', ') || 'None identified'}</dd></div>
+        {configuration.infrastructureTypes.length > 0 && <div><dt>Infrastructure roles</dt><dd>{configuration.infrastructureTypes.join(', ')}</dd></div>}
+      </dl>
+    </section>
+
+    <div className="server-sizing-comparison">
+      <section className="server-sizing-panel current">
+        <header><span><Server size={19} /></span><div><small>Current estate</small><h3>On-premises configuration</h3></div><em>Assessed</em></header>
+        <div className="server-sizing-metrics">
+          <div><span><Cpu size={18} /></span><div><small>CPU</small><strong>{formatValue(configuration.current.cpuCores)}</strong><p>Cores</p></div></div>
+          <div><span><MemoryStick size={18} /></span><div><small>Memory</small><strong>{formatValue(memoryGb)}</strong><p>GB RAM</p></div></div>
+          <div><span><HardDrive size={18} /></span><div><small>Disk count</small><strong>{formatValue(configuration.current.diskCount)}</strong><p>Attached disks</p></div></div>
+          <div><span><HardDrive size={18} /></span><div><small>Storage</small><strong>{formatValue(configuration.current.storageGb)}</strong><p>Total GB</p></div></div>
+        </div>
+      </section>
+
+      <span className="sizing-transition" aria-hidden="true"><ArrowRight size={18} /></span>
+
+      <section className="server-sizing-panel azure">
+        <header><span><Cloud size={19} /></span><div><small>Target estate</small><h3>Proposed Azure configuration</h3></div><em>Recommended</em></header>
+        <div className="azure-vm-sku"><small>Azure VM size</small><strong>{configuration.proposedAzure.vmSku ?? 'Unavailable'}</strong></div>
+        <div className="azure-sizing-metrics">
+          <div><small>Compute</small><strong>{formatValue(configuration.proposedAzure.cpuCores)}</strong><span>vCPU</span></div>
+          <div><small>Managed disk</small><strong>{configuration.proposedAzure.storageSku ?? 'Unavailable'}</strong><span>{formatValue(configuration.proposedAzure.storageGb, ' GB')}</span></div>
+        </div>
+      </section>
+    </div>
+  </section>
 }
 
 function ServiceLane({ title, description, direction, services }: { title: string; description: string; direction: 'inbound' | 'outbound'; services: Service[] }) {

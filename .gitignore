@@ -5,3 +5,4 @@ dist/
 *.log
 DependencyExport*.csv
 Strategy_Lift_and_shift*
+data/generated/

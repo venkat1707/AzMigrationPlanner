@@ -1,7 +1,7 @@
 import { database } from './db.js'
 
 export type CleanupStep = {
-  key: 'serverAssessments' | 'dependencies' | 'importHistory' | 'summary'
+  key: 'savedWavePlan' | 'serverAssessments' | 'dependencies' | 'importHistory' | 'summary'
   label: string
   status: 'Pending' | 'Running' | 'Completed' | 'Failed'
   recordsDeleted: number
@@ -37,6 +37,7 @@ export async function startDataCleanup(): Promise<CleanupStatus> {
     error: null,
     protectedWindowsServiceRecords: Number(protectedResult?.count ?? 0),
     steps: [
+      { key: 'savedWavePlan', label: 'Saved migration wave plan', status: 'Pending', recordsDeleted: 0 },
       { key: 'serverAssessments', label: 'Server Assessment records', status: 'Pending', recordsDeleted: 0 },
       { key: 'dependencies', label: 'Dependency records', status: 'Pending', recordsDeleted: 0 },
       { key: 'importHistory', label: 'Import history', status: 'Pending', recordsDeleted: 0 },
@@ -49,10 +50,21 @@ export async function startDataCleanup(): Promise<CleanupStatus> {
 
 async function runCleanup(cleanup: CleanupStatus): Promise<void> {
   try {
-    await runStep(cleanup, 0, async () => database('server_assessments').delete())
-    await runStep(cleanup, 1, async () => database('dependency_records').delete())
-    await runStep(cleanup, 2, async () => database('import_runs').delete())
-    await runStep(cleanup, 3, async () => {
+    await runStep(cleanup, 0, async () => database.transaction(async (transaction) => {
+      const auditRecordsDeleted = await transaction('task_comment_audit').delete()
+      const plansDeleted = await transaction('migration_wave_plans').delete()
+      return auditRecordsDeleted + plansDeleted
+    }))
+    await runStep(cleanup, 1, async () => database('server_assessments').delete())
+    await runStep(cleanup, 2, async () => database.transaction(async (transaction) => {
+      const recordsDeleted = await transaction('dependency_records').delete()
+      await transaction('database_server_evidence').delete()
+      await transaction('dependency_source_servers').delete()
+      await transaction('dependency_destination_servers').delete()
+      return recordsDeleted
+    }))
+    await runStep(cleanup, 3, async () => database('import_runs').delete())
+    await runStep(cleanup, 4, async () => {
       const current = await database('dependency_summary').where({ id: 1 }).first()
       await database('dependency_summary').where({ id: 1 }).update({
         total_dependencies: 0,
