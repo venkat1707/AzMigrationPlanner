@@ -102,6 +102,7 @@ const assessmentHeaderContract = {
   aliases: {
     APPLICATION_NAME: 'APPLICATION',
     APP_NAME: 'APPLICATION',
+    FQDN: 'SERVER_NAME',
     HOSTNAME: 'SERVER_NAME',
     Machine: 'SERVER_NAME',
     MACHINE_NAME: 'SERVER_NAME',

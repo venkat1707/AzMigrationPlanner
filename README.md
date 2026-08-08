@@ -39,14 +39,18 @@ For Azure hosting, store `MYSQL_PASSWORD` as an App Service Key Vault reference 
 
 Authentication is disabled after the auth schema is first created, preserving access to existing installations. Open **Administration** in the application, create at least one enabled local administrator with a password of 12 or more characters, and then turn on **Require authentication**. The server refuses to enable authentication without an enabled administrator and prevents the last enabled administrator from being disabled, demoted, or deleted.
 
+While authentication is disabled, administration endpoints accept requests only from the server's loopback interface. Perform the initial administrator bootstrap from `http://localhost:3000`, then enable authentication before exposing the application through a network listener or reverse proxy. Rotate any credential that has previously appeared in source control and keep real database passwords outside `.env.example`.
+
 Local and Microsoft Entra users can be assigned Read, Modify, and Delete privileges. Administrators receive all privileges and can manage users and authentication settings. Authorization is enforced by the Express API; navigation visibility is only a user-interface convenience. Authenticated writes require the per-session CSRF token, and session identifiers are stored as SHA-256 hashes in MySQL.
 
 To configure Microsoft Entra ID:
 
 1. Register a confidential web application in the required tenant.
 2. Add `<application-origin>/api/auth/entra/callback` as a Web redirect URI.
-3. Set `ENTRA_CLIENT_SECRET` only in the server environment. For Azure App Service, use a Key Vault reference.
+3. For local development, set `ENTRA_CLIENT_SECRET` only in the server environment.
 4. In **Administration**, enter the tenant ID, client ID, and redirect URI, choose default privileges for newly seen Entra users, and enable Microsoft Entra ID.
+
+For secretless authentication on Azure App Service, assign a user-assigned managed identity to the app and add that identity as a federated credential on the Entra app registration. Use audience `api://AzureADTokenExchange`, then set `ENTRA_USE_MANAGED_IDENTITY=true` and `AZURE_CLIENT_ID=<user-assigned-identity-client-id>` on the App Service. The managed identity and app registration must be in the same tenant. When managed identity mode is enabled, `ENTRA_CLIENT_SECRET` is not used. See [Configure an application to trust a managed identity](https://learn.microsoft.com/entra/workload-id/workload-identity-federation-config-app-trust-managed-identity).
 
 The client secret and identity tokens are never returned to the browser or stored in application settings. Use the **Require authentication** toggle to disable sign-in and authorization for trusted, isolated deployments.
 
@@ -94,7 +98,7 @@ npm run generate:dataset -- --output-dir=data/generated/sample --dependency-coun
 
 Imports are recorded in `import_runs`. Failed runs retain their imported-row count and error message. Re-running an export creates another import run; it does not replace previous data.
 
-The web application also accepts bulk uploads through its data-ingestion section. Select or drop up to 20 `.csv` or `.xlsx` Azure Migrate exports per request. Each file may be up to 1 GB and receives an independent completion or failure result.
+The web application also accepts bulk uploads through its data-ingestion section. Select or drop up to eight `.csv` or `.xlsx` Azure Migrate exports per request. Each dependency file may be up to 1 GB and receives an independent completion or failure result. Workbook-based assessment, mapping, and infrastructure uploads are limited to 100 MB and validated for unsafe archive expansion before processing.
 
 After each file is loaded, the importer automatically rebuilds that run's `application_inventory` rows from destination server, IP address, application, process, and port evidence. A name is populated only when Azure Migrate reports a non-placeholder application or an exact executable signature matches the audited rule set. Ports are never used alone to infer an application. Ambiguous endpoints remain in the table with a null `application_name`, `resolution_method = 'unresolved'`, and explanatory evidence instead of a guessed name.
 
@@ -132,13 +136,19 @@ The backend service serves the built frontend application at http://localhost:30
 
 `GET /api/application-environments` lists every application and environment represented in Server Assessment data with its server count.
 
-Dependency and Server Assessment CSV/XLSX imports map source fields to MySQL columns by normalized header name, not column position. Column matching is case-insensitive and ignores spaces and punctuation; documented aliases such as `Hostname`, `Machine Name`, `Environment`, `Source Server`, and `Destination Server` are also accepted. Reordered columns are safe, unknown columns are ignored with a warning, and absent optional columns are stored as `NULL`. Imports reject missing required columns, empty or duplicate canonical headers, rows containing values beyond the declared headers, and invalid typed values with a row-specific message. Server Assessment writes are transactional; failed Dependency imports remove their rows and rebuild dependency summaries, distinct server lists, and database-server evidence from retained records. Validation warnings are returned with the upload result and displayed in the Imports workspace.
+Dependency, Server Assessment, and Application Mapping CSV/XLSX imports map source fields to MySQL columns by normalized header name, not column position. Column matching is case-insensitive and ignores spaces and punctuation; documented aliases such as `Hostname`, `Machine Name`, `Environment`, `Source Server`, and `Destination Server` are also accepted. Reordered columns are safe, unknown columns are ignored with a warning, and absent optional columns are stored as `NULL` or preserve existing values for upserts. Imports reject missing required columns, empty or duplicate canonical headers, rows containing values beyond the declared headers, and invalid typed values with a row-specific message. Server Assessment and Application Mapping writes are transactional; failed Dependency imports remove their rows and rebuild dependency summaries, distinct server lists, and database-server evidence from retained records. Validation warnings are returned with the upload result and displayed in the Imports workspace.
+
+Application Mapping files require `APPLICATION` and `SERVER_NAME`; `IP_ADDRESS` and `APPLICATION_DESCRIPTION` are optional. Aliases include `Application Name`, `App Name`, `FQDN`, `Machine Name`, `Hostname`, `Server`, `IP`, and `Description`. Existing `server_assessments` rows are matched by server name and update only application, IP address, application description, and import provenance. Blank optional values preserve existing data, and Azure assessment fields are never overwritten. New server names create minimal assessment rows. Duplicate server names within one file are discarded after the first row, and relevant core infrastructure rows are refreshed transactionally.
 
 `GET /api/application-map?application=<name>&environment=<name>` returns the selected application boundary, its servers, core infrastructure connections, configured load-balancer IP connections, VPN/office network connections, Shared DB servers, and inbound, outbound, or bidirectional service edges. Connected Shared DB servers appear inside the selected application's center block and expand one dependency hop so their other inbound and outbound systems are shown by application name. Shared DB nodes expose the database server name, while servers owned by other applications are represented only by application name. The Application Map workspace enriches core nodes from `GET /api/core-infrastructure-servers`, labels configured network boundaries, and opens another application's topology when its application node is selected.
 
 `GET /api/server-profile?server=<name>` returns a server's identity, environment, operating system, hosted applications, server classification, infrastructure roles, current CPU/memory/disk configuration, and proposed Azure VM and storage sizing. This lightweight endpoint loads independently of dependency topology aggregation.
 
 `POST /api/migration-wave-plan` creates an ordered migration plan from Server Assessment, Infrastructure Servers, and Dependency Records. The request accepts `minimumServers`, `maximumServers`, `considerEnvironments`, `prioritizeEnvironments`, `environmentOrder`, `dataHeavyStorageGb`, `separateDataHeavyWorkloads`, `excludedApplications`, and `excludedServers`. Data-heavy classification is informational by default so dependency co-location remains the first priority; set `separateDataHeavyWorkloads` to `true` to enforce at most one database or storage-heavy workload per sprint. Exclusion values are exact, case-insensitive names; excluding an application removes all of its servers. The response contains summary totals, environment waves, migration sprints, server assignments, grouping rationale, deferred and excluded servers, assumptions, explicit guardrail exceptions, complete cross-sprint dependencies, environment dependency summaries, and a capped list of sequencing warnings. `summary.severeDatabaseWarnings` counts database/application dependencies split across waves, and each affected wave includes the corresponding records in `severeWarnings`.
+
+`GET /api/sprint-schedule` returns the saved waves, each sprint's applications and date window, and a `serverTimeline` row for every server in `server_assessments`. Sprint dates are stored on sprint objects inside the single saved `migration_wave_plans.plan_json` document; they are not copied into assessment columns. Server timeline rows are derived by matching each assessed server to the current sprint `servers` arrays, so moving or merging a server into another sprint automatically maps it to the destination sprint's dates on the next read or export. Deferred, excluded, or otherwise unassigned assessed servers remain present with null sprint and date values.
+
+`PUT /api/sprint-schedule` accepts a `schedules` array containing a sprint `sequence`, `targetedStartDate`, and optional `targetedEndDate`. Dates use `YYYY-MM-DD`; when an end date is omitted, the API defaults it to 21 days after the start date. The endpoint updates only schedule fields in the saved plan and preserves sprint contents, task assignments, comments, dependencies, and history. `GET /api/sprint-schedule/export?format=xlsx` downloads an Excel workbook containing Sprint Summary, Server Timeline, and Sprint Gantt worksheets. `format=pptx` downloads a paginated PowerPoint Gantt with wave, sprint, date, server, and application summaries.
 
 The Wave Planning workspace exports UTF-8 CSV reports for an individual sprint, the selected environment, or the complete all-environment plan. Assignment reports include planning assumptions and sprint grouping rationale. Each environment also has a cross-dependency report and CSV export containing source/destination applications, environments, waves, sprints, sequencing status, and rationale. Cross-dependency reports exclude rows where either endpoint is a core infrastructure server; those dependencies still influence planning and sequencing.
 
@@ -147,6 +157,8 @@ After hard environment, capacity, and data-heavy constraints, minimizing cross-s
 `GET /api/imports` returns the 20 most recent import runs.
 
 `POST /api/imports` accepts up to 20 CSV/XLSX files in the multipart `files` field and returns a result for every file.
+
+`POST /api/application-server-mappings/sheets` accepts one XLSX file in the multipart `file` field and lists its worksheet names. `POST /api/application-server-mappings/import` accepts one CSV or XLSX file in `file`; XLSX requests also require `sheetName`. A successful import returns inserted, updated, discarded, and imported row counts plus validation warnings.
 
 `GET /api/applications` returns the paginated application inventory. It accepts `server`, `application`, `port`, `page`, `pageSize`, and `resolution` (`resolved`, `unresolved`, or `all`). Resolution defaults to `resolved` so unnamed evidence does not obscure identified applications.
 
@@ -172,7 +184,9 @@ The intended topology is one Linux Azure App Service hosting Express and the bui
 - `MYSQL_USER`
 - `MYSQL_PASSWORD` (use a Key Vault reference)
 - `MYSQL_SSL=true`
-- `ENTRA_CLIENT_SECRET` (required only when Microsoft Entra ID authentication is enabled; use a Key Vault reference)
+- `ENTRA_CLIENT_SECRET` (required for Microsoft Entra ID authentication when managed identity mode is disabled; use a Key Vault reference)
+- `ENTRA_USE_MANAGED_IDENTITY=true` (enables secretless Entra workload identity federation)
+- `AZURE_CLIENT_ID` (client ID of the user-assigned managed identity used for federation)
 - `APPLICATIONINSIGHTS_CONNECTION_STRING`
 - `NODE_ENV=production`
 

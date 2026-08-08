@@ -31,6 +31,7 @@ type MigrationSprint = {
   groupingRationale: string[]
   exceptions: string[]
   servers: PlanningServer[]
+  taskCreated?: boolean
   comment?: string
   task?: TaskAssignment
 }
@@ -91,6 +92,7 @@ type DependencyPair = {
 
 type DependencyReview = {
   acceptedDependencyKeys: string[]
+  taskKeys?: string[]
   commentsByKey?: Record<string, string>
   assignmentsByKey?: Record<string, TaskAssignment>
 }
@@ -191,6 +193,7 @@ export default function MigrationWavePlanning() {
   const [discardConfirmation, setDiscardConfirmation] = useState(false)
   const [resetTasksConfirmation, setResetTasksConfirmation] = useState(false)
   const [regeneratedPlan, setRegeneratedPlan] = useState(false)
+  const [createDependencyTasksOnSave, setCreateDependencyTasksOnSave] = useState(false)
   const [savingTaskKey, setSavingTaskKey] = useState<string | null>(null)
   const [assignmentUsers, setAssignmentUsers] = useState<AssignmentUser[]>([])
 
@@ -262,6 +265,7 @@ export default function MigrationWavePlanning() {
       setSelectedWave(payload.waves[0]?.wave ?? 1)
       setSavedAt(null)
       setRegeneratedPlan(Boolean(savedPlan))
+      setCreateDependencyTasksOnSave(false)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to generate the migration wave plan.')
     } finally {
@@ -277,14 +281,22 @@ export default function MigrationWavePlanning() {
       const response = await apiFetch('/api/migration-wave-plan', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: planToSave, resetTasks }),
+        body: JSON.stringify({
+          plan: planToSave,
+          resetTasks,
+          createSprintTasks: false,
+          createDependencyTasks: createDependencyTasksOnSave,
+        }),
       })
-      const payload = await response.json() as { savedAt?: string; error?: string }
+      const payload = await response.json() as { savedAt?: string; plan?: MigrationWavePlan; error?: string }
       if (!response.ok || !payload.savedAt) throw new Error(payload.error ?? 'Unable to save the migration wave plan.')
+      const savedPlanValue = payload.plan ?? planToSave
       setSavedAt(payload.savedAt)
       setSavedPlanSavedAt(payload.savedAt)
-      setSavedPlan(planToSave)
+      setPlan(savedPlanValue)
+      setSavedPlan(savedPlanValue)
       setRegeneratedPlan(false)
+      setCreateDependencyTasksOnSave(false)
       setResetTasksConfirmation(false)
       return true
     } catch (reason) {
@@ -293,6 +305,16 @@ export default function MigrationWavePlanning() {
       setSaving(false)
     }
     return false
+  }
+
+  const openSaveConfirmation = () => {
+    setCreateDependencyTasksOnSave(false)
+    setResetTasksConfirmation(true)
+  }
+
+  const closeSaveConfirmation = () => {
+    setResetTasksConfirmation(false)
+    setCreateDependencyTasksOnSave(false)
   }
 
   const discardChanges = () => {
@@ -309,6 +331,7 @@ export default function MigrationWavePlanning() {
     setError('')
     setDiscardConfirmation(false)
     setRegeneratedPlan(false)
+    setCreateDependencyTasksOnSave(false)
   }
 
   const updateSprintComment = (sequence: number, comment: string) => {
@@ -323,52 +346,21 @@ export default function MigrationWavePlanning() {
     setSavedAt(null)
   }
 
-  const updateDependencyComment = (dependency: CrossDependency, comment: string) => {
-    if (!plan) return
-    const key = dependencyKey(dependency)
-    setPlan({
-      ...plan,
-      dependencyReview: {
-        acceptedDependencyKeys: plan.dependencyReview?.acceptedDependencyKeys ?? [],
-        commentsByKey: { ...plan.dependencyReview?.commentsByKey, [key]: comment },
-        assignmentsByKey: plan.dependencyReview?.assignmentsByKey,
-      },
-    })
-    setSavedAt(null)
-  }
-
   const updateSprintTask = (sequence: number, task: TaskAssignment | undefined) => {
     if (!plan) return
     setPlan({
       ...plan,
       waves: plan.waves.map((wave) => ({
         ...wave,
-        sprints: wave.sprints.map((sprint) => sprint.sequence === sequence ? { ...sprint, task } : sprint),
+        sprints: wave.sprints.map((sprint) => sprint.sequence === sequence ? { ...sprint, taskCreated: Boolean(task), task } : sprint),
       })),
-    })
-    setSavedAt(null)
-  }
-
-  const updateDependencyTask = (dependency: CrossDependency, task: TaskAssignment | undefined) => {
-    if (!plan) return
-    const key = dependencyKey(dependency)
-    const assignmentsByKey = { ...plan.dependencyReview?.assignmentsByKey }
-    if (task) assignmentsByKey[key] = task
-    else delete assignmentsByKey[key]
-    setPlan({
-      ...plan,
-      dependencyReview: {
-        acceptedDependencyKeys: plan.dependencyReview?.acceptedDependencyKeys ?? [],
-        commentsByKey: plan.dependencyReview?.commentsByKey,
-        assignmentsByKey,
-      },
     })
     setSavedAt(null)
   }
 
   const saveTask = async (key: string) => {
     if (regeneratedPlan) {
-      setResetTasksConfirmation(true)
+      openSaveConfirmation()
       return
     }
     setSavingTaskKey(key)
@@ -433,10 +425,10 @@ export default function MigrationWavePlanning() {
 
       {plan && !loading && !restoring && <div className="wave-plan-results">
         <section className="wave-report-actions">
-          <div><strong>{savedAt ? 'Saved migration plan' : 'Unsaved migration plan'}</strong><small>{savedAt ? `Saved ${new Date(savedAt).toLocaleString()}. This plan loads automatically when the page opens.` : 'Save this generated plan to make it the default when the page opens.'}</small></div>
+          <div className="wave-save-summary"><strong>{savedAt ? 'Saved migration plan' : 'Unsaved migration plan'}</strong><small>{savedAt ? `Saved ${new Date(savedAt).toLocaleString()}. This plan loads automatically when the page opens.` : 'Save this generated plan to make it the default when the page opens.'}</small></div>
           <div className="wave-report-buttons">
             {!savedAt && savedPlan && <button type="button" className="discard" onClick={() => setDiscardConfirmation(true)}><Undo2 size={15} />Discard changes</button>}
-            <button type="button" className="primary" disabled={saving} onClick={() => regeneratedPlan ? setResetTasksConfirmation(true) : void savePlan()}>{savedAt ? <CheckCircle2 size={15} /> : <Save size={15} />}{saving ? 'Saving...' : savedAt ? 'Saved' : 'Save plan'}</button>
+            <button type="button" className="primary" disabled={saving || Boolean(savedAt)} onClick={openSaveConfirmation}>{savedAt ? <CheckCircle2 size={15} /> : <Save size={15} />}{saving ? 'Saving...' : savedAt ? 'Saved' : 'Save plan'}</button>
             <button type="button" onClick={() => downloadWavePlanCsv(plan, plan.waves, 'all-environments-wave-plan.csv')}><Download size={15} />Export total plan</button>
           </div>
         </section>
@@ -466,11 +458,8 @@ export default function MigrationWavePlanning() {
           <dl><div><dt>Cross-sprint</dt><dd>{formatNumber.format(activeDependencySummary?.dependencyCount ?? 0)}</dd></div><div><dt>Scheduled later</dt><dd>{formatNumber.format(activeDependencySummary?.unsafeSequenceCount ?? 0)}</dd></div><div><dt>Cross-environment</dt><dd>{formatNumber.format(activeDependencySummary?.crossEnvironmentCount ?? 0)}</dd></div><div className="accepted"><dt>Accepted</dt><dd>{formatNumber.format(acceptedEnvironmentDependencyCount)}</dd></div></dl>
           {activeEnvironmentDependencies.length > 0 ? <details><summary><span>Preview dependency records</span><strong>{formatNumber.format(activeEnvironmentDependencies.length)} total</strong></summary><div className="review-list dependency-review-list">{activeEnvironmentDependencies.slice(0, 100).map((dependency, index) => {
             const accepted = plan.dependencyReview?.acceptedDependencyKeys.includes(dependencyKey(dependency)) === true
-            const commentKey = dependencyKey(dependency)
-            const task = plan.dependencyReview?.assignmentsByKey?.[commentKey]
             return <div className={accepted ? 'accepted' : ''} key={`${dependency.sourceServer}-${dependency.destinationServer}-${index}`}>
               <div className="dependency-review-copy"><strong>{dependency.sourceServer} → {dependency.destinationServer}</strong><span>{dependency.sourceEnvironment} / Sprint {dependency.sourceSprint} → {dependency.destinationEnvironment} / Sprint {dependency.destinationSprint}</span><small>{dependency.sequencing}. {dependency.sourceApplication} → {dependency.destinationApplication}</small></div>
-              <div className="dependency-comment"><TaskFields users={assignmentUsers} task={task} onChange={(nextTask) => updateDependencyTask(dependency, nextTask)} /><label><MessageSquare size={13} />Comment<textarea rows={2} maxLength={4000} value={plan.dependencyReview?.commentsByKey?.[commentKey] ?? ''} onChange={(event) => updateDependencyComment(dependency, event.target.value)} placeholder="Add migration context, an owner, or an agreed action." /></label><button type="button" disabled={savingTaskKey === `dependency:${commentKey}`} onClick={() => void saveTask(`dependency:${commentKey}`)}><Save size={13} />{savingTaskKey === `dependency:${commentKey}` ? 'Saving...' : 'Save task'}</button></div>
             </div>
           })}</div></details> : <p className="dependency-report-empty">No cross-sprint dependencies were found for this environment.</p>}
         </section>}
@@ -485,9 +474,10 @@ export default function MigrationWavePlanning() {
       <header><span><Undo2 size={20} /></span><div><h2 id="discard-plan-title">Discard unsaved changes?</h2><p>The last saved migration plan will replace the plan currently displayed.</p></div><button type="button" title="Close confirmation" onClick={() => setDiscardConfirmation(false)}><X size={18} /></button></header>
       <footer><button className="cancel-button" type="button" onClick={() => setDiscardConfirmation(false)}>No, keep current plan</button><button className="discard-confirm-button" type="button" onClick={discardChanges}>Yes, discard changes</button></footer>
     </section></div>}
-    {resetTasksConfirmation && <div className="modal-backdrop" role="presentation"><section className="wave-change-dialog reset-tasks-dialog" role="dialog" aria-modal="true" aria-labelledby="reset-tasks-title">
-      <header><span><AlertTriangle size={20} /></span><div><h2 id="reset-tasks-title">Replace the saved plan and all tasks?</h2><p>This operation is not reversible. Saving the regenerated plan will permanently delete every assigned and unassigned task, including assignments, statuses, comments, and task history. A fresh task list will be created from the new wave plan.</p></div><button type="button" title="Close warning" disabled={saving} onClick={() => setResetTasksConfirmation(false)}><X size={18} /></button></header>
-      <footer><button className="cancel-button" type="button" disabled={saving} onClick={() => setResetTasksConfirmation(false)}>Cancel</button><button className="discard-confirm-button" type="button" disabled={saving} onClick={() => void savePlan(plan, true)}>{saving ? 'Replacing plan...' : 'Delete tasks and save new plan'}</button></footer>
+    {resetTasksConfirmation && plan && <div className="modal-backdrop" role="presentation"><section className={`wave-change-dialog save-plan-dialog${regeneratedPlan ? ' reset-tasks-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="save-plan-title">
+      <header><span>{regeneratedPlan ? <AlertTriangle size={20} /> : <Save size={20} />}</span><div><h2 id="save-plan-title">{regeneratedPlan ? 'Replace the saved plan and all tasks?' : 'Save generated migration plan?'}</h2><p>{regeneratedPlan ? 'This operation is not reversible. Existing assignments, statuses, comments, and task history will be deleted. Choose whether to create unassigned cross-dependency tasks from the replacement plan.' : 'Choose whether to create unassigned cross-dependency tasks with this migration plan.'}</p></div><button type="button" title="Close confirmation" disabled={saving} onClick={closeSaveConfirmation}><X size={18} /></button></header>
+      <div className="save-plan-task-options" aria-label="Task creation options"><label><input type="checkbox" checked={createDependencyTasksOnSave} onChange={(event) => setCreateDependencyTasksOnSave(event.target.checked)} /><span><strong>Create cross-dependency tasks</strong><small>Create {plan.crossSprintDependencies.length} unassigned task{plan.crossSprintDependencies.length === 1 ? '' : 's'}, one for each detected cross-sprint dependency.</small></span></label></div>
+      <footer><button className="cancel-button" type="button" disabled={saving} onClick={closeSaveConfirmation}>Cancel</button><button className={regeneratedPlan ? 'discard-confirm-button' : 'confirm-button'} type="button" disabled={saving} onClick={() => void savePlan(plan, regeneratedPlan)}>{saving ? (regeneratedPlan ? 'Replacing plan...' : 'Saving plan...') : regeneratedPlan ? 'Replace plan and apply selection' : 'Save plan and apply selection'}</button></footer>
     </section></div>}
   </div>
 }

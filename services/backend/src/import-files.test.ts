@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import knex from 'knex'
+import {
+  createApplicationMappingUpsertUpdates,
+  inspectApplicationServerMappingFile,
+} from './application-server-mapping-import.js'
 import { inspectDependencyFile } from './dependency-import.js'
 import {
   createAssessmentUpsertUpdates,
@@ -94,6 +98,67 @@ test('Server Assessment upserts preserve existing values when incoming fields ar
     assert.match(compiled.sql, /`application` = COALESCE\(VALUES\(`application`\), `application`\)/)
     assert.match(compiled.sql, /`onprem_storage_gb` = COALESCE\(VALUES\(`onprem_storage_gb`\), `onprem_storage_gb`\)/)
     assert.match(compiled.sql, /`import_run_id` = VALUES\(`import_run_id`\)/)
+  } finally {
+    void queryBuilder.destroy()
+  }
+})
+
+test('Application mapping CSV accepts business-friendly column aliases', async () => {
+  await withCsv([
+    'Application Name,FQDN,IP Address,Description',
+    'Billing,billing-01.contoso.com,10.0.0.10,Processes customer invoices',
+  ].join('\n'), async (filePath) => {
+    const report = await inspectApplicationServerMappingFile(filePath)
+    assert.equal(report.rowCount, 1)
+    assert.match(report.warnings.join(' '), /Application Name -> APPLICATION/)
+    assert.match(report.warnings.join(' '), /FQDN -> SERVER_NAME/)
+    assert.match(report.warnings.join(' '), /Description -> APPLICATION_DESCRIPTION/)
+  })
+})
+
+test('Application mapping maps every supported server identity header to SERVER_NAME', async () => {
+  for (const serverHeader of ['FQDN', 'Machine', 'Machine Name', 'Server Name', 'Server']) {
+    await withCsv(`Application,${serverHeader}\nBilling,billing-01.contoso.com`, async (filePath) => {
+      const report = await inspectApplicationServerMappingFile(filePath)
+      assert.equal(report.rowCount, 1, serverHeader)
+    })
+  }
+})
+
+test('Server Assessment maps FQDN to SERVER_NAME', async () => {
+  await withCsv('FQDN\nbilling-01.contoso.com', async (filePath) => {
+    const report = await inspectServerAssessmentFile(filePath)
+    assert.equal(report.rowCount, 1)
+    assert.match(report.warnings.join(' '), /FQDN -> SERVER_NAME/)
+  })
+})
+
+test('Application mapping requires application and server columns', async () => {
+  await withCsv('IP Address,Description\n10.0.0.10,Billing server', async (filePath) => {
+    await assert.rejects(inspectApplicationServerMappingFile(filePath), /missing required columns: APPLICATION, SERVER_NAME/)
+  })
+})
+
+test('Application mapping upserts preserve existing optional values and assessment fields', () => {
+  const queryBuilder = knex({ client: 'mysql2' })
+  try {
+    const updates = createApplicationMappingUpsertUpdates(queryBuilder as unknown as import('knex').Knex.Transaction)
+    const compiled = queryBuilder('server_assessments')
+      .insert({
+        import_run_id: 7,
+        application: 'Billing',
+        server_name: 'billing-01',
+        ip_address: null,
+        application_description: null,
+      })
+      .onConflict('server_name')
+      .merge(updates)
+      .toSQL()
+
+    assert.match(compiled.sql, /`application` = VALUES\(`application`\)/)
+    assert.match(compiled.sql, /`ip_address` = COALESCE\(VALUES\(`ip_address`\), `ip_address`\)/)
+    assert.match(compiled.sql, /`application_description` = COALESCE\(VALUES\(`application_description`\), `application_description`\)/)
+    assert.doesNotMatch(compiled.sql, /migration_readiness.*=/)
   } finally {
     void queryBuilder.destroy()
   }

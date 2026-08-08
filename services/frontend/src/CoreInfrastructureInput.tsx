@@ -36,11 +36,14 @@ export default function CoreInfrastructureInput() {
       if (!response.ok) throw new Error(payload.error ?? 'Unable to load core infrastructure inputs.')
       setSavedServers(payload.servers ?? [])
       setSavedLoadBalancerIps(payload.loadBalancerIps ?? [])
-      const ranges = Object.fromEntries((payload.networks ?? []).map(({ type, ipRange }) => [type, ipRange]))
+      const ranges = (payload.networks ?? []).reduce<Partial<Record<SavedNetwork['type'], SavedNetwork[]>>>((groups, network) => {
+        groups[network.type] = [...(groups[network.type] ?? []), network]
+        return groups
+      }, {})
       setNetworks({
-        vpn: String(ranges.VPN ?? ''),
-        loadBalancer: String(ranges['Load balancer'] ?? ''),
-        office: String(ranges.Office ?? ''),
+        vpn: (ranges.VPN ?? []).map(({ ipRange }) => ipRange).join(', '),
+        loadBalancer: (ranges['Load balancer'] ?? []).map(({ ipRange }) => ipRange).join(', '),
+        office: (ranges.Office ?? []).map(({ ipRange }) => ipRange).join(', '),
       })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to load core infrastructure inputs.')
@@ -122,11 +125,11 @@ export default function CoreInfrastructureInput() {
       </section>
 
       <section className="core-input-section network-ranges">
-        <header><div><p>Network boundaries</p><h2>Connected IP ranges</h2><small>Enter ranges in CIDR notation. Leave a field empty when it is not yet known.</small></div><Network size={22} /></header>
+        <header><div><p>Network boundaries</p><h2>Connected IP ranges</h2><small>Enter one or more CIDR ranges separated by commas. Leave a field empty when it is not yet known.</small></div><Network size={22} /></header>
         <div className="network-range-grid">
-          <label>VPN network range<input value={networks.vpn} onChange={(event) => setNetworks({ ...networks, vpn: event.target.value })} placeholder="10.40.0.0/16" /></label>
-          <label>Load balancer IP range<input value={networks.loadBalancer} onChange={(event) => setNetworks({ ...networks, loadBalancer: event.target.value })} placeholder="10.50.20.0/24" /></label>
-          <label>Office network IP range<input value={networks.office} onChange={(event) => setNetworks({ ...networks, office: event.target.value })} placeholder="192.168.0.0/16" /></label>
+          <label>VPN network ranges<input value={networks.vpn} onChange={(event) => setNetworks({ ...networks, vpn: event.target.value })} placeholder="10.40.0.0/16, 10.41.0.0/16" /></label>
+          <label>Load balancer IP ranges<input value={networks.loadBalancer} onChange={(event) => setNetworks({ ...networks, loadBalancer: event.target.value })} placeholder="10.50.20.0/24, 10.50.21.0/24" /></label>
+          <label>Office network IP ranges<input value={networks.office} onChange={(event) => setNetworks({ ...networks, office: event.target.value })} placeholder="192.168.0.0/16, 172.20.0.0/16" /></label>
         </div>
         <div className="load-balancer-inputs">
           <header><div><strong>Individual load-balancer IPs</strong><small>Add one or more IPv4 or IPv6 addresses.</small></div><button type="button" className="secondary-command" onClick={() => setLoadBalancerIps((current) => [...current, ''])}><Plus size={14} />Add IP</button></header>

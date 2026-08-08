@@ -346,7 +346,7 @@ export function buildMigrationWavePlan(
     crossDependenciesByEnvironment,
     crossSprintDependencies,
     dependencyWarnings,
-    dependencyPairs: relevantDependencies.map(({ sourceServer, destinationServer, connectionCount }) => ({
+    dependencyPairs: dependencies.map(({ sourceServer, destinationServer, connectionCount }) => ({
       sourceServer,
       destinationServer,
       connectionCount: Number(connectionCount),

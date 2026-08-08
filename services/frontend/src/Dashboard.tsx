@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarRange, CheckCircle2, ClipboardList, Database, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Search, Server, Settings2, TableProperties, Trash2, Upload, UserRoundCog, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarClock, CalendarRange, CheckCircle2, ClipboardList, Database, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Search, Server, Settings2, TableProperties, Trash2, Upload, UserRoundCog, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
@@ -7,6 +7,7 @@ import MigrationWavePlanning from './MigrationWavePlanning'
 import CoreInfrastructureInput from './CoreInfrastructureInput'
 import AdminPage from './AdminPage'
 import TaskWorkspace from './TaskWorkspace'
+import SprintSchedule from './SprintSchedule'
 import type { AuthSettings, AuthUser } from './Authentication'
 import { apiFetch } from './auth-client'
 import './Dashboard.css'
@@ -29,7 +30,7 @@ type Dependency = {
 }
 type Page = { items: Dependency[]; total: number; page: number; pageSize: number }
 type Filters = { server: string; ip: string; port: string }
-type ImportRun = { id: number; fileName: string; importType: 'Dependency' | 'ServerAssessment'; sheetName: string | null; status: string; rowsImported: number; startedAt: string; completedAt: string | null; errorMessage: string | null }
+type ImportRun = { id: number; fileName: string; importType: 'Dependency' | 'ServerAssessment' | 'ApplicationMapping'; sheetName: string | null; status: string; rowsImported: number; startedAt: string; completedAt: string | null; errorMessage: string | null }
 type UploadResult = {
   fileName: string
   status: 'Completed' | 'Failed'
@@ -41,17 +42,43 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'core-infrastructure' | 'wave-planning' | 'tasks' | 'imports' | 'cleanup' | 'admin'
-type ImportKind = 'dependencies' | 'server-assessment'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'core-infrastructure' | 'wave-planning' | 'sprint-schedule' | 'tasks' | 'imports' | 'cleanup' | 'admin'
+type ImportKind = 'dependencies' | 'server-assessment' | 'application-mapping'
+type PageAccess = 'all' | 'modify' | 'delete' | 'admin'
+type NavigationGroup = 'Workspace' | 'Prepare' | 'Analyze' | 'Plan & deliver' | 'Manage'
+type PageDefinition = { page: AppPage; label: string; group: NavigationGroup; icon: LucideIcon; access: PageAccess; eyebrow: string; title: string; description: string }
 
 const emptyFilters: Filters = { server: '', ip: '', port: '' }
 const formatNumber = new Intl.NumberFormat('en-US')
+const pageDefinitions: PageDefinition[] = [
+  { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor discovery coverage and continue through the migration planning workflow.' },
+  { page: 'imports', label: 'Imports', group: 'Prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload dependency exports, Server Assessment data, or application-to-server mappings.' },
+  { page: 'core-infrastructure', label: 'Core Infrastructure', group: 'Prepare', icon: Settings2, access: 'all', eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
+  { page: 'dependencies', label: 'Network Dependencies', group: 'Analyze', icon: TableProperties, access: 'all', eyebrow: 'Dependency inventory', title: 'Explore network dependencies', description: 'Filter observed traffic by server, application, and destination port.' },
+  { page: 'application-map', label: 'Application Map', group: 'Analyze', icon: Boxes, access: 'all', eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application boundaries, core infrastructure, and cross-application traffic.' },
+  { page: 'topology', label: 'Server Information', group: 'Analyze', icon: Route, access: 'all', eyebrow: 'Server information', title: 'Server configuration and dependencies', description: 'Review current infrastructure, proposed Azure sizing, and observed connections.' },
+  { page: 'wave-planning', label: 'Wave Planning', group: 'Plan & deliver', icon: CalendarRange, access: 'modify', eyebrow: 'Migration wave planning', title: 'Sequence migration waves and sprints', description: 'Group ready workloads using application affinity, environments, dependencies, and data gravity.' },
+  { page: 'sprint-schedule', label: 'Sprint Schedule', group: 'Plan & deliver', icon: CalendarClock, access: 'modify', eyebrow: 'Migration timeline', title: 'Schedule waves and sprints', description: 'Set target migration dates and review delivery across environments and waves.' },
+  { page: 'tasks', label: 'Migration Tasks', group: 'Plan & deliver', icon: ClipboardList, access: 'all', eyebrow: 'Delivery workspace', title: 'Migration tasks', description: 'Track sprint and cross-dependency ownership, status, decisions, and comment history.' },
+  { page: 'cleanup', label: 'Data Cleanup', group: 'Manage', icon: Trash2, access: 'delete', eyebrow: 'Data management', title: 'Clean up application data', description: 'Remove imported data through a controlled, observable cleanup flow.' },
+  { page: 'admin', label: 'Administration', group: 'Manage', icon: UserRoundCog, access: 'admin', eyebrow: 'Administration', title: 'Identity and access', description: 'Manage local users, application privileges, and Microsoft Entra ID authentication.' },
+]
+const navigationGroups: NavigationGroup[] = ['Workspace', 'Prepare', 'Analyze', 'Plan & deliver', 'Manage']
+
+function canAccessPage(definition: PageDefinition, auth: { settings: AuthSettings; user: AuthUser | null }): boolean {
+  if (!auth.settings.authenticationEnabled || definition.access === 'all') return true
+  if (definition.access === 'modify') return Boolean(auth.user?.canModify || auth.user?.isAdmin)
+  if (definition.access === 'delete') return Boolean(auth.user?.canDelete || auth.user?.isAdmin)
+  return Boolean(auth.user?.isAdmin)
+}
+
+function pageFromHash(hash: string): AppPage {
+  const requested = hash.slice(1)
+  return pageDefinitions.some(({ page }) => page === requested) ? requested as AppPage : 'overview'
+}
 
 export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { settings: AuthSettings; user: AuthUser | null }; onLogout: () => Promise<void>; onAuthChanged: () => Promise<void> }) {
-  const [activePage, setActivePage] = useState<AppPage>(() => {
-    const page = window.location.hash.slice(1)
-    return page === 'dependencies' || page === 'application-map' || page === 'topology' || page === 'core-infrastructure' || page === 'wave-planning' || page === 'tasks' || page === 'imports' || page === 'cleanup' || page === 'admin' ? page : 'overview'
-  })
+  const [activePage, setActivePage] = useState<AppPage>(() => pageFromHash(window.location.hash))
   const [summary, setSummary] = useState<Summary | null>(null)
   const [data, setData] = useState<Page>({ items: [], total: 0, page: 1, pageSize: 25 })
   const [filters, setFilters] = useState<Filters>(emptyFilters)
@@ -74,12 +101,19 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
 
   useEffect(() => {
     const selectPage = () => {
-      const page = window.location.hash.slice(1)
-      setActivePage(page === 'dependencies' || page === 'application-map' || page === 'topology' || page === 'core-infrastructure' || page === 'wave-planning' || page === 'tasks' || page === 'imports' || page === 'cleanup' || page === 'admin' ? page : 'overview')
+      const page = pageFromHash(window.location.hash)
+      const definition = pageDefinitions.find((item) => item.page === page)!
+      if (!canAccessPage(definition, auth)) {
+        window.location.hash = 'overview'
+        setActivePage('overview')
+        return
+      }
+      setActivePage(page)
     }
+    selectPage()
     window.addEventListener('hashchange', selectPage)
     return () => window.removeEventListener('hashchange', selectPage)
-  }, [])
+  }, [auth])
 
   useEffect(() => {
     if (databaseStatus !== 'offline') return
@@ -158,27 +192,33 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   const addFiles = async (incoming: FileList | File[]) => {
     const accepted = Array.from(incoming).filter((file) => /\.(csv|xlsx)$/i.test(file.name))
     setUploadError(accepted.length === incoming.length ? '' : 'Only CSV and XLSX files can be uploaded.')
-    const nextFiles = importKind === 'server-assessment' ? accepted.slice(0, 1) : (() => {
+    const nextFiles = importKind !== 'dependencies' ? accepted.slice(0, 1) : (() => {
       const current = files
       const additions = accepted.filter((file) => !current.some((item) => item.name === file.name && item.size === file.size))
-      return [...current, ...additions].slice(0, 20)
+      return [...current, ...additions].slice(0, 8)
     })()
     setFiles(nextFiles)
     setUploadResults([])
     setAssessmentSheets([])
     setSelectedSheet('')
-    const assessmentFile = importKind === 'server-assessment' ? nextFiles[0] : undefined
-    if (!assessmentFile || !/\.xlsx$/i.test(assessmentFile.name)) return
+    const workbookFile = importKind !== 'dependencies' ? nextFiles[0] : undefined
+    if (!workbookFile || !/\.xlsx$/i.test(workbookFile.name)) return
     setInspectingSheets(true)
     try {
       const body = new FormData()
-      body.append('file', assessmentFile)
-      const response = await apiFetch('/api/server-assessments/sheets', { method: 'POST', body })
+      body.append('file', workbookFile)
+      const sheetEndpoint = importKind === 'application-mapping'
+        ? '/api/application-server-mappings/sheets'
+        : '/api/server-assessments/sheets'
+      const response = await apiFetch(sheetEndpoint, { method: 'POST', body })
       const payload = await response.json() as { sheets?: string[]; error?: string }
       if (!response.ok) throw new Error(payload.error ?? 'Unable to list workbook sheets.')
       const sheets = payload.sheets ?? []
       setAssessmentSheets(sheets)
-      setSelectedSheet(sheets.includes('Server_to_AzureVM') ? 'Server_to_AzureVM' : sheets.includes('All_Assessed_Machines') ? 'All_Assessed_Machines' : '')
+      const preferredSheets = importKind === 'application-mapping'
+        ? ['Application Server Mapping', 'Application-server-mapping', 'Mapping']
+        : ['Server_to_AzureVM', 'All_Assessed_Machines']
+      setSelectedSheet(preferredSheets.find((sheet) => sheets.includes(sheet)) ?? '')
     } catch (reason) {
       setUploadError(reason instanceof Error ? reason.message : 'Unable to list workbook sheets.')
     } finally {
@@ -213,7 +253,11 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
       if (selectedSheet) body.append('sheetName', selectedSheet)
     }
     try {
-      const endpoint = importKind === 'dependencies' ? '/api/imports' : '/api/server-assessments/import'
+      const endpoint = importKind === 'dependencies'
+        ? '/api/imports'
+        : importKind === 'application-mapping'
+          ? '/api/application-server-mappings/import'
+          : '/api/server-assessments/import'
       const response = await apiFetch(endpoint, { method: 'POST', body })
       const payload = await response.json() as { result?: UploadResult; results?: UploadResult[]; error?: string }
       if (!response.ok && response.status !== 207) throw new Error(payload.error ?? 'Upload failed.')
@@ -231,42 +275,41 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   }
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize))
   const completedImports = imports.filter((item) => item.status === 'Completed').length
-  const assessmentExcelSelected = importKind === 'server-assessment' && /\.xlsx$/i.test(files[0]?.name ?? '')
-  const canUpload = files.length > 0 && !uploading && !inspectingSheets && (!assessmentExcelSelected || Boolean(selectedSheet))
-  const pageTitles: Record<AppPage, { eyebrow: string; title: string; description: string }> = {
-    overview: { eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor imported discovery data and move into the next analysis task.' },
-    dependencies: { eyebrow: 'Dependency inventory', title: 'Explore network dependencies', description: 'Filter observed traffic by server, application, and destination port.' },
-    'application-map': { eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application servers, core infrastructure, and cross-application traffic without exposing peer server names.' },
-    topology: { eyebrow: 'Server Info', title: 'Server configuration and dependencies', description: 'Review current infrastructure, proposed Azure sizing, and observed network connections.' },
-    'core-infrastructure': { eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
-    'wave-planning': { eyebrow: 'Migration Wave Planning', title: 'Sequence migration waves and sprints', description: 'Group ready workloads using application affinity, environments, dependencies, shared infrastructure, and data gravity.' },
-    tasks: { eyebrow: 'Delivery workspace', title: 'Wave Planning Tasks', description: 'Track assigned and unassigned sprint and cross-dependency work, status, decisions, and comment history.' },
-    imports: { eyebrow: 'Data ingestion', title: 'Import Azure Migrate data', description: 'Upload dependency exports or Server Assessment data from CSV and Excel files.' },
-    cleanup: { eyebrow: 'Data management', title: 'Clean up application data', description: 'Remove imported data through a controlled, observable cleanup flow.' },
-    admin: { eyebrow: 'Administration', title: 'Identity and access', description: 'Manage local users, application privileges, and Microsoft Entra ID authentication.' },
-  }
-  const pageTitle = pageTitles[activePage]
+  const workbookSelected = importKind !== 'dependencies' && /\.xlsx$/i.test(files[0]?.name ?? '')
+  const canUpload = files.length > 0 && !uploading && !inspectingSheets && (!workbookSelected || Boolean(selectedSheet))
+  const pageTitle = pageDefinitions.find(({ page }) => page === activePage)!
+  const canPlanWaves = !auth.settings.authenticationEnabled || Boolean(auth.user?.canModify || auth.user?.isAdmin)
+  const canManageTasks = !auth.settings.authenticationEnabled || Boolean(auth.user?.canManageTasks || auth.user?.canModify || auth.user?.isAdmin)
+  const availablePages = pageDefinitions.filter((definition) => canAccessPage(definition, auth))
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark"><Network size={21} /></span><span><strong>Cloud Accelerate Factory</strong><small>Migration Planner</small></span></div>
-        <nav aria-label="Primary navigation">
-          <a href="#overview" className={activePage === 'overview' ? 'active' : ''}><LayoutDashboard size={18} /><span>Overview</span></a>
-          {(!auth.settings.authenticationEnabled || auth.user?.canModify || auth.user?.isAdmin) && <a href="#imports" className={activePage === 'imports' ? 'active' : ''}><Upload size={18} /><span>Imports</span></a>}
-          <a href="#core-infrastructure" className={activePage === 'core-infrastructure' ? 'active' : ''}><Settings2 size={18} /><span>Core Infrastructure</span></a>
-          <a href="#dependencies" className={activePage === 'dependencies' ? 'active' : ''}><TableProperties size={18} /><span>Network Dependency</span></a>
-          <a href="#application-map" className={activePage === 'application-map' ? 'active' : ''}><Boxes size={18} /><span>Application Map</span></a>
-          <a href="#topology" className={activePage === 'topology' ? 'active' : ''}><Route size={18} /><span>Server Info</span></a>
-          <a href="#wave-planning" className={activePage === 'wave-planning' ? 'active' : ''}><CalendarRange size={18} /><span>Wave Planning</span></a>
-          <a href="#tasks" className={activePage === 'tasks' ? 'active' : ''}><ClipboardList size={18} /><span>Tasks</span></a>
-          {(!auth.settings.authenticationEnabled || auth.user?.canDelete || auth.user?.isAdmin) && <a href="#cleanup" className={activePage === 'cleanup' ? 'active' : ''}><Trash2 size={18} /><span>Cleanup</span></a>}
-          {(!auth.settings.authenticationEnabled || auth.user?.isAdmin) && <a href="#admin" className={activePage === 'admin' ? 'active' : ''}><UserRoundCog size={18} /><span>Administration</span></a>}
+        <nav className="desktop-navigation" aria-label="Primary navigation">
+          {navigationGroups.map((group) => {
+            const pages = availablePages.filter((definition) => definition.group === group)
+            if (!pages.length) return null
+            return <div className="navigation-group" key={group}>
+              {group !== 'Workspace' && <span className="navigation-label">{group}</span>}
+              {pages.map(({ page, label, icon: Icon }) => <a href={`#${page}`} className={activePage === page ? 'active' : ''} aria-current={activePage === page ? 'page' : undefined} key={page}><Icon size={18} /><span>{label}</span></a>)}
+            </div>
+          })}
         </nav>
+        <div className="mobile-navigation">
+          <label htmlFor="workspace-navigation">Workspace</label>
+          <select id="workspace-navigation" value={activePage} onChange={(event) => { window.location.hash = event.target.value }}>
+            {navigationGroups.map((group) => {
+              const pages = availablePages.filter((definition) => definition.group === group)
+              return pages.length ? <optgroup label={group} key={group}>{pages.map(({ page, label }) => <option value={page} key={page}>{label}</option>)}</optgroup> : null
+            })}
+          </select>
+        </div>
         <div className="sidebar-footer">{auth.user && <div className="signed-in-user"><span><strong>{auth.user.displayName}</strong><small>{auth.user.isAdmin ? 'Administrator' : auth.user.provider}</small></span><button type="button" title="Sign out" onClick={() => void onLogout()}><LogOut size={16} /></button></div>}<div className={`connection-state ${databaseStatus}`}><span><i /> Database {databaseStatus === 'online' ? 'online' : databaseStatus === 'offline' ? 'unavailable' : 'checking'}</span><small>MySQL</small></div></div>
       </aside>
 
-      <main className="main-content">
+      <main className="main-content" id="main-content" tabIndex={-1}>
         <header className="page-header"><div><p className="eyebrow">{pageTitle.eyebrow}</p><h1>{pageTitle.title}</h1><p className="page-description">{pageTitle.description}</p></div><span className={`status ${databaseStatus}`}><i /> {databaseStatus === 'online' ? 'Live' : databaseStatus === 'offline' ? 'Unavailable' : 'Checking'}</span></header>
 
         {activePage === 'overview' && <div className="page overview-page">
@@ -278,12 +321,21 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             <article><span className="metric-icon"><Server /></span><div><span>Destination servers</span><strong>{summary ? formatNumber.format(summary.destinationServers) : '-'}</strong><small>Unique endpoints</small></div></article>
           </section>
           <section className="overview-grid">
-            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Continue working</p><h2>Choose your next task</h2></div></div><div className="action-list">
-              {(!auth.settings.authenticationEnabled || auth.user?.canModify || auth.user?.isAdmin) && <a href="#imports"><span className="action-icon"><Upload size={19} /></span><span><strong>Import discovery data</strong><small>Add Azure Migrate CSV or Excel exports to this workspace.</small></span><ArrowUpRight size={18} /></a>}
-              <a href="#dependencies"><span className="action-icon"><Search size={19} /></span><span><strong>Explore dependencies</strong><small>Search server-to-server communication and application traffic.</small></span><ArrowUpRight size={18} /></a>
-              <a href="#topology"><span className="action-icon"><Route size={19} /></span><span><strong>Map a server</strong><small>Visualize listening services, ports, and connected servers.</small></span><ArrowUpRight size={18} /></a>
-              <a href="#wave-planning"><span className="action-icon"><CalendarRange size={19} /></span><span><strong>Plan migration waves</strong><small>Sequence ready application groups into bounded migration sprints.</small></span><ArrowUpRight size={18} /></a>
-              <a href="#tasks"><span className="action-icon"><ClipboardList size={19} /></span><span><strong>Review wave planning tasks</strong><small>Assign and track sprint and cross-dependency ownership, status, and comments.</small></span><ArrowUpRight size={18} /></a>
+            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Guided workflow</p><h2>Continue migration planning</h2></div></div><div className="workflow-list">
+              <section><span className="workflow-step">1</span><div><p>Prepare</p><div className="action-list">
+                {canPlanWaves && <a href="#imports"><span className="action-icon"><Upload size={19} /></span><span><strong>Import discovery data</strong><small>Add assessment, mapping, and dependency exports.</small></span><ArrowUpRight size={18} /></a>}
+                <a href="#core-infrastructure"><span className="action-icon"><Settings2 size={19} /></span><span><strong>Define core infrastructure</strong><small>Identify shared services and network boundaries.</small></span><ArrowUpRight size={18} /></a>
+              </div></div></section>
+              <section><span className="workflow-step">2</span><div><p>Analyze</p><div className="action-list">
+                <a href="#dependencies"><span className="action-icon"><Search size={19} /></span><span><strong>Explore dependencies</strong><small>Search observed communication and application traffic.</small></span><ArrowUpRight size={18} /></a>
+                <a href="#application-map"><span className="action-icon"><Boxes size={19} /></span><span><strong>Review application boundaries</strong><small>Understand environment and shared-service relationships.</small></span><ArrowUpRight size={18} /></a>
+                <a href="#topology"><span className="action-icon"><Route size={19} /></span><span><strong>Inspect server information</strong><small>Review sizing, services, ports, and connected systems.</small></span><ArrowUpRight size={18} /></a>
+              </div></div></section>
+              <section><span className="workflow-step">3</span><div><p>Plan & deliver</p><div className="action-list">
+                {canPlanWaves && <a href="#wave-planning"><span className="action-icon"><CalendarRange size={19} /></span><span><strong>Plan migration waves</strong><small>Sequence application groups into bounded sprints.</small></span><ArrowUpRight size={18} /></a>}
+                {canPlanWaves && <a href="#sprint-schedule"><span className="action-icon"><CalendarClock size={19} /></span><span><strong>Schedule migration sprints</strong><small>Set target dates and review the delivery timeline.</small></span><ArrowUpRight size={18} /></a>}
+                <a href="#tasks"><span className="action-icon"><ClipboardList size={19} /></span><span><strong>Manage migration tasks</strong><small>Assign ownership and track decisions and status.</small></span><ArrowUpRight size={18} /></a>
+              </div></div></section>
             </div></div>
             <div className="activity-panel"><div className="section-heading"><div><p className="eyebrow">Import activity</p><h2>Latest files</h2></div><a href="#imports">View all</a></div><ImportHistory items={imports.slice(0, 5)} /></div>
           </section>
@@ -292,8 +344,9 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'topology' && <ServerTopology refreshKey={refreshKey} />}
         {activePage === 'application-map' && <ApplicationMap refreshKey={refreshKey} />}
         {activePage === 'core-infrastructure' && <CoreInfrastructureInput />}
-        {activePage === 'wave-planning' && <MigrationWavePlanning />}
-        {activePage === 'tasks' && <TaskWorkspace canModify={!auth.settings.authenticationEnabled || Boolean(auth.user?.canModify || auth.user?.isAdmin)} />}
+        {activePage === 'wave-planning' && canPlanWaves && <MigrationWavePlanning />}
+        {activePage === 'sprint-schedule' && canPlanWaves && <SprintSchedule />}
+        {activePage === 'tasks' && <TaskWorkspace canModify={canManageTasks} canReassign={canPlanWaves} currentUserId={auth.user?.id} />}
         {activePage === 'admin' && <AdminPage onAuthChanged={onAuthChanged} />}
 
         {activePage === 'cleanup' && <DataCleanup onComplete={() => {
@@ -341,14 +394,15 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         </section></div>}
 
         {activePage === 'imports' && <div className="page imports-page"><section className="import-layout" aria-labelledby="import-heading">
-          <div className="import-workspace"><div className="section-heading"><div><p className="eyebrow">New import</p><h2 id="import-heading">Select Azure Migrate data</h2></div><span className="file-limit">CSV · XLSX</span></div>
+          <div className="import-workspace"><div className="section-heading"><div><p className="eyebrow">New import</p><h2 id="import-heading">Select source data</h2></div><span className="file-limit">CSV · XLSX</span></div>
             <div className="import-type" role="group" aria-label="Import data type">
               <button type="button" className={importKind === 'dependencies' ? 'active' : ''} onClick={() => changeImportKind('dependencies')}><Network size={17} /><span><strong>Dependency data</strong><small>Network dependency exports</small></span></button>
               <button type="button" className={importKind === 'server-assessment' ? 'active' : ''} onClick={() => changeImportKind('server-assessment')}><Server size={17} /><span><strong>Server Assessment</strong><small>Azure VM recommendations</small></span></button>
+              <button type="button" className={importKind === 'application-mapping' ? 'active' : ''} onClick={() => changeImportKind('application-mapping')}><Boxes size={17} /><span><strong>Application Mapping</strong><small>Applications, servers, IPs, descriptions</small></span></button>
             </div>
-            <label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={dropFiles}><span className="upload-symbol"><Upload size={24} /></span><strong>Drop {importKind === 'dependencies' ? 'files' : 'a file'} to start an import</strong><span>{importKind === 'dependencies' ? 'Choose up to 20 CSV or Excel files, 1 GB each' : 'Choose one Server Assessment CSV or Excel file'}</span><span className="choose-button">Choose {importKind === 'dependencies' ? 'files' : 'file'}</span><input type="file" accept=".csv,.xlsx" multiple={importKind === 'dependencies'} onChange={(event) => event.target.files && void addFiles(event.target.files)} /></label>
+            <label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={dropFiles}><span className="upload-symbol"><Upload size={24} /></span><strong>Drop {importKind === 'dependencies' ? 'files' : 'a file'} to start an import</strong><span>{importKind === 'dependencies' ? 'Choose up to 8 CSV or Excel files, 1 GB each' : importKind === 'application-mapping' ? 'Choose one mapping file with application and server columns' : 'Choose one Server Assessment CSV or Excel file'}</span><span className="choose-button">Choose {importKind === 'dependencies' ? 'files' : 'file'}</span><input type="file" accept=".csv,.xlsx" multiple={importKind === 'dependencies'} onChange={(event) => event.target.files && void addFiles(event.target.files)} /></label>
             {files.length > 0 && <div className="file-queue">{files.map((file) => <div key={`${file.name}-${file.size}`}><FileSpreadsheet size={18} /><span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(1)} MB</small></span><button type="button" title={`Remove ${file.name}`} onClick={() => setFiles((current) => current.filter((item) => item !== file))}><X size={16} /></button></div>)}</div>}
-            {assessmentExcelSelected && <label className="sheet-picker">Worksheet<select value={selectedSheet} disabled={inspectingSheets} onChange={(event) => setSelectedSheet(event.target.value)}><option value="">{inspectingSheets ? 'Reading workbook...' : 'Select a worksheet'}</option>{assessmentSheets.map((sheet) => <option key={sheet} value={sheet}>{sheet}</option>)}</select><small>{assessmentSheets.length ? `${assessmentSheets.length} sheets found. Select the sheet containing Server_to_AzureVM data.` : 'The workbook will be inspected before import.'}</small></label>}
+            {workbookSelected && <label className="sheet-picker">Worksheet<select value={selectedSheet} disabled={inspectingSheets} onChange={(event) => setSelectedSheet(event.target.value)}><option value="">{inspectingSheets ? 'Reading workbook...' : 'Select a worksheet'}</option>{assessmentSheets.map((sheet) => <option key={sheet} value={sheet}>{sheet}</option>)}</select><small>{assessmentSheets.length ? `${assessmentSheets.length} sheets found. Select the sheet containing ${importKind === 'application-mapping' ? 'application mapping' : 'Server_to_AzureVM'} data.` : 'The workbook will be inspected before import.'}</small></label>}
             {uploadError && <div className="upload-message failed"><AlertCircle size={16} />{uploadError}</div>}
             {uploading && <ImportProgress fileNames={activeUploadFiles} items={imports} afterId={uploadBaselineId} />}
             {uploadResults.length > 0 && <UploadResults items={uploadResults} />}
@@ -362,7 +416,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
 }
 
 function ImportHistory({ items }: { items: ImportRun[] }) {
-  return <div className="history-list">{items.length === 0 ? <div className="history-empty"><FileSpreadsheet size={22} /><strong>No imports yet</strong><span>Uploaded files will appear here.</span></div> : items.map((item) => <div key={item.id}><span className={`run-status ${item.status.toLowerCase()}`}>{item.status === 'Completed' ? <CheckCircle2 size={16} /> : item.status === 'Failed' ? <AlertCircle size={16} /> : <RefreshCw size={16} />}</span><span><strong>{item.fileName}</strong><small>{item.importType === 'ServerAssessment' ? `Server Assessment${item.sheetName ? ` · ${item.sheetName}` : ''} · ` : ''}{formatNumber.format(item.rowsImported)} rows · {new Date(item.startedAt).toLocaleString()}</small></span><em>{item.status}</em></div>)}</div>
+  return <div className="history-list">{items.length === 0 ? <div className="history-empty"><FileSpreadsheet size={22} /><strong>No imports yet</strong><span>Uploaded files will appear here.</span></div> : items.map((item) => <div key={item.id}><span className={`run-status ${item.status.toLowerCase()}`}>{item.status === 'Completed' ? <CheckCircle2 size={16} /> : item.status === 'Failed' ? <AlertCircle size={16} /> : <RefreshCw size={16} />}</span><span><strong>{item.fileName}</strong><small>{item.importType === 'ServerAssessment' ? 'Server Assessment' : item.importType === 'ApplicationMapping' ? 'Application Mapping' : ''}{item.importType !== 'Dependency' ? `${item.sheetName ? ` · ${item.sheetName}` : ''} · ` : ''}{formatNumber.format(item.rowsImported)} rows · {new Date(item.startedAt).toLocaleString()}</small></span><em>{item.status}</em></div>)}</div>
 }
 
 function ImportProgress({ fileNames, items, afterId }: { fileNames: string[]; items: ImportRun[]; afterId: number }) {

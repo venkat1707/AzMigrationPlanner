@@ -14,6 +14,7 @@ export type AuthUser = {
   isAdmin: boolean
   canRead: boolean
   canModify: boolean
+  canManageTasks: boolean
   canDelete: boolean
 }
 

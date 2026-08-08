@@ -1,13 +1,19 @@
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
+import { ManagedIdentityCredential } from '@azure/identity'
 import { ConfidentialClientApplication, CryptoProvider } from '@azure/msal-node'
 import type { Express, NextFunction, Request, Response } from 'express'
 import { database } from './db.js'
 
 const scrypt = promisify(scryptCallback)
 const sessionCookie = 'migration_planner_session'
+const entraFlowCookie = 'migration_planner_entra_flow'
 const sessionLifetimeMs = 8 * 60 * 60 * 1000
+const loginWindowMs = 15 * 60 * 1000
+const maxLoginFailures = 5
 const cryptoProvider = new CryptoProvider()
+const managedIdentityTokenExchangeScope = 'api://AzureADTokenExchange/.default'
+const loginFailures = new Map<string, { count: number; resetAt: number }>()
 
 type AuthSettings = {
   authenticationEnabled: boolean
@@ -31,6 +37,7 @@ type User = {
   isAdmin: boolean
   canRead: boolean
   canModify: boolean
+  canManageTasks: boolean
   canDelete: boolean
 }
 
@@ -70,6 +77,7 @@ function mapUser(row: Record<string, unknown>): User {
     isAdmin: bool(row.is_admin),
     canRead: bool(row.can_read),
     canModify: bool(row.can_modify),
+    canManageTasks: bool(row.can_manage_tasks),
     canDelete: bool(row.can_delete),
   }
 }
@@ -89,7 +97,35 @@ function hashToken(value: string): string {
 }
 
 function secureRequest(request: Request): boolean {
-  return request.secure || request.headers['x-forwarded-proto'] === 'https'
+  return process.env.NODE_ENV === 'production' || request.secure || request.headers['x-forwarded-proto'] === 'https'
+}
+
+function isLoopbackRequest(request: Request): boolean {
+  const address = request.socket.remoteAddress ?? ''
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
+function loginFailureKeys(request: Request, username: string): string[] {
+  return [`ip:${request.socket.remoteAddress ?? 'unknown'}`, `user:${username}`]
+}
+
+function activeLoginFailure(key: string): { count: number; resetAt: number } | undefined {
+  const failure = loginFailures.get(key)
+  if (failure && failure.resetAt > Date.now()) return failure
+  loginFailures.delete(key)
+  return undefined
+}
+
+function retryAfterLoginFailure(keys: string[]): number {
+  const blocked = keys.map(activeLoginFailure).filter((failure): failure is { count: number; resetAt: number } => Boolean(failure && failure.count >= maxLoginFailures))
+  return blocked.length ? Math.max(1, Math.ceil((Math.max(...blocked.map(({ resetAt }) => resetAt)) - Date.now()) / 1000)) : 0
+}
+
+function recordLoginFailure(keys: string[]): void {
+  for (const key of keys) {
+    const current = activeLoginFailure(key)
+    loginFailures.set(key, { count: (current?.count ?? 0) + 1, resetAt: current?.resetAt ?? Date.now() + loginWindowMs })
+  }
 }
 
 function setSessionCookie(response: Response, request: Request, token: string, expiresAt: Date): void {
@@ -156,10 +192,12 @@ async function resolveContext(request: Request): Promise<AuthContext> {
 }
 
 function publicSettings(settings: AuthSettings) {
+  const credentialType = entraCredentialType()
   return {
     ...settings,
-    entraConfigured: Boolean(settings.entraTenantId && settings.entraClientId && process.env.ENTRA_CLIENT_SECRET),
+    entraConfigured: Boolean(settings.entraTenantId && settings.entraClientId && credentialType),
     entraClientSecretConfigured: Boolean(process.env.ENTRA_CLIENT_SECRET),
+    entraCredentialType: credentialType,
   }
 }
 
@@ -173,7 +211,11 @@ function csrfMatches(request: Request, context: AuthContext): boolean {
 
 function requireAdmin(request: Request, response: Response): AuthContext | null {
   const context = response.locals.auth as AuthContext
-  if (!context.settings.authenticationEnabled) return context
+  if (!context.settings.authenticationEnabled) {
+    if (isLoopbackRequest(request)) return context
+    response.status(403).json({ error: 'Administration is available only from the local host until authentication is enabled.' })
+    return null
+  }
   if (context.user?.isAdmin) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !csrfMatches(request, context)) {
       response.status(403).json({ error: 'The security token is invalid. Refresh the page and try again.' })
@@ -192,11 +234,13 @@ function normalizeUsername(value: unknown): string {
 function requestedPrivileges(body: Record<string, unknown>) {
   const isAdmin = bool(body.isAdmin)
   const canModify = isAdmin || bool(body.canModify)
+  const canManageTasks = isAdmin || bool(body.canManageTasks)
   const canDelete = isAdmin || bool(body.canDelete)
   return {
     is_admin: isAdmin,
-    can_read: isAdmin || canModify || canDelete || bool(body.canRead),
+    can_read: isAdmin || canModify || canManageTasks || canDelete || bool(body.canRead),
     can_modify: canModify,
+    can_manage_tasks: canManageTasks,
     can_delete: canDelete,
   }
 }
@@ -208,15 +252,33 @@ async function enabledAdminCount(excludeId?: number): Promise<number> {
   return Number(result?.count ?? 0)
 }
 
+function useManagedIdentity(): boolean {
+  return process.env.ENTRA_USE_MANAGED_IDENTITY === 'true'
+}
+
+function entraCredentialType(): 'managedIdentity' | 'clientSecret' | null {
+  if (useManagedIdentity()) return process.env.AZURE_CLIENT_ID ? 'managedIdentity' : null
+  return process.env.ENTRA_CLIENT_SECRET ? 'clientSecret' : null
+}
+
 function getMsalClient(settings: AuthSettings): ConfidentialClientApplication {
-  if (!settings.entraTenantId || !settings.entraClientId || !process.env.ENTRA_CLIENT_SECRET) {
+  const credentialType = entraCredentialType()
+  if (!settings.entraTenantId || !settings.entraClientId || !credentialType) {
     throw new Error('Microsoft Entra authentication is not fully configured.')
   }
+  const clientAssertion = credentialType === 'managedIdentity'
+    ? async () => {
+        const credential = new ManagedIdentityCredential({ clientId: process.env.AZURE_CLIENT_ID })
+        const accessToken = await credential.getToken(managedIdentityTokenExchangeScope)
+        if (!accessToken?.token) throw new Error('The managed identity did not return a token for Microsoft Entra token exchange.')
+        return accessToken.token
+      }
+    : undefined
   return new ConfidentialClientApplication({
     auth: {
       clientId: settings.entraClientId,
       authority: `https://login.microsoftonline.com/${settings.entraTenantId}`,
-      clientSecret: process.env.ENTRA_CLIENT_SECRET,
+      ...(clientAssertion ? { clientAssertion } : { clientSecret: process.env.ENTRA_CLIENT_SECRET }),
     },
   })
 }
@@ -250,11 +312,20 @@ export function registerAuthentication(app: Express): void {
     }
     const username = normalizeUsername(request.body.username)
     const password = String(request.body.password ?? '')
+    const failureKeys = loginFailureKeys(request, username)
+    const retryAfter = retryAfterLoginFailure(failureKeys)
+    if (retryAfter) {
+      response.setHeader('Retry-After', String(retryAfter))
+      response.status(429).json({ error: 'Too many sign-in attempts. Try again later.' })
+      return
+    }
     const row = await database('app_users').where({ username, provider: 'Local', enabled: true }).first()
     if (!row?.password_hash || !(await verifyPassword(password, String(row.password_hash)))) {
+      recordLoginFailure(failureKeys)
       response.status(401).json({ error: 'The username or password is incorrect.' })
       return
     }
+    failureKeys.forEach((key) => loginFailures.delete(key))
     const csrfToken = await createSession(Number(row.id), request, response)
     await database('app_users').where('id', row.id).update({ last_login_at: database.fn.now() })
     response.json({ user: mapUser(row), csrfToken })
@@ -283,6 +354,7 @@ export function registerAuthentication(app: Express): void {
     const nonce = randomBytes(32).toString('base64url')
     const { verifier, challenge } = await cryptoProvider.generatePkceCodes()
     await database('app_auth_flows').insert({ state, nonce, code_verifier: verifier, expires_at: new Date(Date.now() + 10 * 60 * 1000) })
+    response.cookie(entraFlowCookie, state, { httpOnly: true, secure: secureRequest(request), sameSite: 'lax', path: '/api/auth/entra/callback', maxAge: 10 * 60 * 1000 })
     const url = await getMsalClient(settings).getAuthCodeUrl({
       scopes: ['openid', 'profile', 'email'],
       redirectUri,
@@ -298,6 +370,12 @@ export function registerAuthentication(app: Express): void {
     const settings = await loadSettings()
     const state = String(request.query.state ?? '')
     const code = String(request.query.code ?? '')
+    const browserState = parseCookies(request)[entraFlowCookie]
+    response.clearCookie(entraFlowCookie, { httpOnly: true, secure: secureRequest(request), sameSite: 'lax', path: '/api/auth/entra/callback' })
+    if (!state || !browserState || state !== browserState) {
+      response.redirect('/#login?error=entra_flow')
+      return
+    }
     const flow = await database('app_auth_flows').where('state', state).where('expires_at', '>', database.fn.now()).first()
     if (!flow || !code || !settings.authenticationEnabled || !settings.entraEnabled) {
       response.redirect('/#login?error=entra_flow')
@@ -372,8 +450,11 @@ export function registerAuthentication(app: Express): void {
       entra_default_delete: bool(request.body.entraDefaultDelete),
       updated_at: database.fn.now(),
     }
-    if (entraEnabled && (!values.entra_tenant_id || !values.entra_client_id || !process.env.ENTRA_CLIENT_SECRET)) {
-      response.status(400).json({ error: 'Tenant ID, client ID, and the server ENTRA_CLIENT_SECRET environment variable are required for Entra authentication.' })
+    if (entraEnabled && (!values.entra_tenant_id || !values.entra_client_id || !entraCredentialType())) {
+      const credentialRequirement = useManagedIdentity()
+        ? 'AZURE_CLIENT_ID is required when ENTRA_USE_MANAGED_IDENTITY=true.'
+        : 'ENTRA_CLIENT_SECRET is required when managed identity is disabled.'
+      response.status(400).json({ error: `Tenant ID and client ID are required. ${credentialRequirement}` })
       return
     }
     await database('app_auth_settings').where('id', 1).update(values)
@@ -483,12 +564,15 @@ export function registerAuthentication(app: Express): void {
       response.status(401).json({ error: 'Authentication is required.' })
       return
     }
+    const taskOperatorPath = request.method === 'PUT' && request.path === '/tasks'
+      || request.method === 'POST' && ['/tasks/sprint-action', '/tasks/dependency-action'].includes(request.path)
     const privilege = request.method === 'DELETE' || request.path === '/cleanup'
       ? 'canDelete'
       : request.method === 'GET' || request.method === 'HEAD'
         ? 'canRead'
         : 'canModify'
-    if (!context.user.isAdmin && !context.user[privilege]) {
+    const taskOperatorAllowed = taskOperatorPath && context.user.canManageTasks
+    if (!context.user.isAdmin && !context.user[privilege] && !taskOperatorAllowed) {
       response.status(403).json({ error: `${privilege === 'canRead' ? 'Read' : privilege === 'canModify' ? 'Modify' : 'Delete'} privilege is required.` })
       return
     }

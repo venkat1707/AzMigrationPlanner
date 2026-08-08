@@ -6,9 +6,12 @@ type TaskStatus = 'Assigned' | 'In Review' | 'Blocked' | 'Completed'
 type Assignment = { assigneeUserId: number; assigneeDisplayName: string; status: TaskStatus }
 type TaskItem = {
   taskKey: string
+  taskCreated: boolean
   type: 'Sprint' | 'Cross Dependency'
   environment: string
+  relatedEnvironments: string[]
   sprint: number
+  relatedSprints: number[]
   title: string
   detail: string
   assignment: Assignment | null
@@ -41,7 +44,7 @@ type DependencyReview = {
 
 const taskStatuses: TaskStatus[] = ['Assigned', 'In Review', 'Blocked', 'Completed']
 
-export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
+export default function TaskWorkspace({ canModify, canReassign, currentUserId }: { canModify: boolean; canReassign: boolean; currentUserId?: number }) {
   const [tasks, setTasks] = useState<TaskItem[]>([])
   const [users, setUsers] = useState<AssignmentUser[]>([])
   const [selected, setSelected] = useState<TaskItem | null>(null)
@@ -54,6 +57,7 @@ export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
   const [createSprintOpen, setCreateSprintOpen] = useState(false)
   const [createEnvironment, setCreateEnvironment] = useState('')
   const [selectedExcluded, setSelectedExcluded] = useState<string[]>([])
+  const [createDependencyTasks, setCreateDependencyTasks] = useState(false)
   const [loadingExcluded, setLoadingExcluded] = useState(false)
   const [dependencyReview, setDependencyReview] = useState<DependencyReview | null>(null)
   const [dependencyAction, setDependencyAction] = useState<'none' | 'merge' | 'move' | 'exclude'>('none')
@@ -62,8 +66,8 @@ export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [assignmentFilter, setAssignmentFilter] = useState<'All' | 'Assigned' | 'Unassigned'>('All')
-  const [userFilter, setUserFilter] = useState('All')
+  const [assignmentFilter, setAssignmentFilter] = useState<'All' | 'Assigned' | 'Unassigned' | 'No Task'>('All')
+  const [userFilter, setUserFilter] = useState(canModify && !canReassign && currentUserId ? String(currentUserId) : 'All')
   const [statusFilter, setStatusFilter] = useState<'All' | TaskStatus>('All')
   const [environmentFilter, setEnvironmentFilter] = useState('All')
   const [sprintFilter, setSprintFilter] = useState('All')
@@ -218,6 +222,7 @@ export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
     setCreateSprintOpen(true)
     setLoadingExcluded(true)
     setSelectedExcluded([])
+    setCreateDependencyTasks(false)
     setError('')
     try {
       const response = await apiFetch('/api/tasks/excluded-servers')
@@ -241,7 +246,10 @@ export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
       const response = await apiFetch('/api/tasks/sprints', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serverNames: selectedExcluded }),
+        body: JSON.stringify({
+          serverNames: selectedExcluded,
+          createDependencyTasks,
+        }),
       })
       const payload = await response.json() as { tasks?: TaskItem[]; excludedServers?: ExcludedServer[]; error?: string }
       if (!response.ok || !payload.tasks) throw new Error(payload.error ?? 'Unable to create the sprint.')
@@ -256,28 +264,31 @@ export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
     }
   }
 
-  const summary = {
-    total: tasks.length,
-    unassigned: tasks.filter(({ assignment }) => !assignment).length,
-    assigned: tasks.filter(({ assignment }) => assignment?.status === 'Assigned').length,
-    inReview: tasks.filter(({ assignment }) => assignment?.status === 'In Review').length,
-    blocked: tasks.filter(({ assignment }) => assignment?.status === 'Blocked').length,
-    completed: tasks.filter(({ assignment }) => assignment?.status === 'Completed').length,
-  }
-  const environmentOptions = [...new Set(tasks.map(({ environment }) => environment))]
+  const totalCreatedTasks = tasks.filter(({ taskCreated }) => taskCreated).length
+  const environmentOptions = [...new Set(tasks.flatMap((task) => task.relatedEnvironments ?? [task.environment]))]
     .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
   const sprintOptions = environmentFilter === 'All' ? [] : [...new Set(tasks
-    .filter(({ environment }) => environment === environmentFilter)
-    .map(({ sprint }) => sprint))].sort((left, right) => left - right)
+    .filter((task) => (task.relatedEnvironments ?? [task.environment]).includes(environmentFilter))
+    .flatMap((task) => task.relatedSprints ?? [task.sprint]))].sort((left, right) => left - right)
   const filteredTasks = tasks.filter((task) => {
-    if (assignmentFilter === 'Assigned' && !task.assignment) return false
-    if (assignmentFilter === 'Unassigned' && task.assignment) return false
+    if (assignmentFilter === 'Assigned' && (!task.taskCreated || !task.assignment)) return false
+    if (assignmentFilter === 'Unassigned' && (!task.taskCreated || task.assignment)) return false
+    if (assignmentFilter === 'No Task' && task.taskCreated) return false
     if (userFilter !== 'All' && task.assignment?.assigneeUserId !== Number(userFilter)) return false
     if (statusFilter !== 'All' && task.assignment?.status !== statusFilter) return false
-    if (environmentFilter !== 'All' && task.environment !== environmentFilter) return false
-    if (sprintFilter !== 'All' && task.sprint !== Number(sprintFilter)) return false
+    if (environmentFilter !== 'All' && !(task.relatedEnvironments ?? [task.environment]).includes(environmentFilter)) return false
+    if (sprintFilter !== 'All' && !(task.relatedSprints ?? [task.sprint]).includes(Number(sprintFilter))) return false
     return true
   })
+  const filteredCreatedTasks = filteredTasks.filter(({ taskCreated }) => taskCreated)
+  const summary = {
+    total: filteredCreatedTasks.length,
+    unassigned: filteredCreatedTasks.filter(({ assignment }) => !assignment).length,
+    assigned: filteredCreatedTasks.filter(({ assignment }) => assignment?.status === 'Assigned').length,
+    inReview: filteredCreatedTasks.filter(({ assignment }) => assignment?.status === 'In Review').length,
+    blocked: filteredCreatedTasks.filter(({ assignment }) => assignment?.status === 'Blocked').length,
+    completed: filteredCreatedTasks.filter(({ assignment }) => assignment?.status === 'Completed').length,
+  }
   const environments = [...new Set(filteredTasks.map(({ environment }) => environment))]
   const excludedEnvironments = [...new Set(excludedServers.map(({ environment }) => environment))].sort()
   const visibleExcluded = excludedServers.filter(({ environment }) => environment === createEnvironment)
@@ -292,9 +303,9 @@ export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
       <article className="completed"><small>Completed</small><strong>{summary.completed.toLocaleString()}</strong></article>
     </section>
     <section className="task-workspace-toolbar">
-      <div><strong>{filteredTasks.length.toLocaleString()} of {tasks.length.toLocaleString()} task{tasks.length === 1 ? '' : 's'}</strong><small>Ordered by environment, sprint, and cross-dependency.</small></div>
+      <div><strong>{filteredTasks.length.toLocaleString()} of {tasks.length.toLocaleString()} planning item{tasks.length === 1 ? '' : 's'}</strong><small>{summary.total.toLocaleString()} of {totalCreatedTasks.toLocaleString()} explicit task{totalCreatedTasks === 1 ? '' : 's'} · ordered by environment, sprint, and cross-dependency.</small></div>
       <div className="task-workspace-actions">
-        <button type="button" disabled={!canModify || loading} onClick={() => void openCreateSprint()}><Plus size={15} />Create sprint</button>
+        {canReassign && <button type="button" disabled={loading} onClick={() => void openCreateSprint()}><Plus size={15} />Create sprint</button>}
         <button type="button" disabled={loading || filteredTasks.length === 0} onClick={() => exportTasks(filteredTasks)}><Download size={15} />Export CSV</button>
         <button type="button" disabled={loading} onClick={() => void load()}><RefreshCw className={loading ? 'spin' : ''} size={15} />Refresh</button>
       </div>
@@ -302,23 +313,23 @@ export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
     <section className="task-filters" aria-label="Task filters">
       <label>Environment<select value={environmentFilter} onChange={(event) => { setEnvironmentFilter(event.target.value); setSprintFilter('All') }}><option value="All">All environments</option>{environmentOptions.map((environment) => <option value={environment} key={environment}>{environment}</option>)}</select></label>
       <label>Sprint<select disabled={environmentFilter === 'All'} value={sprintFilter} onChange={(event) => setSprintFilter(event.target.value)}><option value="All">{environmentFilter === 'All' ? 'Select environment first' : 'All sprints'}</option>{sprintOptions.map((sprint) => <option value={sprint} key={sprint}>Sprint {sprint}</option>)}</select></label>
-      <label>Assignment<select value={assignmentFilter} onChange={(event) => setAssignmentFilter(event.target.value as typeof assignmentFilter)}><option>All</option><option>Assigned</option><option>Unassigned</option></select></label>
-      <label>Assigned user<select value={userFilter} onChange={(event) => setUserFilter(event.target.value)}><option value="All">All users</option>{users.map((user) => <option value={user.id} key={user.id}>{user.displayName}</option>)}</select></label>
+      <label>Assignment<select value={assignmentFilter} onChange={(event) => setAssignmentFilter(event.target.value as typeof assignmentFilter)}><option>All</option><option>Assigned</option><option>Unassigned</option><option>No Task</option></select></label>
+      <label>Assigned user<select disabled={!canReassign} value={userFilter} onChange={(event) => setUserFilter(event.target.value)}><option value="All">All users</option>{users.map((user) => <option value={user.id} key={user.id}>{user.displayName}</option>)}</select></label>
       <label>Task status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}><option value="All">All statuses</option>{taskStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select></label>
-      <button type="button" onClick={() => { setEnvironmentFilter('All'); setSprintFilter('All'); setAssignmentFilter('All'); setUserFilter('All'); setStatusFilter('All') }}>Clear filters</button>
+      <button type="button" onClick={() => { setEnvironmentFilter('All'); setSprintFilter('All'); setAssignmentFilter('All'); setUserFilter(canReassign || !currentUserId ? 'All' : String(currentUserId)); setStatusFilter('All') }}>Clear filters</button>
     </section>
     {error && !selected && <div className="error-message"><span>{error}</span></div>}
     {loading ? <section className="task-workspace-empty"><RefreshCw className="spin" size={24} /><strong>Loading wave planning tasks</strong></section>
-      : tasks.length === 0 ? <section className="task-workspace-empty"><ClipboardCheck size={26} /><strong>No wave planning tasks are available</strong><span>Save a migration wave plan to create the task workspace.</span></section>
-        : filteredTasks.length === 0 ? <section className="task-workspace-empty"><ClipboardCheck size={26} /><strong>No tasks match these filters</strong><span>Change or clear the filters to view more tasks.</span></section>
+      : tasks.length === 0 ? <section className="task-workspace-empty"><ClipboardCheck size={26} /><strong>No wave planning items are available</strong><span>Generate and save a migration wave plan to review its sprints and tasks.</span></section>
+        : filteredTasks.length === 0 ? <section className="task-workspace-empty"><ClipboardCheck size={26} /><strong>No planning items match these filters</strong><span>Change or clear the filters to view more sprints and tasks.</span></section>
         : <div className="task-environment-list">{environments.map((environment) => {
           const environmentTasks = filteredTasks.filter((task) => task.environment === environment)
           return <section className="task-environment" key={environment}>
-            <header><div><span>{environment.slice(0, 2).toUpperCase()}</span><div><h2>{environment}</h2><small>{environmentTasks.length} task{environmentTasks.length === 1 ? '' : 's'}</small></div></div></header>
+            <header><div><span>{environment.slice(0, 2).toUpperCase()}</span><div><h2>{environment}</h2><small>{environmentTasks.length} planning item{environmentTasks.length === 1 ? '' : 's'}</small></div></div></header>
             <div>{environmentTasks.map((task) => <button type="button" className="task-row" onClick={() => void openTask(task)} key={task.taskKey}>
               <span className={`task-kind ${task.type === 'Sprint' ? 'sprint' : 'dependency'}`}>{task.type === 'Sprint' ? <ClipboardCheck size={16} /> : <GitBranch size={16} />}</span>
-              <span className="task-row-copy"><small>{task.type} · Sprint {task.sprint}</small><strong>{task.title}</strong><span>{task.detail || 'No additional task detail'}</span></span>
-              <span className="task-row-owner"><small><UserRound size={12} />{task.assignment?.assigneeDisplayName ?? 'Unassigned'}</small><em className={`task-status ${task.assignment ? statusClass(task.assignment.status) : 'unassigned'}`}>{task.assignment?.status ?? 'Unassigned'}</em></span>
+              <span className="task-row-copy"><small>{task.type} · {task.type === 'Cross Dependency' && task.relatedSprints.length > 1 ? `Sprints ${task.relatedSprints.join(' → ')}` : `Sprint ${task.sprint}`}{task.taskCreated ? '' : ' · Planning item'}</small><strong>{task.title}</strong><span>{task.detail || 'No additional task detail'}</span></span>
+              <span className="task-row-owner"><small><UserRound size={12} />{task.taskCreated ? task.assignment?.assigneeDisplayName ?? 'Unassigned' : 'No task created'}</small><em className={`task-status ${task.taskCreated ? task.assignment ? statusClass(task.assignment.status) : 'unassigned' : 'no-task'}`}>{task.taskCreated ? task.assignment?.status ?? 'Unassigned' : 'No task'}</em></span>
               <ChevronRight size={17} />
             </button>)}</div>
           </section>
@@ -331,21 +342,24 @@ export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
           : excludedServers.length === 0 ? <div className="create-sprint-empty"><CheckCircle2 size={24} /><strong>No excluded servers</strong><span>Every server in the saved plan is already assigned to a sprint.</span></div>
             : <div className="create-sprint-body">
               <label className="create-sprint-environment">Environment<select value={createEnvironment} onChange={(event) => { setCreateEnvironment(event.target.value); setSelectedExcluded([]) }}>{excludedEnvironments.map((environment) => <option value={environment} key={environment}>{environment} ({excludedServers.filter((server) => server.environment === environment).length})</option>)}</select></label>
+              <section className="create-sprint-task-option">
+                <label className="create-sprint-task-toggle"><input type="checkbox" checked={createDependencyTasks} onChange={(event) => setCreateDependencyTasks(event.target.checked)} /><span><strong>Create cross-sprint dependency tasks</strong><small>Analyze the selected servers after placement and create tasks for their dependencies with servers in other sprints.</small></span></label>
+              </section>
               <div className="create-sprint-selection"><header><div><strong>{visibleExcluded.length} excluded server{visibleExcluded.length === 1 ? '' : 's'}</strong><small>{selectedExcluded.length} selected for the new sprint</small></div><label><input type="checkbox" checked={allVisibleSelected} onChange={(event) => setSelectedExcluded(event.target.checked ? visibleExcluded.map(({ name }) => name) : [])} />Select all</label></header>
                 <div>{visibleExcluded.map((server) => <label className={selectedExcluded.includes(server.name) ? 'selected' : ''} key={server.name}><input type="checkbox" checked={selectedExcluded.includes(server.name)} onChange={(event) => setSelectedExcluded((current) => event.target.checked ? [...current, server.name] : current.filter((name) => name !== server.name))} /><span><strong>{server.name}</strong><small>{server.application} · {server.serverType} · {server.readiness}</small><em>{server.reason}</em></span></label>)}</div>
               </div>
             </div>}
-        <footer><span>{selectedExcluded.length === 0 ? 'Select at least one server to continue.' : `${selectedExcluded.length} server${selectedExcluded.length === 1 ? '' : 's'} will be added to a new ${createEnvironment} sprint.`}</span><button type="button" disabled={saving || selectedExcluded.length === 0} onClick={() => void createSprint()}><Plus size={15} />{saving ? 'Creating sprint...' : 'Create sprint'}</button></footer>
+        <footer><span>{selectedExcluded.length === 0 ? 'Select at least one server to continue.' : `${selectedExcluded.length} server${selectedExcluded.length === 1 ? '' : 's'} will be added to a new ${createEnvironment} sprint${createDependencyTasks ? ' with cross-sprint dependency tasks' : ' without tasks'}.`}</span><button type="button" disabled={saving || selectedExcluded.length === 0} onClick={() => void createSprint()}><Plus size={15} />{saving ? 'Creating sprint...' : createDependencyTasks ? 'Create sprint and dependency tasks' : 'Create sprint'}</button></footer>
       </section>
     </div>}
     {selected && <div className="modal-backdrop task-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(null) }}>
       <section className="task-dialog" role="dialog" aria-modal="true" aria-labelledby="task-dialog-title">
-        <header><div><small>{selected.environment} · {selected.type} · Sprint {selected.sprint}</small><h2 id="task-dialog-title">{selected.title}</h2><p>{selected.detail}</p></div><button type="button" title="Close task" onClick={() => setSelected(null)}><X size={18} /></button></header>
+        <header><div><small>{selected.environment} · {selected.type} · Sprint {selected.sprint}{selected.taskCreated ? '' : ' · No task created'}</small><h2 id="task-dialog-title">{selected.title}</h2><p>{selected.detail}</p></div><button type="button" title="Close task" onClick={() => setSelected(null)}><X size={18} /></button></header>
         {error && <div className="task-dialog-error"><AlertTriangle size={15} />{error}</div>}
         <div className="task-dialog-body">
           <section className="task-editor">
             <div className="task-editor-fields">
-              <label><UserRound size={14} />Assigned to<select disabled={!canModify} value={selected.assignment?.assigneeUserId ?? ''} onChange={(event) => {
+              <label><UserRound size={14} />Assigned to<select disabled={!canReassign} value={selected.assignment?.assigneeUserId ?? ''} onChange={(event) => {
                 const user = users.find(({ id }) => id === Number(event.target.value))
                 setSelected({ ...selected, assignment: user ? { assigneeUserId: user.id, assigneeDisplayName: user.displayName, status: selected.assignment?.status ?? 'Assigned' } : null })
               }}><option value="">Unassigned</option>{users.map((user) => <option value={user.id} key={user.id}>{user.displayName} ({user.username})</option>)}</select></label>
@@ -397,7 +411,7 @@ export default function TaskWorkspace({ canModify }: { canModify: boolean }) {
                 <button type="button" disabled={saving || (dependencyAction !== 'exclude' && !dependencyTarget)} onClick={() => void applyDependencyAction(dependencyAction)}>{dependencyAction === 'merge' ? <GitMerge size={14} /> : dependencyAction === 'move' ? <MoveRight size={14} /> : <Trash2 size={14} />}{saving ? 'Applying...' : dependencyAction === 'merge' ? 'Confirm merge' : dependencyAction === 'move' ? 'Confirm move' : 'Move to excluded'}</button></div>}
             </section>}
             <label className="task-comment-field"><MessageSquare size={14} />Comment<textarea disabled={!canModify} rows={7} maxLength={4000} value={selected.comment} onChange={(event) => setSelected({ ...selected, comment: event.target.value })} placeholder="Add the latest decision, blocker, or delivery update." /><small>{selected.comment.length.toLocaleString()} / 4,000</small></label>
-            <button type="button" className="task-save-button" disabled={!canModify || !selected.assignment || saving || sprintAction !== 'none' || dependencyAction !== 'none' || Object.values(serverChanges).some((change) => change.action === 'move' && !change.targetSprint) || (selected.assignment?.status === 'Completed' && (sprintReview?.openDependencies.length ?? 0) > 0 && !overrideDependencies)} onClick={() => void saveTask()}><Save size={15} />{saving ? 'Saving task...' : selected.assignment ? 'Save task' : 'Select an assignee'}</button>
+            <button type="button" className="task-save-button" disabled={!canModify || !selected.assignment || saving || sprintAction !== 'none' || dependencyAction !== 'none' || Object.values(serverChanges).some((change) => change.action === 'move' && !change.targetSprint) || (selected.assignment?.status === 'Completed' && (sprintReview?.openDependencies.length ?? 0) > 0 && !overrideDependencies)} onClick={() => void saveTask()}><Save size={15} />{saving ? 'Saving task...' : selected.assignment ? selected.taskCreated ? 'Save task' : 'Create task' : 'Select an assignee'}</button>
             {!canModify && <p className="task-readonly-note">Modify privilege is required to update this task.</p>}
           </section>
           <aside className="task-history"><header><MessageSquare size={15} /><div><strong>Comment history</strong><small>{history.length} recorded update{history.length === 1 ? '' : 's'}</small></div></header>
@@ -421,8 +435,8 @@ function exportTasks(tasks: TaskItem[]) {
     task.type,
     task.title,
     task.detail,
-    task.assignment?.assigneeDisplayName ?? 'Unassigned',
-    task.assignment?.status ?? 'Unassigned',
+    task.taskCreated ? task.assignment?.assigneeDisplayName ?? 'Unassigned' : 'No task created',
+    task.taskCreated ? task.assignment?.status ?? 'Unassigned' : 'No task',
     task.comment,
   ])
   const content = [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n')
@@ -437,6 +451,7 @@ function exportTasks(tasks: TaskItem[]) {
 }
 
 function csvCell(value: string | number): string {
-  const text = String(value)
+  const raw = String(value)
+  const text = /^[\s\u00a0]*[=+\-@]/u.test(raw) ? `'${raw}` : raw
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
 }

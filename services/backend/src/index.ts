@@ -11,31 +11,63 @@ import multer from 'multer'
 import { port } from './config.js'
 import { database } from './db.js'
 import { importDependencyFile } from './dependency-import.js'
+import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
+import { normalizeSprintSchedule, type SprintSchedule, type SprintScheduleInput } from './sprint-schedule.js'
+import { buildSprintScheduleView, createSprintSchedulePresentation, createSprintScheduleWorkbook, type ScheduleAssessment } from './sprint-schedule-export.js'
 import { refreshDatabaseServerFlags } from './database-server-classification.js'
 import { getCleanupStatus, startDataCleanup } from './data-cleanup.js'
 import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
 import { buildApplicationMap, listApplicationEnvironments } from './application-map.js'
 import { createMigrationWavePlan, defaultMigrationWaveOptions, loadDependencyPairs, type MigrationWaveOptions } from './migration-wave-planning.js'
 import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
+import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
 import { registerAuthentication } from './auth.js'
 
 const app = express()
 app.disable('x-powered-by')
+app.use((request, response, next) => {
+  response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+  response.setHeader('Referrer-Policy', 'no-referrer')
+  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+  response.setHeader('X-Content-Type-Options', 'nosniff')
+  response.setHeader('X-Frame-Options', 'DENY')
+  if (process.env.NODE_ENV === 'production' && (request.secure || request.headers['x-forwarded-proto'] === 'https')) {
+    response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  }
+  next()
+})
 app.use(express.json({ limit: '25mb' }))
 registerAuthentication(app)
 
-const upload = multer({
+const uploadStorage = multer.diskStorage({
+  destination: tmpdir(),
+  filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase()}`),
+})
+const uploadFileFilter: multer.Options['fileFilter'] = (_request, file, callback) => {
+  const extension = extname(file.originalname).toLowerCase()
+  callback(null, extension === '.csv' || extension === '.xlsx')
+}
+const dependencyUpload = multer({
+  storage: uploadStorage,
+  fileFilter: uploadFileFilter,
+  limits: { files: 8, fileSize: 1024 * 1024 * 1024 },
+})
+const workbookUpload = multer({
   storage: multer.diskStorage({
     destination: tmpdir(),
     filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase()}`),
   }),
-  fileFilter: (_request, file, callback) => {
-    const extension = extname(file.originalname).toLowerCase()
-    callback(null, extension === '.csv' || extension === '.xlsx')
-  },
-  limits: { files: 20, fileSize: 1024 * 1024 * 1024 },
+  fileFilter: uploadFileFilter,
+  limits: { files: 1, fileSize: 100 * 1024 * 1024 },
 })
+
+function safeImportError(error: unknown, fallback: string): string {
+  console.error(error)
+  if (!(error instanceof Error)) return fallback
+  const message = error.message.trim()
+  return /^(?:Row \d+|Missing required|Duplicate|Unknown column|The (?:CSV|Excel|workbook)|Select )/i.test(message) ? message.slice(0, 500) : fallback
+}
 
 app.get('/api/health', async (_request, response) => {
   await database('import_runs').count({ count: 'id' }).limit(1)
@@ -57,7 +89,8 @@ type PlanServer = {
   [key: string]: unknown
 }
 type PlanSprintTask = {
-  sprint: number; sequence: number; name: string; comment?: string; task?: PlanTaskAssignment; applications?: string[]
+  sprint: number; sequence: number; name: string; taskCreated?: boolean; comment?: string; task?: PlanTaskAssignment; applications?: string[]
+  targetedStartDate?: string; targetedEndDate?: string
   servers: PlanServer[]; serverCount: number; complexityPoints: number; totalStorageGb: number
   dataHeavyServerCount: number; environments: string[]; readiness: { ready: number; conditional: number }
   groupingRationale: string[]; exceptions: string[]
@@ -79,15 +112,19 @@ type TaskPlan = {
   dependencyWarnings?: unknown[]
   dependencyReview?: {
     acceptedDependencyKeys?: string[]
+    taskKeys?: string[]
     commentsByKey?: Record<string, string>
     assignmentsByKey?: Record<string, PlanTaskAssignment>
   }
 }
 type PlanTaskItem = {
   taskKey: string
+  taskCreated: boolean
   type: 'Sprint' | 'Cross Dependency'
   environment: string
+  relatedEnvironments: string[]
   sprint: number
+  relatedSprints: number[]
   title: string
   detail: string
   assignment: PlanTaskAssignment | null
@@ -155,6 +192,7 @@ function reconcileTaskPlan(plan: TaskPlan): TaskPlan {
     dependencyWarnings: dependencyWarnings.map(({ sourceServer, destinationServer, sourceSprint, destinationSprint, reason }) => ({ sourceServer, destinationServer, sourceSprint, destinationSprint, reason })),
     dependencyReview: {
       acceptedDependencyKeys: (plan.dependencyReview?.acceptedDependencyKeys ?? []).filter((key) => activeKeys.has(key)),
+      taskKeys: (plan.dependencyReview?.taskKeys ?? []).filter((key) => activeKeys.has(key)),
       commentsByKey: Object.fromEntries(Object.entries(plan.dependencyReview?.commentsByKey ?? {}).filter(([key]) => activeKeys.has(key))),
       assignmentsByKey: Object.fromEntries(Object.entries(plan.dependencyReview?.assignmentsByKey ?? {}).filter(([key]) => activeKeys.has(key))),
     },
@@ -182,32 +220,52 @@ function listPlanTasks(plan: TaskPlan) {
   const tasks: PlanTaskItem[] = plan.waves.flatMap((wave) => wave.sprints
     .map((sprint) => ({
       taskKey: `sprint:${sprint.sequence}`,
+      taskCreated: sprint.taskCreated === true || sprint.task !== undefined || Boolean(sprint.comment),
       type: 'Sprint' as const,
       environment: wave.environment,
+      relatedEnvironments: [...new Set([wave.environment, ...(sprint.environments ?? [])])],
       sprint: sprint.sequence,
+      relatedSprints: [sprint.sequence],
       title: sprint.name,
       detail: (sprint.applications ?? []).join(' + '),
       assignment: sprint.task ?? null,
       comment: sprint.comment ?? '',
     })))
+  const dependencyTaskKeys = new Set(plan.dependencyReview?.taskKeys ?? [])
   for (const dependency of plan.crossSprintDependencies) {
     const dependencyKey = planDependencyKey(dependency)
     const assignment = plan.dependencyReview?.assignmentsByKey?.[dependencyKey]
+    const comment = plan.dependencyReview?.commentsByKey?.[dependencyKey] ?? ''
+    if (!dependencyTaskKeys.has(dependencyKey) && !assignment && !comment) continue
     tasks.push({
       taskKey: `dependency:${dependencyKey}`,
+      taskCreated: true,
       type: 'Cross Dependency',
       environment: dependency.sourceEnvironment,
+      relatedEnvironments: [...new Set([dependency.sourceEnvironment, dependency.destinationEnvironment])],
       sprint: dependency.sourceSprint,
+      relatedSprints: [...new Set([dependency.sourceSprint, dependency.destinationSprint])],
       title: `${dependency.sourceServer} → ${dependency.destinationServer}`,
       detail: `${dependency.sourceApplication} → ${dependency.destinationApplication} · Sprint ${dependency.sourceSprint} → ${dependency.destinationSprint}${dependency.sourceEnvironment === dependency.destinationEnvironment ? '' : ` · ${dependency.destinationEnvironment}`}`,
       assignment: assignment ?? null,
-      comment: plan.dependencyReview?.commentsByKey?.[dependencyKey] ?? '',
+      comment,
     })
   }
   return tasks.sort((left, right) => left.environment.localeCompare(right.environment, undefined, { sensitivity: 'base' })
     || left.sprint - right.sprint
     || (left.type === right.type ? 0 : left.type === 'Sprint' ? -1 : 1)
     || left.title.localeCompare(right.title, undefined, { sensitivity: 'base' }))
+}
+function canResolveTask(plan: TaskPlan, taskKey: string, response: Response): boolean {
+  const context = response.locals.auth as {
+    settings?: { authenticationEnabled: boolean }
+    user?: { id: number; isAdmin: boolean; canModify: boolean; canManageTasks: boolean } | null
+  }
+  if (!context.settings?.authenticationEnabled || context.user?.isAdmin || context.user?.canModify) return true
+  const task = listPlanTasks(plan).find((item) => item.taskKey === taskKey)
+  if (context.user?.canManageTasks && task?.assignment?.assigneeUserId === context.user.id) return true
+  response.status(403).json({ error: 'Task Operators can update only tasks assigned to them.' })
+  return false
 }
 
 app.get('/api/tasks', async (_request, response) => {
@@ -226,6 +284,33 @@ app.post('/api/tasks/sprints', async (request, response) => {
   if (serverNames.length === 0) {
     response.status(400).json({ error: 'Select at least one excluded server.' })
     return
+  }
+  const requestedTask = request.body?.task
+  const createDependencyTasks = request.body?.createDependencyTasks === true
+  let task: PlanTaskAssignment | undefined
+  let taskComment = ''
+  if (requestedTask !== undefined) {
+    if (!requestedTask || typeof requestedTask !== 'object' || Array.isArray(requestedTask)) {
+      response.status(400).json({ error: 'The sprint task configuration is invalid.' })
+      return
+    }
+    const assigneeUserId = Number(requestedTask.assigneeUserId)
+    const status = String(requestedTask.status ?? '')
+    taskComment = String(requestedTask.comment ?? '').trim()
+    if (!Number.isInteger(assigneeUserId) || assigneeUserId <= 0 || !['Assigned', 'In Review', 'Blocked'].includes(status)) {
+      response.status(400).json({ error: 'Select an assignee and valid initial task status.' })
+      return
+    }
+    if (taskComment.length > 4000) {
+      response.status(400).json({ error: 'Task comments cannot exceed 4,000 characters.' })
+      return
+    }
+    const assignee = await database('app_users').where({ id: assigneeUserId, enabled: true }).first({ displayName: 'display_name' }) as { displayName: string } | undefined
+    if (!assignee) {
+      response.status(400).json({ error: 'The selected assignee is no longer available.' })
+      return
+    }
+    task = { assigneeUserId, assigneeDisplayName: assignee.displayName, status }
   }
   const saved = await loadSavedTaskPlan()
   if (!saved) {
@@ -266,6 +351,9 @@ app.post('/api/tasks/sprints', async (request, response) => {
     readiness: { ready: 0, conditional: 0 },
     groupingRationale: [],
     exceptions: [],
+    taskCreated: task !== undefined,
+    task,
+    comment: taskComment || undefined,
   }
   summarizePlanSprint(sprint, `${selected.length} excluded server${selected.length === 1 ? '' : 's'} added to a new sprint.`)
   wave.sprints.push(sprint)
@@ -273,22 +361,38 @@ app.post('/api/tasks/sprints', async (request, response) => {
   saved.plan.options ??= {}
   saved.plan.options.excludedServers = (saved.plan.options.excludedServers ?? [])
     .filter((name) => !selectedNames.has(name.trim().toLowerCase()))
+  if (createDependencyTasks) {
+    const plannedServerNames = saved.plan.waves.flatMap((item) => item.sprints.flatMap((itemSprint) => itemSprint.servers.map(({ name }) => name)))
+    saved.plan.dependencyPairs = (await loadDependencyPairs(database, plannedServerNames))
+      .map(({ sourceServer, destinationServer, connectionCount }) => ({ sourceServer, destinationServer, connectionCount: Number(connectionCount) }))
+  }
   saved.plan = reconcileTaskPlan(saved.plan) as TaskPlan & Record<string, unknown>
+  const createdDependencyKeys = createDependencyTasks
+    ? saved.plan.crossSprintDependencies
+      .filter((dependency) => dependency.sourceSprint === sequence || dependency.destinationSprint === sequence)
+      .map(planDependencyKey)
+    : []
+  if (createdDependencyKeys.length > 0) {
+    const review = saved.plan.dependencyReview ??= { acceptedDependencyKeys: [] }
+    review.taskKeys = [...new Set([...(review.taskKeys ?? []), ...createdDependencyKeys])]
+  }
   const context = response.locals.auth as { user?: { id: number; displayName: string } | null }
   const savedAt = new Date()
   const actionComment = `${sprint.name} created in ${environment} using ${selected.length} previously excluded server${selected.length === 1 ? '' : 's'}.`
   await database.transaction(async (transaction) => {
     await transaction('migration_wave_plans').where({ id: 1 }).update({ plan_json: JSON.stringify(saved.plan), saved_at: savedAt })
-    await transaction('task_comment_audit').insert({
-      task_key: `sprint:${sequence}`,
-      task_type: 'Sprint',
-      comment: actionComment,
-      actor_user_id: context.user?.id ?? null,
-      actor_display_name: context.user?.displayName ?? 'Application user',
-      created_at: savedAt,
-    })
+    if (task) {
+      await transaction('task_comment_audit').insert({
+        task_key: `sprint:${sequence}`,
+        task_type: 'Sprint',
+        comment: taskComment || actionComment,
+        actor_user_id: context.user?.id ?? null,
+        actor_display_name: context.user?.displayName ?? 'Application user',
+        created_at: savedAt,
+      })
+    }
   })
-  response.status(201).json({ taskKey: `sprint:${sequence}`, tasks: listPlanTasks(saved.plan), excludedServers: saved.plan.excluded, savedAt })
+  response.status(201).json({ taskKey: task ? `sprint:${sequence}` : null, dependencyTasksCreated: createdDependencyKeys.length, tasks: listPlanTasks(saved.plan), excludedServers: saved.plan.excluded, savedAt })
 })
 
 app.get('/api/tasks/sprint-review', async (request, response) => {
@@ -302,6 +406,7 @@ app.get('/api/tasks/sprint-review', async (request, response) => {
   }
   const openDependencies = saved.plan.crossSprintDependencies.filter((dependency) =>
     (dependency.sourceSprint === sequence || dependency.destinationSprint === sequence)
+    && (saved.plan.dependencyReview?.taskKeys ?? []).includes(planDependencyKey(dependency))
     && saved.plan.dependencyReview?.assignmentsByKey?.[planDependencyKey(dependency)]?.status !== 'Completed')
   response.json({
     servers: sprint.servers,
@@ -380,6 +485,7 @@ app.post('/api/tasks/dependency-action', async (request, response) => {
     response.status(404).json({ error: 'The cross-dependency task no longer exists in the saved migration plan.' })
     return
   }
+  if (!canResolveTask(saved.plan, taskKey, response)) return
   const sourceWave = saved.plan.waves.find((wave) => wave.sprints.some((sprint) => sprint.sequence === dependency.sourceSprint))
   const source = sourceWave?.sprints.find((sprint) => sprint.sequence === dependency.sourceSprint)
   const destination = action === 'exclude' ? undefined : saved.plan.waves.flatMap((wave) => wave.sprints).find((sprint) =>
@@ -454,6 +560,7 @@ app.post('/api/tasks/sprint-action', async (request, response) => {
     response.status(404).json({ error: 'The sprint task no longer exists in the saved migration plan.' })
     return
   }
+  if (!canResolveTask(saved.plan, taskKey, response)) return
   let actionComment: string
   if (action === 'merge') {
     const target = saved.plan.waves.flatMap((wave) => wave.sprints).find((sprint) => sprint.sequence === targetSequence)
@@ -530,6 +637,12 @@ app.put('/api/tasks', async (request, response) => {
     response.status(404).json({ error: 'No saved migration plan is available.' })
     return
   }
+  if (!canResolveTask(saved.plan, taskKey, response)) return
+  const context = response.locals.auth as { user?: { id: number; isAdmin: boolean; canModify: boolean; canManageTasks: boolean; displayName: string } | null }
+  if (context.user?.canManageTasks && !context.user.isAdmin && !context.user.canModify && assigneeUserId !== context.user.id) {
+    response.status(403).json({ error: 'Task Operators cannot reassign tasks.' })
+    return
+  }
   const assignment = { assigneeUserId, assigneeDisplayName: String(assignee.display_name), status }
   let previousComment: string | undefined
   let taskType: 'Sprint' | 'Cross Dependency' | undefined
@@ -580,6 +693,7 @@ app.put('/api/tasks', async (request, response) => {
       }
       const openDependencies = saved.plan.crossSprintDependencies.filter((dependency) =>
         (dependency.sourceSprint === sequence || dependency.destinationSprint === sequence)
+        && (saved.plan.dependencyReview?.taskKeys ?? []).includes(planDependencyKey(dependency))
         && saved.plan.dependencyReview?.assignmentsByKey?.[planDependencyKey(dependency)]?.status !== 'Completed')
       if (status === 'Completed' && openDependencies.length > 0 && !overrideDependencies) {
         response.status(409).json({ error: `${openDependencies.length} associated cross-dependency task${openDependencies.length === 1 ? ' is' : 's are'} still open. Complete them first or use the closure override.`, openDependencies: openDependencies.length })
@@ -592,6 +706,7 @@ app.put('/api/tasks', async (request, response) => {
       }
       previousComment = sprint.comment ?? ''
       sprint.comment = comment
+      sprint.taskCreated = true
       sprint.task = assignment
       taskType = 'Sprint'
     }
@@ -600,6 +715,7 @@ app.put('/api/tasks', async (request, response) => {
     const dependency = saved.plan.crossSprintDependencies.find((item) => planDependencyKey(item) === dependencyKey)
     if (dependency) {
       const review = saved.plan.dependencyReview ??= { acceptedDependencyKeys: [] }
+      review.taskKeys = [...new Set([...(review.taskKeys ?? []), dependencyKey])]
       previousComment = review.commentsByKey?.[dependencyKey] ?? ''
       review.commentsByKey ??= {}
       review.assignmentsByKey ??= {}
@@ -612,7 +728,6 @@ app.put('/api/tasks', async (request, response) => {
     response.status(404).json({ error: 'The task no longer exists in the saved migration plan.' })
     return
   }
-  const context = response.locals.auth as { user?: { id: number; displayName: string } | null }
   const actorUserId = context.user?.id ?? null
   const actorDisplayName = context.user?.displayName ?? 'Application user'
   const savedAt = new Date()
@@ -664,7 +779,7 @@ app.get('/api/imports', async (_request, response) => {
   response.json({ items: imports })
 })
 
-app.post('/api/imports', upload.array('files', 20), async (request, response) => {
+app.post('/api/imports', dependencyUpload.array('files', 8), async (request, response) => {
   const files = request.files as Express.Multer.File[] | undefined
   if (!files?.length) {
     response.status(400).json({ error: 'Select at least one CSV or XLSX file.' })
@@ -684,7 +799,7 @@ app.post('/api/imports', upload.array('files', 20), async (request, response) =>
       results.push({
         fileName: file.originalname,
         status: 'Failed',
-        error: error instanceof Error ? error.message : 'Import failed.',
+        error: safeImportError(error, 'Import failed. Review the server log using the import run identifier.'),
       })
     } finally {
       await unlink(file.path).catch(() => undefined)
@@ -693,7 +808,7 @@ app.post('/api/imports', upload.array('files', 20), async (request, response) =>
   response.status(results.some((result) => result.status === 'Failed') ? 207 : 201).json({ results })
 })
 
-app.post('/api/server-assessments/sheets', upload.single('file'), async (request, response) => {
+app.post('/api/server-assessments/sheets', workbookUpload.single('file'), async (request, response) => {
   const file = request.file
   if (!file) {
     response.status(400).json({ error: 'Select an XLSX file.' })
@@ -707,13 +822,13 @@ app.post('/api/server-assessments/sheets', upload.single('file'), async (request
     const sheets = await listAssessmentWorkbookSheets(file.path)
     response.json({ sheets })
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to read workbook sheets.' })
+    response.status(400).json({ error: safeImportError(error, 'Unable to read workbook sheets.') })
   } finally {
     await unlink(file.path).catch(() => undefined)
   }
 })
 
-app.post('/api/server-assessments/import', upload.single('file'), async (request, response) => {
+app.post('/api/server-assessments/import', workbookUpload.single('file'), async (request, response) => {
   const file = request.file
   if (!file) {
     response.status(400).json({ error: 'Select a CSV or XLSX file.' })
@@ -740,7 +855,48 @@ app.post('/api/server-assessments/import', upload.single('file'), async (request
       },
     })
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : 'Server assessment import failed.' })
+    response.status(400).json({ error: safeImportError(error, 'Server assessment import failed.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.post('/api/application-server-mappings/sheets', workbookUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select an XLSX file.' })
+    return
+  }
+  try {
+    if (extname(file.originalname).toLowerCase() !== '.xlsx') {
+      response.status(400).json({ error: 'Worksheet discovery is only available for XLSX files.' })
+      return
+    }
+    response.json({ sheets: await listAssessmentWorkbookSheets(file.path) })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Unable to read workbook sheets.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.post('/api/application-server-mappings/import', workbookUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a CSV or XLSX file.' })
+    return
+  }
+  try {
+    const extension = extname(file.originalname).toLowerCase()
+    const sheetName = String(request.body.sheetName ?? '').trim() || undefined
+    if (extension === '.xlsx' && !sheetName) {
+      response.status(400).json({ error: 'Select a worksheet before importing this Excel file.' })
+      return
+    }
+    const result = await importApplicationServerMappingFile(file.path, file.originalname, sheetName)
+    response.status(201).json({ result })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Application to Server Mapping import failed.') })
   } finally {
     await unlink(file.path).catch(() => undefined)
   }
@@ -814,11 +970,11 @@ app.put('/api/core-infrastructure-inputs', async (request, response) => {
     response.status(400).json({ error: 'Each load-balancer address must be a valid IPv4 or IPv6 address.' })
     return
   }
-  const networkTypes = { vpn: 'VPN', loadBalancer: 'Load balancer', office: 'Office' } as const
-  const networks = Object.entries(networkTypes).flatMap(([key, label]) => {
-    const ipRange = String((requestedNetworks as Record<string, unknown>)[key] ?? '').trim()
-    return ipRange ? [{ type: label, ipRange }] : []
-  })
+  const networks = parseCoreNetworkRanges(requestedNetworks as Record<string, unknown>)
+  if (networks.length > 100) {
+    response.status(400).json({ error: 'No more than 100 network ranges can be saved at once.' })
+    return
+  }
   const invalidNetwork = networks.find(({ ipRange }) => !isValidCidr(ipRange))
   if (invalidNetwork) {
     response.status(400).json({ error: `${invalidNetwork.type} network range must use valid CIDR notation.` })
@@ -846,12 +1002,13 @@ app.put('/api/core-infrastructure-inputs', async (request, response) => {
       })
     }
     if (networks.length > 0) {
+      const submittedNetworkTypes = [...new Set(networks.map(({ type }) => type))]
+      await transaction('core_infrastructure_networks').whereIn('network_type', submittedNetworkTypes).delete()
       await transaction('core_infrastructure_networks').insert(networks.map(({ type, ipRange }) => ({
         network_type: type,
         ip_range: ipRange,
         updated_at: transaction.fn.now(),
-      }))).onConflict('network_type').merge({
-        ip_range: transaction.raw('VALUES(ip_range)'),
+      }))).onConflict(['network_type', 'ip_range']).merge({
         updated_at: transaction.fn.now(),
       })
     }
@@ -867,7 +1024,7 @@ app.put('/api/core-infrastructure-inputs', async (request, response) => {
   response.json({ savedServers: servers.length, savedNetworks: networks.length, savedLoadBalancerIps: loadBalancerIps.length, summary })
 })
 
-app.post('/api/core-infrastructure-inputs/upload', upload.single('file'), async (request, response) => {
+app.post('/api/core-infrastructure-inputs/upload', workbookUpload.single('file'), async (request, response) => {
   const file = request.file
   if (!file) {
     response.status(400).json({ error: 'Select a CSV or XLSX file.' })
@@ -892,7 +1049,7 @@ app.post('/api/core-infrastructure-inputs/upload', upload.single('file'), async 
     })
     response.json({ savedServers: parsed.servers.length, savedLoadBalancerIps: parsed.loadBalancerIps.length })
   } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to import core infrastructure file.' })
+    response.status(400).json({ error: safeImportError(error, 'Unable to import core infrastructure file.') })
   } finally {
     await unlink(file.path).catch(() => undefined)
   }
@@ -1119,10 +1276,11 @@ function taskAssignmentIsValid(value: unknown): boolean {
 }
 
 function migrationPlanTasksAreValid(plan: Record<string, unknown>): boolean {
-  const waves = plan.waves as Array<{ sprints?: Array<{ comment?: unknown; task?: unknown }> }>
+  const waves = plan.waves as Array<{ sprints?: Array<{ taskCreated?: unknown; comment?: unknown; task?: unknown }> }>
   for (const wave of waves) {
     if (!Array.isArray(wave.sprints)) return false
     for (const sprint of wave.sprints) {
+      if (sprint.taskCreated !== undefined && typeof sprint.taskCreated !== 'boolean') return false
       if (sprint.comment !== undefined && (typeof sprint.comment !== 'string' || sprint.comment.length > 4000)) return false
       if (sprint.task !== undefined && !taskAssignmentIsValid(sprint.task)) return false
     }
@@ -1130,7 +1288,8 @@ function migrationPlanTasksAreValid(plan: Record<string, unknown>): boolean {
   const dependencyReview = plan.dependencyReview
   if (dependencyReview === undefined) return true
   if (!dependencyReview || typeof dependencyReview !== 'object' || Array.isArray(dependencyReview)) return false
-  const review = dependencyReview as { commentsByKey?: unknown; assignmentsByKey?: unknown }
+  const review = dependencyReview as { taskKeys?: unknown; commentsByKey?: unknown; assignmentsByKey?: unknown }
+  if (review.taskKeys !== undefined && (!Array.isArray(review.taskKeys) || !review.taskKeys.every((key) => typeof key === 'string' && key.length <= 1000))) return false
   if (review.commentsByKey !== undefined) {
     if (!review.commentsByKey || typeof review.commentsByKey !== 'object' || Array.isArray(review.commentsByKey)) return false
     if (!Object.entries(review.commentsByKey).every(([key, comment]) =>
@@ -1157,6 +1316,83 @@ app.get('/api/migration-wave-plan', async (_request, response) => {
   })
 })
 
+app.get('/api/sprint-schedule', async (_request, response) => {
+  const saved = await loadSavedTaskPlan()
+  if (!saved) {
+    response.json({ waves: [], serverTimeline: [], savedAt: null })
+    return
+  }
+  const assessedServers = await database('server_assessments')
+    .select({ serverName: 'server_name', application: 'application', environment: 'environment_type' })
+    .orderBy('server_name') as ScheduleAssessment[]
+  response.json({ ...buildSprintScheduleView(saved.plan, assessedServers), savedAt: saved.savedAt })
+})
+
+app.get('/api/sprint-schedule/export', async (request, response) => {
+  const format = String(request.query.format ?? '').toLowerCase()
+  if (format !== 'xlsx' && format !== 'pptx') {
+    response.status(400).json({ error: 'Choose xlsx or pptx as the export format.' })
+    return
+  }
+  const saved = await loadSavedTaskPlan()
+  if (!saved) {
+    response.status(404).json({ error: 'A saved migration wave plan is required.' })
+    return
+  }
+  const assessedServers = await database('server_assessments')
+    .select({ serverName: 'server_name', application: 'application', environment: 'environment_type' })
+    .orderBy('server_name') as ScheduleAssessment[]
+  const view = buildSprintScheduleView(saved.plan, assessedServers)
+  const file = format === 'xlsx'
+    ? await createSprintScheduleWorkbook(view)
+    : await createSprintSchedulePresentation(view)
+  response
+    .type(format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/vnd.openxmlformats-officedocument.presentationml.presentation')
+    .attachment(`migration-sprint-timeline.${format}`)
+    .send(file)
+})
+
+app.put('/api/sprint-schedule', async (request, response) => {
+  if (!Array.isArray(request.body?.schedules) || request.body.schedules.length === 0) {
+    response.status(400).json({ error: 'Provide at least one sprint schedule.' })
+    return
+  }
+  let schedules: SprintSchedule[]
+  try {
+    schedules = request.body.schedules.map((value: SprintScheduleInput) => normalizeSprintSchedule(value))
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'The sprint schedule is invalid.' })
+    return
+  }
+  const sequences = new Set(schedules.map(({ sequence }) => sequence))
+  if (sequences.size !== schedules.length) {
+    response.status(400).json({ error: 'Each sprint may appear only once in a schedule update.' })
+    return
+  }
+  const saved = await loadSavedTaskPlan()
+  if (!saved) {
+    response.status(404).json({ error: 'A saved migration wave plan is required.' })
+    return
+  }
+  const sprintsBySequence = new Map(saved.plan.waves.flatMap((wave) => wave.sprints).map((sprint) => [sprint.sequence, sprint]))
+  const missing = schedules.filter(({ sequence }) => !sprintsBySequence.has(sequence)).map(({ sequence }) => sequence)
+  if (missing.length) {
+    response.status(404).json({ error: `Sprint sequence${missing.length === 1 ? '' : 's'} ${missing.join(', ')} no longer exist in the saved plan.` })
+    return
+  }
+  for (const schedule of schedules) {
+    const sprint = sprintsBySequence.get(schedule.sequence)!
+    sprint.targetedStartDate = schedule.targetedStartDate
+    sprint.targetedEndDate = schedule.targetedEndDate
+  }
+  const savedAt = new Date()
+  await database('migration_wave_plans').where({ id: 1 }).update({
+    plan_json: JSON.stringify(saved.plan),
+    saved_at: savedAt,
+  })
+  response.json({ schedules, savedAt: savedAt.toISOString() })
+})
+
 app.post('/api/migration-wave-plan/dependencies', async (request, response) => {
   if (!Array.isArray(request.body?.serverNames)) {
     response.status(400).json({ error: 'serverNames must be an array.' })
@@ -1174,7 +1410,14 @@ app.post('/api/migration-wave-plan/dependencies', async (request, response) => {
 
 app.put('/api/migration-wave-plan', async (request, response) => {
   let plan = request.body?.plan
+  const taskOptionFields = ['resetTasks', 'createSprintTasks', 'createDependencyTasks'] as const
+  if (taskOptionFields.some((field) => request.body?.[field] !== undefined && typeof request.body[field] !== 'boolean')) {
+    response.status(400).json({ error: 'Task creation and reset options must be boolean values.' })
+    return
+  }
   const resetTasks = request.body?.resetTasks === true
+  const createSprintTasks = request.body?.createSprintTasks === true
+  const createDependencyTasks = request.body?.createDependencyTasks === true
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
     response.status(400).json({ error: 'A generated migration wave plan is required.' })
     return
@@ -1197,9 +1440,28 @@ app.put('/api/migration-wave-plan', async (request, response) => {
       ...plan,
       waves: plan.waves.map((wave: { sprints: Array<Record<string, unknown>> }) => ({
         ...wave,
-        sprints: wave.sprints.map(({ task: _task, comment: _comment, ...sprint }) => sprint),
+        sprints: wave.sprints.map(({ taskCreated: _taskCreated, task: _task, comment: _comment, ...sprint }) => sprint),
       })),
-      dependencyReview: { acceptedDependencyKeys: [], commentsByKey: {}, assignmentsByKey: {} },
+      dependencyReview: { acceptedDependencyKeys: [], taskKeys: [], commentsByKey: {}, assignmentsByKey: {} },
+    }
+  }
+  if (createSprintTasks) {
+    plan = {
+      ...plan,
+      waves: plan.waves.map((wave: { sprints: Array<Record<string, unknown>> }) => ({
+        ...wave,
+        sprints: wave.sprints.map((sprint) => ({ ...sprint, taskCreated: true })),
+      })),
+    }
+  }
+  if (createDependencyTasks) {
+    const dependencyTaskKeys = (Array.isArray(plan.crossSprintDependencies) ? plan.crossSprintDependencies : []).map(planDependencyKey)
+    plan = {
+      ...plan,
+      dependencyReview: {
+        ...(plan.dependencyReview ?? { acceptedDependencyKeys: [] }),
+        taskKeys: [...new Set([...(plan.dependencyReview?.taskKeys ?? []), ...dependencyTaskKeys])],
+      },
     }
   }
   const savedAt = new Date()
@@ -1216,7 +1478,13 @@ app.put('/api/migration-wave-plan', async (request, response) => {
     })
     if (resetTasks) await transaction('task_comment_audit').delete()
   })
-  response.json({ savedAt: savedAt.toISOString(), tasksReset: resetTasks })
+  response.json({
+    savedAt: savedAt.toISOString(),
+    tasksReset: resetTasks,
+    sprintTasksCreated: createSprintTasks ? plan.waves.reduce((total: number, wave: { sprints: unknown[] }) => total + wave.sprints.length, 0) : 0,
+    dependencyTasksCreated: createDependencyTasks ? plan.dependencyReview?.taskKeys?.length ?? 0 : 0,
+    plan,
+  })
 })
 
 app.post('/api/migration-wave-plan', async (request, response) => {
@@ -1534,6 +1802,10 @@ if (existsSync(frontendDist)) {
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   console.error(error)
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
+  if (code === 'LIMIT_FILE_SIZE' || code === 'LIMIT_FILE_COUNT' || code === 'LIMIT_UNEXPECTED_FILE') {
+    response.status(413).json({ error: 'The upload exceeds the allowed file size or file count.' })
+    return
+  }
   if (code === 'ETIMEDOUT' || code === 'ECONNREFUSED' || code === 'ENETUNREACH') {
     response.status(503).json({ error: 'The database is currently unreachable.' })
     return

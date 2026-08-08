@@ -9,6 +9,24 @@ type XmlNode = Record<string, unknown>
 
 const parser = new XMLParser({ ignoreAttributes: false })
 const builder = new XMLBuilder({ ignoreAttributes: false, format: false })
+const maximumArchiveEntries = 2_000
+const maximumUncompressedBytes = 250 * 1024 * 1024
+const maximumCompressionRatio = 100
+
+function validateArchiveSize(archive: JSZip): void {
+  const entries = Object.values(archive.files)
+  if (entries.length > maximumArchiveEntries) throw new Error('The Excel workbook contains too many archive entries.')
+  let compressedBytes = 0
+  let uncompressedBytes = 0
+  for (const entry of entries) {
+    const metadata = entry as unknown as { _data?: { compressedSize?: number; uncompressedSize?: number } }
+    compressedBytes += Number(metadata._data?.compressedSize ?? 0)
+    uncompressedBytes += Number(metadata._data?.uncompressedSize ?? 0)
+  }
+  if (uncompressedBytes > maximumUncompressedBytes || (compressedBytes > 0 && uncompressedBytes / compressedBytes > maximumCompressionRatio)) {
+    throw new Error('The Excel workbook expands beyond the allowed archive size.')
+  }
+}
 
 function nodes(value: unknown): XmlNode[] {
   if (!value) return []
@@ -41,6 +59,7 @@ function normalizeWorksheetXml(xml: string): string {
 
 export async function readAssessmentWorkbookSheets(filePath: string): Promise<string[]> {
   const archive = await JSZip.loadAsync(await readFile(filePath))
+  validateArchiveSize(archive)
   const workbookEntry = archive.file('xl/workbook.xml')
   if (!workbookEntry) throw new Error('The Excel workbook is missing workbook metadata.')
   const workbook = removeElementPrefix(parser.parse(await workbookEntry.async('string')), 'x:') as XmlNode
@@ -53,6 +72,7 @@ export async function readAssessmentWorkbookSheets(filePath: string): Promise<st
 
 export async function prepareAssessmentWorkbook(filePath: string): Promise<{ filePath: string; cleanup: () => Promise<void> }> {
   const archive = await JSZip.loadAsync(await readFile(filePath))
+  validateArchiveSize(archive)
   let changed = false
   const workbookEntry = archive.file('xl/workbook.xml')
   if (!workbookEntry) throw new Error('The Excel workbook is missing workbook metadata.')

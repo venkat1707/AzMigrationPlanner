@@ -280,12 +280,12 @@ export async function importDependencyFile(filePath: string, fileName: string): 
     })
     return { importRunId, fileName, rowsImported, warnings: [...validation.warnings] }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    console.error(`Dependency import ${importRunId} failed`, error)
     await database('dependency_records').where({ import_run_id: importRunId }).delete().catch(() => undefined)
     await refreshDependencySummary().catch(() => undefined)
     await refreshDatabaseServerEvidence().catch(() => undefined)
     await database('import_runs').where({ id: importRunId }).update({
-      status: 'Failed', rows_imported: rowsImported, completed_at: database.fn.now(), error_message: message.slice(0, 2000),
+      status: 'Failed', rows_imported: rowsImported, completed_at: database.fn.now(), error_message: `Import ${importRunId} failed. Review the server log for details.`,
     })
     throw error
   }

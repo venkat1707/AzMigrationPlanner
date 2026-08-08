@@ -35,11 +35,18 @@ export async function migrateSchema(): Promise<void> {
       table.boolean('is_admin').notNullable().defaultTo(false)
       table.boolean('can_read').notNullable().defaultTo(true)
       table.boolean('can_modify').notNullable().defaultTo(false)
+      table.boolean('can_manage_tasks').notNullable().defaultTo(false)
       table.boolean('can_delete').notNullable().defaultTo(false)
       table.dateTime('last_login_at').nullable()
       table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
       table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
       table.index(['provider', 'enabled'], 'idx_app_users_provider_enabled')
+    })
+  }
+
+  if (!(await database.schema.hasColumn('app_users', 'can_manage_tasks'))) {
+    await database.schema.alterTable('app_users', (table) => {
+      table.boolean('can_manage_tasks').notNullable().defaultTo(false)
     })
   }
 
@@ -233,6 +240,7 @@ export async function migrateSchema(): Promise<void> {
       table.bigIncrements('id').primary()
       table.bigInteger('import_run_id').unsigned().notNullable().references('id').inTable('import_runs').onDelete('RESTRICT')
       table.string('application', 500).nullable()
+      table.text('application_description').nullable()
       table.string('server_name', 300).notNullable()
       table.string('migration_readiness', 100).nullable()
       table.string('security_readiness', 100).nullable()
@@ -292,6 +300,12 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  if (!(await database.schema.hasColumn('server_assessments', 'application_description'))) {
+    await database.schema.alterTable('server_assessments', (table) => {
+      table.text('application_description').nullable()
+    })
+  }
+
   if (!(await database.schema.hasTable('core_infrastructure_servers'))) {
     await database.schema.createTable('core_infrastructure_servers', (table) => {
       table.bigIncrements('id').primary()
@@ -338,10 +352,20 @@ export async function migrateSchema(): Promise<void> {
 
   if (!(await database.schema.hasTable('core_infrastructure_networks'))) {
     await database.schema.createTable('core_infrastructure_networks', (table) => {
-      table.string('network_type', 30).primary()
+      table.string('network_type', 30).notNullable()
       table.string('ip_range', 100).notNullable()
       table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+      table.primary(['network_type', 'ip_range'])
     })
+  } else {
+    const networkPrimaryKey = await database('information_schema.statistics')
+      .whereRaw('table_schema = DATABASE()')
+      .where({ table_name: 'core_infrastructure_networks', index_name: 'PRIMARY' })
+      .orderBy('seq_in_index')
+      .pluck('column_name') as string[]
+    if (networkPrimaryKey.join(',') !== 'network_type,ip_range') {
+      await database.raw('ALTER TABLE core_infrastructure_networks DROP PRIMARY KEY, ADD PRIMARY KEY (network_type, ip_range)')
+    }
   }
   if (!(await database.schema.hasTable('core_infrastructure_load_balancer_ips'))) {
     await database.schema.createTable('core_infrastructure_load_balancer_ips', (table) => {

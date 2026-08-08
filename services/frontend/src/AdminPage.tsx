@@ -11,9 +11,10 @@ type AdminSettings = AuthSettings & {
   entraDefaultModify: boolean
   entraDefaultDelete: boolean
   entraClientSecretConfigured: boolean
+  entraCredentialType: 'managedIdentity' | 'clientSecret' | null
 }
 
-const newUserDefaults = { username: '', displayName: '', email: '', password: '', enabled: true, isAdmin: false, canRead: true, canModify: false, canDelete: false }
+const newUserDefaults = { username: '', displayName: '', email: '', password: '', enabled: true, isAdmin: false, canRead: true, canModify: false, canManageTasks: false, canDelete: false }
 
 export default function AdminPage({ onAuthChanged }: { onAuthChanged: () => Promise<void> }) {
   const [users, setUsers] = useState<AuthUser[]>([])
@@ -104,7 +105,7 @@ export default function AdminPage({ onAuthChanged }: { onAuthChanged: () => Prom
         <label>Client ID<input value={settings.entraClientId ?? ''} onChange={(event) => setSettings({ ...settings, entraClientId: event.target.value })} /></label>
         <label className="wide">Redirect URI<input placeholder={`${window.location.origin}/api/auth/entra/callback`} value={settings.entraRedirectUri ?? ''} onChange={(event) => setSettings({ ...settings, entraRedirectUri: event.target.value })} /></label>
       </div>
-      <p className="secret-status">Client secret: <strong>{settings.entraClientSecretConfigured ? 'Configured on server' : 'Set ENTRA_CLIENT_SECRET on the server'}</strong></p>
+      <p className="secret-status">Application credential: <strong>{settings.entraCredentialType === 'managedIdentity' ? 'User-assigned managed identity' : settings.entraClientSecretConfigured ? 'Client secret configured on server' : 'Set ENTRA_CLIENT_SECRET or enable managed identity on the server'}</strong></p>
       <fieldset className="privilege-options"><legend>Default privileges for new Entra users</legend>
         <label><input type="checkbox" checked={settings.entraDefaultRead} onChange={(event) => setSettings({ ...settings, entraDefaultRead: event.target.checked })} /> Read</label>
         <label><input type="checkbox" checked={settings.entraDefaultModify} onChange={(event) => setSettings({ ...settings, entraDefaultModify: event.target.checked })} /> Modify</label>
@@ -125,6 +126,7 @@ export default function AdminPage({ onAuthChanged }: { onAuthChanged: () => Prom
         <fieldset className="privilege-options"><legend>Privileges</legend>
           <label><input type="checkbox" checked={newUser.canRead} onChange={(event) => setNewUser({ ...newUser, canRead: event.target.checked })} /> Read</label>
           <label><input type="checkbox" checked={newUser.canModify} onChange={(event) => setNewUser({ ...newUser, canModify: event.target.checked })} /> Modify</label>
+          <label><input type="checkbox" checked={newUser.canManageTasks} onChange={(event) => setNewUser({ ...newUser, canManageTasks: event.target.checked })} /> Task Operator</label>
           <label><input type="checkbox" checked={newUser.canDelete} onChange={(event) => setNewUser({ ...newUser, canDelete: event.target.checked })} /> Delete</label>
           <label><input type="checkbox" checked={newUser.isAdmin} onChange={(event) => setNewUser({ ...newUser, isAdmin: event.target.checked })} /> Administrator</label>
         </fieldset>
@@ -139,6 +141,7 @@ export default function AdminPage({ onAuthChanged }: { onAuthChanged: () => Prom
         <div className="user-privileges">
           <label><input type="checkbox" checked={user.canRead} onChange={(event) => updateUser(user.id, { canRead: event.target.checked })} /> Read</label>
           <label><input type="checkbox" checked={user.canModify} onChange={(event) => updateUser(user.id, { canModify: event.target.checked })} /> Modify</label>
+          <label><input type="checkbox" checked={user.canManageTasks} onChange={(event) => updateUser(user.id, { canManageTasks: event.target.checked })} /> Task Operator</label>
           <label><input type="checkbox" checked={user.canDelete} onChange={(event) => updateUser(user.id, { canDelete: event.target.checked })} /> Delete</label>
           <label><input type="checkbox" checked={user.isAdmin} onChange={(event) => updateUser(user.id, { isAdmin: event.target.checked })} /> Admin</label>
           <label><input type="checkbox" checked={user.enabled} onChange={(event) => updateUser(user.id, { enabled: event.target.checked })} /> Enabled</label>
