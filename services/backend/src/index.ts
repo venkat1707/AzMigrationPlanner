@@ -10,11 +10,14 @@ import { findWindowsServiceReferences, type WindowsServiceReference } from './wi
 import multer from 'multer'
 import { port } from './config.js'
 import { database } from './db.js'
+import { migrateSchema } from './migrate.js'
 import { importDependencyFile } from './dependency-import.js'
+import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
 import { normalizeSprintSchedule, type SprintSchedule, type SprintScheduleInput } from './sprint-schedule.js'
 import { buildSprintScheduleView, createSprintSchedulePresentation, createSprintScheduleWorkbook, type ScheduleAssessment } from './sprint-schedule-export.js'
+import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallRulesWorkbook, createFirewallTerraformArchive, type DependencyFlowRow, type FirewallRuleSet, type FirewallTarget, type NetworkRange, type PortReference } from './firewall-rules.js'
 import { refreshDatabaseServerFlags } from './database-server-classification.js'
 import { getCleanupStatus, startDataCleanup } from './data-cleanup.js'
 import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
@@ -22,6 +25,7 @@ import { buildApplicationMap, listApplicationEnvironments } from './application-
 import { createMigrationWavePlan, defaultMigrationWaveOptions, loadDependencyPairs, type MigrationWaveOptions } from './migration-wave-planning.js'
 import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
 import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
+import { identifyServerEnvironments, validateEnvironmentRules, type AssessmentIdentity, type EnvironmentRuleInput } from './environment-identification.js'
 import { registerAuthentication } from './auth.js'
 
 const app = express()
@@ -117,6 +121,8 @@ type TaskPlan = {
     assignmentsByKey?: Record<string, PlanTaskAssignment>
   }
 }
+type PlanSaveMode = 'initial' | 'append' | 'replace'
+type SavedPlanFiltersRow = { filterJson: string | Record<string, unknown>; consideredServersJson: string | string[] }
 type PlanTaskItem = {
   taskKey: string
   taskCreated: boolean
@@ -214,6 +220,49 @@ async function loadSavedTaskPlan(): Promise<{ plan: TaskPlan & Record<string, un
     { planJson: string | TaskPlan & Record<string, unknown>; savedAt: string | Date } | undefined
   if (!row) return null
   return { plan: (typeof row.planJson === 'string' ? JSON.parse(row.planJson) : row.planJson) as TaskPlan & Record<string, unknown>, savedAt: row.savedAt }
+}
+
+function parseJsonValue<T>(value: string | T): T {
+  return (typeof value === 'string' ? JSON.parse(value) : value) as T
+}
+
+function planServerNames(plan: TaskPlan): string[] {
+  return [...new Set([
+    ...plan.waves.flatMap((wave) => wave.sprints.flatMap((sprint) => sprint.servers.map(({ name }) => name))),
+    ...(plan.excluded ?? []).map(({ name }) => name),
+    ...((plan as TaskPlan & { deferred?: PlanServer[] }).deferred ?? []).map(({ name }) => name),
+  ])]
+}
+
+function appendTaskPlan(existing: TaskPlan & Record<string, unknown>, addition: TaskPlan & Record<string, unknown>): TaskPlan & Record<string, unknown> {
+  const sprintOffset = Math.max(0, ...existing.waves.flatMap((wave) => wave.sprints.map(({ sequence }) => sequence)))
+  const waveOffset = Math.max(0, ...existing.waves.map(({ wave }) => wave))
+  let addedSprintCount = 0
+  const addedWaves = addition.waves.map((wave, waveIndex) => {
+    const sprints = wave.sprints.map((sprint, sprintIndex) => {
+      const sequence = sprintOffset + addedSprintCount + sprintIndex + 1
+      return { ...sprint, sprint: sprintIndex + 1, sequence, name: `Sprint ${sequence}` }
+    })
+    addedSprintCount += sprints.length
+    return { ...wave, wave: waveOffset + waveIndex + 1, sprints }
+  })
+  const dependencyPairs = new Map<string, { sourceServer: string; destinationServer: string; connectionCount: number }>()
+  for (const pair of [...(existing.dependencyPairs ?? []), ...(addition.dependencyPairs ?? [])]) {
+    dependencyPairs.set(`${pair.sourceServer.trim().toLowerCase()}\u0000${pair.destinationServer.trim().toLowerCase()}`, {
+      ...pair,
+      connectionCount: Number(pair.connectionCount),
+    })
+  }
+  const merged = {
+    ...existing,
+    generatedAt: addition.generatedAt,
+    options: addition.options,
+    waves: [...existing.waves, ...addedWaves],
+    deferred: [...((existing as { deferred?: PlanServer[] }).deferred ?? []), ...((addition as { deferred?: PlanServer[] }).deferred ?? [])],
+    excluded: [...(existing.excluded ?? []), ...(addition.excluded ?? [])],
+    dependencyPairs: [...dependencyPairs.values()],
+  } as TaskPlan & Record<string, unknown>
+  return reconcileTaskPlan(merged) as TaskPlan & Record<string, unknown>
 }
 
 function listPlanTasks(plan: TaskPlan) {
@@ -861,6 +910,204 @@ app.post('/api/server-assessments/import', workbookUpload.single('file'), async 
   }
 })
 
+app.get('/api/applications', async (_request, response) => {
+  const items = await database('applications')
+    .select({ name: 'name', description: 'description', treatmentPlan: 'treatment_plan', source: 'source', updatedAt: 'updated_at' })
+    .orderBy('name')
+  response.json({ items })
+})
+
+const applicationTreatmentPlans = new Set(['Rehost', 'Replatform', 'Refactor', 'Rearchitect', 'Retire', 'Retain', 'Replace'])
+
+app.put('/api/applications/treatment-plans', async (request, response) => {
+  const requestedItems = Array.isArray(request.body?.items) ? request.body.items : []
+  if (requestedItems.length > 10_000) {
+    response.status(400).json({ error: 'No more than 10,000 application treatment plans can be saved at once.' })
+    return
+  }
+  const seen = new Set<string>()
+  const items: Array<{ name: string; treatmentPlan: string }> = []
+  for (const requestedItem of requestedItems) {
+    const value = requestedItem && typeof requestedItem === 'object' ? requestedItem as Record<string, unknown> : {}
+    const name = String(value.name ?? '').trim()
+    const treatmentPlan = String(value.treatmentPlan ?? '').trim()
+    const normalizedName = name.toLowerCase()
+    if (!name || name.length > 500 || seen.has(normalizedName) || !applicationTreatmentPlans.has(treatmentPlan)) {
+      response.status(400).json({ error: 'Each application must have a unique valid name and treatment plan.' })
+      return
+    }
+    seen.add(normalizedName)
+    items.push({ name, treatmentPlan })
+  }
+  try {
+    await database.transaction(async (transaction) => {
+      const existingNames = new Set((await transaction('applications').whereIn('name', items.map(({ name }) => name)).pluck('name')) as string[])
+      if (existingNames.size !== items.length) throw new Error('One or more applications no longer exist.')
+      for (const item of items) {
+        await transaction('applications').where({ name: item.name }).update({ treatment_plan: item.treatmentPlan, updated_at: database.fn.now() })
+      }
+    })
+    response.json({ updated: items.length })
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to save application treatment plans.' })
+  }
+})
+
+app.get('/api/server-coverage', async (_request, response) => {
+  const baseSelection = {
+    serverName: 'assessments.server_name',
+    environment: 'assessments.environment_type',
+    application: 'assessments.application',
+    ipAddress: 'assessments.ip_address',
+  }
+  const [unmappedServers, unconnectedServers] = await Promise.all([
+    database('server_assessments as assessments')
+      .select(baseSelection)
+      .leftJoin('applications as mapped_applications', 'mapped_applications.name', 'assessments.application')
+      .whereNull('mapped_applications.name')
+      .orderBy('assessments.server_name'),
+    database('server_assessments as assessments')
+      .select(baseSelection)
+      .whereNotExists(function () {
+        this.select(database.raw('1')).from('dependency_source_servers as sources')
+          .whereRaw('sources.server_name = assessments.server_name')
+      })
+      .whereNotExists(function () {
+        this.select(database.raw('1')).from('dependency_destination_servers as destinations')
+          .whereRaw('destinations.server_name = assessments.server_name')
+      })
+      .orderBy('assessments.server_name'),
+  ])
+  response.json({ unmappedServers, unconnectedServers })
+})
+
+app.get('/api/environment-identification', async (_request, response) => {
+  const rows = await database('environment_identification_rules')
+    .select({ environment: 'environment', priority: 'priority', field: 'rule_field', operator: 'rule_operator', value: 'rule_value', namePatterns: 'name_patterns', ipRanges: 'ip_ranges' })
+    .orderBy([{ column: 'priority', order: 'asc' }, { column: 'sort_order', order: 'asc' }]) as Array<{ environment: string; priority: number; field: string | null; operator: string | null; value: string | null; namePatterns: string | null; ipRanges: string | null }>
+  response.json({ rules: rows.flatMap(expandStoredEnvironmentRule) })
+})
+
+app.post('/api/environment-identification/preview', async (request, response) => {
+  try {
+    const rules = validateEnvironmentRules(request.body?.rules)
+    const items = identifyServerEnvironments(await loadAssessmentIdentities(), rules)
+    response.json({ summary: summarizeEnvironmentMatches(items), items })
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to preview environment identification.' })
+  }
+})
+
+app.post('/api/environment-identification/apply', async (request, response) => {
+  try {
+    const rules = validateEnvironmentRules(request.body?.rules)
+    const result = await database.transaction(async (transaction) => {
+      const assessments = await loadAssessmentIdentities(transaction)
+      const items = identifyServerEnvironments(assessments, rules)
+      const updates = items.filter((item) => item.status === 'matched' && item.proposedEnvironment !== item.currentEnvironment)
+      await transaction('environment_identification_rules').delete()
+      await transaction('environment_identification_rules').insert(rules.map((rule, index) => ({
+        environment: rule.environment,
+        name_patterns: null,
+        ip_ranges: null,
+        rule_field: rule.field,
+        rule_operator: rule.operator,
+        rule_value: rule.value,
+        priority: rule.priority,
+        sort_order: index,
+        updated_at: database.fn.now(),
+      })))
+      for (const item of updates) await transaction('server_assessments').where({ id: item.id }).update({ environment_type: item.proposedEnvironment })
+      await refreshCoreInfrastructureSummary(transaction)
+      return { updated: updates.length, summary: summarizeEnvironmentMatches(items), items }
+    })
+    response.json(result)
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to apply environment identification.' })
+  }
+})
+
+async function loadAssessmentIdentities(connection: Knex | Knex.Transaction = database): Promise<AssessmentIdentity[]> {
+  return connection('server_assessments').select({
+    id: 'id', serverName: 'server_name', ipAddress: 'ip_address', application: 'application', resourceTags: 'resource_tags',
+    sourceSystem: 'source_system', operatingSystemName: 'operating_system_name', migrationReadiness: 'migration_readiness',
+    securityReadiness: 'security_readiness', osSupportStatus: 'os_support_status', currentEnvironment: 'environment_type',
+  }).orderBy('server_name') as Promise<AssessmentIdentity[]>
+}
+
+function parseStoredRuleValues(value: string | null): string[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch { return [] }
+}
+
+function expandStoredEnvironmentRule(row: { environment: string; priority: number; field: string | null; operator: string | null; value: string | null; namePatterns: string | null; ipRanges: string | null }): EnvironmentRuleInput[] {
+  if (row.field && row.operator && row.value) return [{
+    environment: row.environment,
+    priority: Number(row.priority),
+    field: row.field as EnvironmentRuleInput['field'],
+    operator: row.operator as EnvironmentRuleInput['operator'],
+    value: row.value,
+  }]
+  return [
+    ...parseStoredRuleValues(row.namePatterns).map((value) => ({ environment: row.environment, priority: Number(row.priority), field: 'serverName' as const, operator: 'glob' as const, value })),
+    ...parseStoredRuleValues(row.ipRanges).map((value) => ({ environment: row.environment, priority: Number(row.priority), field: 'ipAddress' as const, operator: 'cidr' as const, value })),
+  ]
+}
+
+function summarizeEnvironmentMatches(items: ReturnType<typeof identifyServerEnvironments>) {
+  return {
+    total: items.length,
+    matched: items.filter(({ status }) => status === 'matched').length,
+    changed: items.filter(({ status, proposedEnvironment, currentEnvironment }) => status === 'matched' && proposedEnvironment !== currentEnvironment).length,
+    conflicts: items.filter(({ status }) => status === 'conflict').length,
+    unmatched: items.filter(({ status }) => status === 'unmatched').length,
+  }
+}
+
+app.post('/api/applications/sheets', workbookUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select an XLSX file.' })
+    return
+  }
+  try {
+    if (extname(file.originalname).toLowerCase() !== '.xlsx') {
+      response.status(400).json({ error: 'Worksheet discovery is only available for XLSX files.' })
+      return
+    }
+    response.json({ sheets: await listApplicationCatalogWorkbookSheets(file.path) })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Unable to read workbook sheets.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.post('/api/applications/import', workbookUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a CSV or XLSX file.' })
+    return
+  }
+  try {
+    const extension = extname(file.originalname).toLowerCase()
+    const sheetName = String(request.body.sheetName ?? '').trim() || undefined
+    if (extension === '.xlsx' && !sheetName) {
+      response.status(400).json({ error: 'Select a worksheet before importing this Excel file.' })
+      return
+    }
+    const result = await importApplicationCatalogFile(file.path, file.originalname, sheetName)
+    response.status(201).json({ result: { ...result, status: 'Completed' } })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Application catalog import failed.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
 app.post('/api/application-server-mappings/sheets', workbookUpload.single('file'), async (request, response) => {
   const file = request.file
   if (!file) {
@@ -1303,16 +1550,22 @@ function migrationPlanTasksAreValid(plan: Record<string, unknown>): boolean {
 }
 
 app.get('/api/migration-wave-plan', async (_request, response) => {
-  const saved = await database('migration_wave_plans')
-    .where({ id: 1 })
-    .first({ planJson: 'plan_json', savedAt: 'saved_at' }) as SavedMigrationWavePlanRow | undefined
+  const [saved, savedFilters, environments] = await Promise.all([
+    database('migration_wave_plans').where({ id: 1 }).first({ planJson: 'plan_json', savedAt: 'saved_at' }) as Promise<SavedMigrationWavePlanRow | undefined>,
+    database('migration_wave_plan_filters').where({ id: 1 }).first({ filterJson: 'filter_json', consideredServersJson: 'considered_servers_json' }) as Promise<SavedPlanFiltersRow | undefined>,
+    database('server_assessments').distinct({ environment: 'environment_type' }).whereNotNull('environment_type').orderBy('environment_type') as Promise<Array<{ environment: string }>>,
+  ])
+  const filterState = savedFilters ? parseJsonValue<Record<string, unknown>>(savedFilters.filterJson) : null
+  const inventory = { environments: environments.map(({ environment }) => environment), treatmentPlans: [...applicationTreatmentPlans] }
   if (!saved) {
-    response.json({ plan: null, savedAt: null })
+    response.json({ plan: null, savedAt: null, filterState, inventory })
     return
   }
   response.json({
     plan: typeof saved.planJson === 'string' ? JSON.parse(saved.planJson) : saved.planJson,
     savedAt: saved.savedAt,
+    filterState,
+    inventory,
   })
 })
 
@@ -1408,16 +1661,216 @@ app.post('/api/migration-wave-plan/dependencies', async (request, response) => {
   response.json({ dependencyPairs: await loadDependencyPairs(database, serverNames) })
 })
 
+type SprintScopeOption = { sequence: number; sprint: number; wave: number; environment: string; name: string; serverCount: number }
+
+function parseIpList(value: string | null | undefined): string[] {
+  if (!value) return []
+  return String(value).split(/[\s,;]+/).map((item) => item.trim()).filter((item) => item.length > 0 && isIP(item) !== 0)
+}
+
+async function buildSprintFirewallRuleSet(scope: 'all' | number, target: FirewallTarget, excludeCoreInfrastructure: boolean): Promise<{ sprints: SprintScopeOption[]; ruleSet: FirewallRuleSet | null; scopeFound: boolean }> {
+  const saved = await loadSavedTaskPlan()
+  if (!saved) return { sprints: [], ruleSet: null, scopeFound: false }
+  const sprints: SprintScopeOption[] = saved.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
+    sequence: sprint.sequence,
+    sprint: sprint.sprint,
+    wave: wave.wave,
+    environment: wave.environment,
+    name: sprint.name,
+    serverCount: sprint.serverCount,
+  }))).sort((left, right) => left.sequence - right.sequence)
+
+  const selectedSprints = scope === 'all' ? sprints : sprints.filter((sprint) => sprint.sequence === scope)
+  if (scope !== 'all' && selectedSprints.length === 0) return { sprints, ruleSet: null, scopeFound: false }
+
+  const selectedSequences = new Set(selectedSprints.map((sprint) => sprint.sequence))
+  const selectedSprintTasks = saved.plan.waves.flatMap((wave) => wave.sprints).filter((sprint) => selectedSequences.has(sprint.sequence))
+  // Map every server to the sprint it belongs to so on-prem rules can discard traffic between two servers in the same sprint.
+  const sprintMembership = selectedSprintTasks.flatMap((sprint) => sprint.servers
+    .map((server) => ({ serverName: server.name.trim(), sprintSequence: sprint.sequence }))
+    .filter((entry) => entry.serverName.length > 0))
+  const serverNames = [...new Set(sprintMembership.map((entry) => entry.serverName))]
+  const scopeLabel = scope === 'all'
+    ? `All sprints (${serverNames.length} servers)`
+    : `${selectedSprints[0]?.name ?? `Sprint ${scope}`} - Wave ${selectedSprints[0]?.wave ?? '?'} (${serverNames.length} servers)`
+
+  const networkRanges = await database('core_infrastructure_networks')
+    .whereIn('network_type', ['VPN', 'Office'])
+    .select({ type: 'network_type', ipRange: 'ip_range' }) as Array<{ type: string; ipRange: string }>
+  const networks: NetworkRange[] = networkRanges
+    .filter((row): row is { type: 'VPN' | 'Office'; ipRange: string } => row.type === 'VPN' || row.type === 'Office')
+    .map((row) => ({ type: row.type, ipRange: row.ipRange }))
+
+  if (serverNames.length === 0) {
+    return { sprints, ruleSet: buildFirewallRuleSet({ scopeLabel, target, sprintServerCount: 0, inbound: [], outbound: [], coreInfrastructureServerNames: [], coreInfrastructureIps: [], assessmentIps: [], networks, sprintMembership: [], portReferences: [], excludeCoreInfrastructure }), scopeFound: true }
+  }
+
+  const [inboundRows, outboundRows, coreServers, loadBalancerIps, assessmentRows, portReferences] = await Promise.all([
+    // Column order matches idx_dependencies_inbound_topology so MySQL groups via the index (no temporary table).
+    database('dependency_records')
+      .whereIn('destination_server_name', serverNames)
+      .select({ localServer: 'destination_server_name', localIp: 'destination_ip', port: 'destination_port', remoteServer: 'source_server_name', remoteIp: 'source_ip' })
+      .sum({ connections: 'connection_count' })
+      .groupBy('destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip')
+      .limit(200_000) as Promise<Array<Record<string, unknown>>>,
+    // Column order matches idx_dependencies_outbound_topology (source_ip is resolved from assessment data instead).
+    database('dependency_records')
+      .whereIn('source_server_name', serverNames)
+      .select({ localServer: 'source_server_name', remoteIp: 'destination_ip', port: 'destination_port', remoteServer: 'destination_server_name' })
+      .sum({ connections: 'connection_count' })
+      .groupBy('source_server_name', 'destination_ip', 'destination_port', 'destination_server_name')
+      .limit(200_000) as Promise<Array<Record<string, unknown>>>,
+    database('core_infrastructure_servers').distinct({ serverName: 'server_name', ipAddress: 'ip_address' }) as Promise<Array<{ serverName: string; ipAddress: string | null }>>,
+    database('core_infrastructure_load_balancer_ips').pluck('ip_address') as Promise<string[]>,
+    database('server_assessments').whereNotNull('ip_address').select({ serverName: 'server_name', ipAddress: 'ip_address' }) as Promise<Array<{ serverName: string; ipAddress: string | null }>>,
+    database('windows_services_ports').select({ windowsService: 'windows_service', shortDescription: 'short_description', ports: 'ports', networkProtocol: 'network_protocol', applicationProtocol: 'application_protocol' }) as Promise<PortReference[]>,
+  ])
+
+  const coreInfrastructureIps = [...new Set([
+    ...coreServers.flatMap((server) => parseIpList(server.ipAddress)),
+    ...loadBalancerIps.flatMap((ip) => parseIpList(ip)),
+  ])]
+  const assessmentIps = assessmentRows.flatMap((row) => {
+    const ip = parseIpList(row.ipAddress)[0]
+    return ip ? [{ serverName: row.serverName, ip }] : []
+  })
+  const assessmentIpByServer = new Map(assessmentIps.map(({ serverName, ip }) => [serverName, ip]))
+
+  const toFlow = (rows: Array<Record<string, unknown>>, resolveLocalIp: (localServer: string, row: Record<string, unknown>) => string | null): DependencyFlowRow[] => rows.map((row) => {
+    const localServer = String(row.localServer ?? '')
+    return {
+      localServer,
+      localIp: resolveLocalIp(localServer, row),
+      remoteServer: row.remoteServer === null || row.remoteServer === undefined ? null : String(row.remoteServer),
+      remoteIp: row.remoteIp === null || row.remoteIp === undefined ? null : String(row.remoteIp),
+      port: row.port === null || row.port === undefined ? null : Number(row.port),
+      connections: Number(row.connections ?? 0),
+    }
+  }).filter((flow) => flow.localServer.length > 0
+    // Drop self-loop traffic (server talking to itself) now that it is no longer filtered in SQL.
+    && !(flow.remoteServer !== null && flow.remoteServer === flow.localServer)
+    && !(flow.remoteIp !== null && flow.localIp !== null && flow.remoteIp === flow.localIp))
+
+  const ruleSet = buildFirewallRuleSet({
+    scopeLabel,
+    target,
+    sprintServerCount: serverNames.length,
+    inbound: toFlow(inboundRows, (_localServer, row) => (row.localIp === null || row.localIp === undefined ? null : String(row.localIp))),
+    outbound: toFlow(outboundRows, (localServer) => assessmentIpByServer.get(localServer) ?? null),
+    coreInfrastructureServerNames: coreServers.map((server) => server.serverName),
+    coreInfrastructureIps,
+    assessmentIps,
+    networks,
+    sprintMembership,
+    portReferences,
+    excludeCoreInfrastructure,
+  })
+  return { sprints, ruleSet, scopeFound: true }
+}
+
+function parseFirewallScope(value: unknown): 'all' | number | null {
+  const raw = String(value ?? 'all').trim().toLowerCase()
+  if (raw === '' || raw === 'all') return 'all'
+  const sequence = Number(raw)
+  return Number.isInteger(sequence) && sequence > 0 ? sequence : null
+}
+
+function parseFirewallTarget(value: unknown): FirewallTarget | null {
+  const raw = String(value ?? '').trim().toLowerCase()
+  return raw === 'nsg' || raw === 'azure-firewall' || raw === 'on-prem' ? raw : null
+}
+
+app.get('/api/firewall-rules', async (request, response) => {
+  const scope = parseFirewallScope(request.query.sprint)
+  if (scope === null) {
+    response.status(400).json({ error: 'sprint must be "all" or a positive sprint sequence.' })
+    return
+  }
+  const target = parseFirewallTarget(request.query.target)
+  if (target === null) {
+    response.status(400).json({ error: 'target must be one of "nsg", "azure-firewall", or "on-prem".' })
+    return
+  }
+  const excludeCoreInfrastructure = request.query.excludeCoreInfrastructure === 'true'
+  const { sprints, ruleSet, scopeFound } = await buildSprintFirewallRuleSet(scope, target, excludeCoreInfrastructure)
+  if (sprints.length === 0) {
+    response.status(404).json({ error: 'A saved migration wave plan is required. Generate and save a wave plan first.' })
+    return
+  }
+  if (!scopeFound || !ruleSet) {
+    response.status(404).json({ error: `Sprint sequence ${scope} was not found in the saved plan.`, sprints })
+    return
+  }
+  response.json({
+    scope: scope === 'all' ? 'all' : scope,
+    target,
+    excludeCoreInfrastructure,
+    sprints,
+    scopeLabel: ruleSet.scopeLabel,
+    summary: ruleSet.summary,
+    truncated: ruleSet.truncated,
+    sprintAddresses: ruleSet.sprintAddresses,
+    rules: ruleSet.rules,
+  })
+})
+
+app.get('/api/firewall-rules/export', async (request, response) => {
+  const format = String(request.query.format ?? '').toLowerCase()
+  if (format !== 'xlsx' && format !== 'terraform' && format !== 'bicep') {
+    response.status(400).json({ error: 'Choose xlsx, terraform, or bicep as the export format.' })
+    return
+  }
+  const scope = parseFirewallScope(request.query.sprint)
+  if (scope === null) {
+    response.status(400).json({ error: 'sprint must be "all" or a positive sprint sequence.' })
+    return
+  }
+  const target = parseFirewallTarget(request.query.target)
+  if (target === null) {
+    response.status(400).json({ error: 'target must be one of "nsg", "azure-firewall", or "on-prem".' })
+    return
+  }
+  if (target === 'on-prem' && format !== 'xlsx') {
+    response.status(400).json({ error: 'On-prem firewall rules can only be exported as an Excel workbook.' })
+    return
+  }
+  const excludeCoreInfrastructure = request.query.excludeCoreInfrastructure === 'true'
+  const { sprints, ruleSet, scopeFound } = await buildSprintFirewallRuleSet(scope, target, excludeCoreInfrastructure)
+  if (sprints.length === 0) {
+    response.status(404).json({ error: 'A saved migration wave plan is required. Generate and save a wave plan first.' })
+    return
+  }
+  if (!scopeFound || !ruleSet) {
+    response.status(404).json({ error: `Sprint sequence ${scope} was not found in the saved plan.` })
+    return
+  }
+  const baseName = scope === 'all' ? 'all-sprints' : `sprint-${scope}`
+  if (format === 'xlsx') {
+    response
+      .type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      .attachment(`firewall-rules-${baseName}-${target}.xlsx`)
+      .send(await createFirewallRulesWorkbook(ruleSet))
+    return
+  }
+  const archive = format === 'terraform' ? await createFirewallTerraformArchive(ruleSet) : await createFirewallBicepArchive(ruleSet)
+  response
+    .type('application/zip')
+    .attachment(`firewall-rules-${baseName}-${target}-${format}.zip`)
+    .send(archive)
+})
+
 app.put('/api/migration-wave-plan', async (request, response) => {
   let plan = request.body?.plan
-  const taskOptionFields = ['resetTasks', 'createSprintTasks', 'createDependencyTasks'] as const
+  const saveMode: PlanSaveMode = request.body?.saveMode === 'append' ? 'append' : request.body?.saveMode === 'replace' ? 'replace' : 'initial'
+  const taskOptionFields = ['resetTasks', 'createDependencyTasks'] as const
   if (taskOptionFields.some((field) => request.body?.[field] !== undefined && typeof request.body[field] !== 'boolean')) {
     response.status(400).json({ error: 'Task creation and reset options must be boolean values.' })
     return
   }
   const resetTasks = request.body?.resetTasks === true
-  const createSprintTasks = request.body?.createSprintTasks === true
   const createDependencyTasks = request.body?.createDependencyTasks === true
+  const existing = saveMode === 'append' ? await loadSavedTaskPlan() : null
+  const existingDependencyKeys = new Set(existing?.plan.crossSprintDependencies.map(planDependencyKey) ?? [])
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
     response.status(400).json({ error: 'A generated migration wave plan is required.' })
     return
@@ -1445,17 +1898,9 @@ app.put('/api/migration-wave-plan', async (request, response) => {
       dependencyReview: { acceptedDependencyKeys: [], taskKeys: [], commentsByKey: {}, assignmentsByKey: {} },
     }
   }
-  if (createSprintTasks) {
-    plan = {
-      ...plan,
-      waves: plan.waves.map((wave: { sprints: Array<Record<string, unknown>> }) => ({
-        ...wave,
-        sprints: wave.sprints.map((sprint) => ({ ...sprint, taskCreated: true })),
-      })),
-    }
-  }
   if (createDependencyTasks) {
-    const dependencyTaskKeys = (Array.isArray(plan.crossSprintDependencies) ? plan.crossSprintDependencies : []).map(planDependencyKey)
+    const dependencyTaskKeys = ((Array.isArray(plan.crossSprintDependencies) ? plan.crossSprintDependencies : []) as PlanDependencyTask[])
+      .map(planDependencyKey).filter((key: string) => saveMode !== 'append' || !existingDependencyKeys.has(key))
     plan = {
       ...plan,
       dependencyReview: {
@@ -1476,12 +1921,17 @@ app.put('/api/migration-wave-plan', async (request, response) => {
       generated_at: generatedAt,
       saved_at: savedAt,
     })
+    const existingFilters = await transaction('migration_wave_plan_filters').where({ id: 1 }).first({ consideredServersJson: 'considered_servers_json' }) as { consideredServersJson: string | string[] } | undefined
+    const previouslyConsidered = existingFilters ? parseJsonValue<string[]>(existingFilters.consideredServersJson) : []
+    const consideredServers = [...new Set([...(saveMode === 'append' ? previouslyConsidered : []), ...planServerNames(plan)])]
+    const { previouslyConsideredServers: _history, ...persistedOptions } = plan.options as MigrationWaveOptions
+    await transaction('migration_wave_plan_filters').insert({ id: 1, filter_json: JSON.stringify(persistedOptions), considered_servers_json: JSON.stringify(consideredServers), saved_at: savedAt })
+      .onConflict('id').merge({ filter_json: JSON.stringify(persistedOptions), considered_servers_json: JSON.stringify(consideredServers), saved_at: savedAt })
     if (resetTasks) await transaction('task_comment_audit').delete()
   })
   response.json({
     savedAt: savedAt.toISOString(),
     tasksReset: resetTasks,
-    sprintTasksCreated: createSprintTasks ? plan.waves.reduce((total: number, wave: { sprints: unknown[] }) => total + wave.sprints.length, 0) : 0,
     dependencyTasksCreated: createDependencyTasks ? plan.dependencyReview?.taskKeys?.length ?? 0 : 0,
     plan,
   })
@@ -1506,7 +1956,7 @@ app.post('/api/migration-wave-plan', async (request, response) => {
   const requestedOrder: string[] = Array.isArray(request.body?.environmentOrder)
     ? request.body.environmentOrder.map((value: unknown) => String(value).trim()).filter(Boolean).slice(0, 25)
     : defaultMigrationWaveOptions.environmentOrder
-  const exclusionFields = ['excludedApplications', 'excludedServers'] as const
+  const exclusionFields = ['excludedApplications', 'excludedServers', 'environmentFilters', 'treatmentPlans'] as const
   for (const field of exclusionFields) {
     if (request.body?.[field] !== undefined && !Array.isArray(request.body[field])) {
       response.status(400).json({ error: `${field} must be an array of names.` })
@@ -1545,8 +1995,49 @@ app.post('/api/migration-wave-plan', async (request, response) => {
     excludedServers: sanitizeExclusions(request.body?.excludedServers),
     applicationAffinityGroups: sanitizeAffinityGroups(request.body?.applicationAffinityGroups),
     serverAffinityGroups: sanitizeAffinityGroups(request.body?.serverAffinityGroups),
+    environmentFilters: sanitizeExclusions(request.body?.environmentFilters),
+    treatmentPlans: sanitizeExclusions(request.body?.treatmentPlans).filter((value) => applicationTreatmentPlans.has(value)),
+    previouslyConsideredServers: [],
   }
-  response.json(await createMigrationWavePlan(database, options))
+  if (options.treatmentPlans.length === 0) {
+    response.status(400).json({ error: 'Select at least one treatment plan.' })
+    return
+  }
+  const [saved, savedFilters, identities] = await Promise.all([
+    loadSavedTaskPlan(),
+    database('migration_wave_plan_filters').where({ id: 1 }).first({ filterJson: 'filter_json', consideredServersJson: 'considered_servers_json' }) as Promise<SavedPlanFiltersRow | undefined>,
+    database('server_assessments as assessments').leftJoin('applications', 'applications.name', 'assessments.application')
+      .select({ serverName: 'assessments.server_name', environment: 'assessments.environment_type', treatmentPlan: 'applications.treatment_plan' }) as Promise<Array<{ serverName: string; environment: string | null; treatmentPlan: string | null }>>,
+  ])
+  let saveMode: PlanSaveMode = saved ? 'replace' : 'initial'
+  if (saved) {
+    const previousOptions = { ...defaultMigrationWaveOptions, ...(saved.plan.options ?? {}), ...(savedFilters ? parseJsonValue<Partial<MigrationWaveOptions>>(savedFilters.filterJson) : {}) }
+    const planningKeys: Array<keyof MigrationWaveOptions> = ['minimumServers', 'maximumServers', 'considerEnvironments', 'prioritizeEnvironments', 'environmentOrder', 'dataHeavyStorageGb', 'separateDataHeavyWorkloads', 'excludedApplications', 'excludedServers', 'applicationAffinityGroups', 'serverAffinityGroups']
+    const samePlanningSettings = planningKeys.every((key) => JSON.stringify(previousOptions[key]) === JSON.stringify(options[key]))
+    const eligible = (identity: typeof identities[number], value: MigrationWaveOptions) => {
+      const environments = new Set(value.environmentFilters.map((item) => item.toLowerCase()))
+      const environmentMatch = environments.has((identity.environment?.trim() || 'Unspecified').toLowerCase())
+      const environmentEligible = environments.size === 0 || environmentMatch
+      return environmentEligible && new Set(value.treatmentPlans.map((item) => item.toLowerCase())).has((identity.treatmentPlan?.trim() || 'Rehost').toLowerCase())
+    }
+    const previousEligible = new Set(identities.filter((item) => eligible(item, previousOptions)).map(({ serverName }) => serverName.toLowerCase()))
+    const nextEligible = new Set(identities.filter((item) => eligible(item, options)).map(({ serverName }) => serverName.toLowerCase()))
+    const filterChanged = JSON.stringify(previousOptions.environmentFilters) !== JSON.stringify(options.environmentFilters)
+      || JSON.stringify(previousOptions.treatmentPlans) !== JSON.stringify(options.treatmentPlans)
+    const expandsOnly = filterChanged && [...previousEligible].every((name) => nextEligible.has(name))
+    if (samePlanningSettings && expandsOnly) {
+      saveMode = 'append'
+      options.previouslyConsideredServers = savedFilters ? parseJsonValue<string[]>(savedFilters.consideredServersJson) : planServerNames(saved.plan)
+    }
+  }
+  const generatedPlan = await createMigrationWavePlan(database, options)
+  generatedPlan.options.previouslyConsideredServers = []
+  if (saveMode === 'append' && saved) {
+    const mergedPreview = appendTaskPlan(saved.plan as TaskPlan & Record<string, unknown>, generatedPlan as unknown as TaskPlan & Record<string, unknown>)
+    response.json({ ...mergedPreview, saveMode })
+    return
+  }
+  response.json({ ...generatedPlan, saveMode })
 })
 
 app.get('/api/server-topology', async (request, response) => {
@@ -1812,4 +2303,23 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
   }
   response.status(500).json({ error: 'The request could not be completed.' })
 })
-app.listen(port, () => console.log(`Dependency Explorer listening on http://localhost:${port}`))
+app.listen(port, () => {
+  console.log(`Dependency Explorer listening on http://localhost:${port}`)
+  void ensureSchemaUpToDate()
+})
+
+let schemaMigrationRan = false
+
+// Apply any pending schema changes (new tables, columns, indexes) automatically at startup,
+// without blocking the server or requiring a manual `npm run migrate`.
+async function ensureSchemaUpToDate(): Promise<void> {
+  if (schemaMigrationRan) return
+  schemaMigrationRan = true
+  try {
+    console.log('Applying database schema migrations...')
+    await migrateSchema()
+    console.log('Database schema is up to date.')
+  } catch (error) {
+    console.error('Automatic schema migration failed; the server will keep running and retry on next restart.', error)
+  }
+}

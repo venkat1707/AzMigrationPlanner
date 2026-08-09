@@ -133,6 +133,7 @@ type MigrationWavePlan = {
     destinationSprint: number
     reason: string
   }>
+  saveMode?: 'initial' | 'append' | 'replace'
 }
 
 type PlannerSettings = {
@@ -147,6 +148,9 @@ type PlannerSettings = {
   excludedServers: string[]
   applicationAffinityGroups: string[][]
   serverAffinityGroups: string[][]
+  environmentFilters: string[]
+  treatmentPlans: string[]
+  previouslyConsideredServers: string[]
 }
 
 const defaultSettings: PlannerSettings = {
@@ -161,6 +165,9 @@ const defaultSettings: PlannerSettings = {
   excludedServers: [],
   applicationAffinityGroups: [],
   serverAffinityGroups: [],
+  environmentFilters: [],
+  treatmentPlans: ['Rehost'],
+  previouslyConsideredServers: [],
 }
 
 const formatNumber = new Intl.NumberFormat('en-US')
@@ -168,11 +175,13 @@ const formatStorage = (storageGb: number) => storageGb >= 1024
   ? `${(storageGb / 1024).toLocaleString('en-US', { maximumFractionDigits: 1 })} TB`
   : `${formatNumber.format(storageGb)} GB`
 const parseNames = (value: string) => [...new Set(value.split(/[\n,]/).map((name) => name.trim()).filter(Boolean))]
+const toggleSelection = (values: string[], value: string) => values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
 const parseAffinityGroups = (value: string) => value.split(/\r?\n/)
   .map((line) => [...new Set(line.split(',').map((name) => name.trim()).filter(Boolean))])
   .filter((group) => group.length >= 2)
 const formatAffinityGroups = (groups: string[][] | undefined) => (groups ?? []).map((group) => group.join(', ')).join('\n')
 const taskStatuses: TaskStatus[] = ['Assigned', 'In Review', 'Blocked', 'Completed']
+const treatmentPlanOptions = ['Rehost', 'Replatform', 'Refactor', 'Rearchitect', 'Retire', 'Retain', 'Replace']
 
 export default function MigrationWavePlanning() {
   const [settings, setSettings] = useState(defaultSettings)
@@ -194,6 +203,8 @@ export default function MigrationWavePlanning() {
   const [resetTasksConfirmation, setResetTasksConfirmation] = useState(false)
   const [regeneratedPlan, setRegeneratedPlan] = useState(false)
   const [createDependencyTasksOnSave, setCreateDependencyTasksOnSave] = useState(false)
+  const [saveMode, setSaveMode] = useState<'initial' | 'append' | 'replace'>('initial')
+  const [availableEnvironments, setAvailableEnvironments] = useState<string[]>([])
   const [savingTaskKey, setSavingTaskKey] = useState<string | null>(null)
   const [assignmentUsers, setAssignmentUsers] = useState<AssignmentUser[]>([])
 
@@ -212,13 +223,14 @@ export default function MigrationWavePlanning() {
     const loadSavedPlan = async () => {
       try {
         const response = await apiFetch('/api/migration-wave-plan')
-        const payload = await response.json() as { plan?: MigrationWavePlan | null; savedAt?: string | null; error?: string }
+        const payload = await response.json() as { plan?: MigrationWavePlan | null; savedAt?: string | null; filterState?: Partial<PlannerSettings> | null; inventory?: { environments?: string[] }; error?: string }
         if (!response.ok) throw new Error(payload.error ?? 'Unable to load the saved migration wave plan.')
+        setAvailableEnvironments(payload.inventory?.environments ?? [])
         if (!payload.plan) return
         if (!active) return
         setPlan(payload.plan)
         setSavedPlan(payload.plan)
-        setSettings({ ...defaultSettings, ...payload.plan.options })
+        setSettings({ ...defaultSettings, ...payload.plan.options, ...payload.filterState, previouslyConsideredServers: [] })
         setEnvironmentOrder(payload.plan.options.environmentOrder.join(', '))
         setExcludedApplications(payload.plan.options.excludedApplications.join(', '))
         setExcludedServers(payload.plan.options.excludedServers.join(', '))
@@ -264,7 +276,8 @@ export default function MigrationWavePlanning() {
       setPlan(payload)
       setSelectedWave(payload.waves[0]?.wave ?? 1)
       setSavedAt(null)
-      setRegeneratedPlan(Boolean(savedPlan))
+      setSaveMode(payload.saveMode ?? (savedPlan ? 'replace' : 'initial'))
+      setRegeneratedPlan((payload.saveMode ?? (savedPlan ? 'replace' : 'initial')) === 'replace')
       setCreateDependencyTasksOnSave(false)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to generate the migration wave plan.')
@@ -283,8 +296,8 @@ export default function MigrationWavePlanning() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           plan: planToSave,
+          saveMode,
           resetTasks,
-          createSprintTasks: false,
           createDependencyTasks: createDependencyTasksOnSave,
         }),
       })
@@ -297,6 +310,7 @@ export default function MigrationWavePlanning() {
       setSavedPlan(savedPlanValue)
       setRegeneratedPlan(false)
       setCreateDependencyTasksOnSave(false)
+      setSaveMode('initial')
       setResetTasksConfirmation(false)
       return true
     } catch (reason) {
@@ -332,6 +346,7 @@ export default function MigrationWavePlanning() {
     setDiscardConfirmation(false)
     setRegeneratedPlan(false)
     setCreateDependencyTasksOnSave(false)
+    setSaveMode('initial')
   }
 
   const updateSprintComment = (sequence: number, comment: string) => {
@@ -401,6 +416,13 @@ export default function MigrationWavePlanning() {
           <label><input type="checkbox" checked={settings.separateDataHeavyWorkloads} onChange={(event) => setSettings({ ...settings, separateDataHeavyWorkloads: event.target.checked })} /><span><strong>Separate data-heavy workloads</strong><small>Limit each sprint to one database or storage-heavy server.</small></span></label>
         </div>
         {settings.considerEnvironments && settings.prioritizeEnvironments && <label className="environment-order">Environment order<input value={environmentOrder} onChange={(event) => setEnvironmentOrder(event.target.value)} /><small>Comma-separated, earliest migration wave first.</small></label>}
+        <section className="wave-filter-panel" aria-labelledby="wave-filter-title">
+          <header><div><h3 id="wave-filter-title">Planning scope</h3><p>Choose which environments and application treatment plans are eligible. Saved filters are reused when this page opens.</p></div></header>
+          <div className="wave-filter-columns">
+            <fieldset><legend>Environments</legend><div className="wave-filter-options">{availableEnvironments.map((environment) => <label key={environment}><input type="checkbox" checked={settings.environmentFilters.includes(environment)} onChange={() => setSettings({ ...settings, environmentFilters: toggleSelection(settings.environmentFilters, environment) })} /><span>{environment}</span></label>)}</div><button type="button" className="clear-filter" disabled={settings.environmentFilters.length === 0} onClick={() => setSettings({ ...settings, environmentFilters: [] })}>Clear environment filter</button><small>Selected environments are considered for wave planning. No selection includes all environments.</small></fieldset>
+            <fieldset><legend>Treatment plans</legend><div className="wave-filter-options treatment-options">{treatmentPlanOptions.map((treatment) => <label key={treatment}><input type="checkbox" checked={settings.treatmentPlans.includes(treatment)} onChange={() => setSettings({ ...settings, treatmentPlans: toggleSelection(settings.treatmentPlans, treatment) })} /><span>{treatment}</span></label>)}</div><button type="button" className="clear-filter" onClick={() => setSettings({ ...settings, treatmentPlans: ['Rehost'] })}>Reset to Rehost</button><small>Applications without a saved treatment plan are treated as Rehost.</small></fieldset>
+          </div>
+        </section>
         <section className="wave-exclusions" aria-labelledby="wave-exclusions-title">
           <header><div><h3 id="wave-exclusions-title">Plan exclusions</h3><p>Exact names, separated by commas or new lines. Application exclusions remove every matching server.</p></div></header>
           <div>
@@ -475,8 +497,8 @@ export default function MigrationWavePlanning() {
       <footer><button className="cancel-button" type="button" onClick={() => setDiscardConfirmation(false)}>No, keep current plan</button><button className="discard-confirm-button" type="button" onClick={discardChanges}>Yes, discard changes</button></footer>
     </section></div>}
     {resetTasksConfirmation && plan && <div className="modal-backdrop" role="presentation"><section className={`wave-change-dialog save-plan-dialog${regeneratedPlan ? ' reset-tasks-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="save-plan-title">
-      <header><span>{regeneratedPlan ? <AlertTriangle size={20} /> : <Save size={20} />}</span><div><h2 id="save-plan-title">{regeneratedPlan ? 'Replace the saved plan and all tasks?' : 'Save generated migration plan?'}</h2><p>{regeneratedPlan ? 'This operation is not reversible. Existing assignments, statuses, comments, and task history will be deleted. Choose whether to create unassigned cross-dependency tasks from the replacement plan.' : 'Choose whether to create unassigned cross-dependency tasks with this migration plan.'}</p></div><button type="button" title="Close confirmation" disabled={saving} onClick={closeSaveConfirmation}><X size={18} /></button></header>
-      <div className="save-plan-task-options" aria-label="Task creation options"><label><input type="checkbox" checked={createDependencyTasksOnSave} onChange={(event) => setCreateDependencyTasksOnSave(event.target.checked)} /><span><strong>Create cross-dependency tasks</strong><small>Create {plan.crossSprintDependencies.length} unassigned task{plan.crossSprintDependencies.length === 1 ? '' : 's'}, one for each detected cross-sprint dependency.</small></span></label></div>
+      <header><span>{regeneratedPlan ? <AlertTriangle size={20} /> : <Save size={20} />}</span><div><h2 id="save-plan-title">{regeneratedPlan ? 'Replace the saved plan and all tasks?' : saveMode === 'append' ? 'Add newly eligible workloads?' : 'Save generated migration plan?'}</h2><p>{regeneratedPlan ? 'This change can affect the current wave plan. Existing assignments, statuses, comments, and task history will be deleted. Choose which unassigned tasks to create from the replacement plan.' : saveMode === 'append' ? 'Only servers and applications never considered by an earlier saved plan will be added. Existing waves and tasks remain unchanged.' : 'Choose which unassigned tasks to create with this migration plan.'}</p></div><button type="button" title="Close confirmation" disabled={saving} onClick={closeSaveConfirmation}><X size={18} /></button></header>
+      <div className="save-plan-task-options" aria-label="Task creation options"><label><input type="checkbox" checked={createDependencyTasksOnSave} onChange={(event) => setCreateDependencyTasksOnSave(event.target.checked)} /><span><strong>Create cross-dependency tasks</strong><small>{saveMode === 'append' ? 'Create unassigned tasks for dependencies newly introduced by these workloads.' : `Create ${plan.crossSprintDependencies.length} unassigned task${plan.crossSprintDependencies.length === 1 ? '' : 's'}, one for each detected cross-sprint dependency.`}</small></span></label></div>
       <footer><button className="cancel-button" type="button" disabled={saving} onClick={closeSaveConfirmation}>Cancel</button><button className={regeneratedPlan ? 'discard-confirm-button' : 'confirm-button'} type="button" disabled={saving} onClick={() => void savePlan(plan, regeneratedPlan)}>{saving ? (regeneratedPlan ? 'Replacing plan...' : 'Saving plan...') : regeneratedPlan ? 'Replace plan and apply selection' : 'Save plan and apply selection'}</button></footer>
     </section></div>}
   </div>

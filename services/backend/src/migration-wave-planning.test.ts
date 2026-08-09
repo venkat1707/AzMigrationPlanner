@@ -18,3 +18,22 @@ test('plans retain dependency pairs for excluded servers so later sprint creatio
   assert.equal(plan.crossSprintDependencies.length, 0)
   assert.deepEqual(plan.dependencyPairs, dependencies)
 })
+
+test('filters environments and treatments while omitting previously considered servers', () => {
+  const assessments = [
+    { serverName: 'new-rehost', application: 'Orders', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null, treatmentPlan: null },
+    { serverName: 'old-rehost', application: 'Billing', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null, treatmentPlan: 'Rehost' },
+    { serverName: 'new-refactor', application: 'Claims', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null, treatmentPlan: 'Refactor' },
+    { serverName: 'dev-rehost', application: 'Portal', environment: 'Dev', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null, treatmentPlan: 'Rehost' },
+  ]
+  const plan = buildMigrationWavePlan(assessments, [], [], {
+    ...defaultMigrationWaveOptions,
+    minimumServers: 1,
+    environmentFilters: ['Prod'],
+    treatmentPlans: ['Rehost'],
+    previouslyConsideredServers: ['old-rehost'],
+  })
+
+  assert.deepEqual(plan.waves.flatMap((wave) => wave.sprints).flatMap((sprint) => sprint.servers.map(({ name }) => name)), ['new-rehost'])
+  assert.equal(plan.summary.assessedServers, 1)
+})

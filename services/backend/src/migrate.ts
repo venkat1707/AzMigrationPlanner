@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url'
 import { closeDatabase, database } from './db.js'
 import { refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
 import { seedDatabaseServerEvidence } from './database-server-evidence.js'
@@ -128,6 +129,14 @@ export async function migrateSchema(): Promise<void> {
         ['source_server_name', 'destination_ip', 'destination_port', 'destination_server_name'],
         'idx_dependencies_outbound_topology',
       )
+      table.index(
+        ['destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip', 'connection_count'],
+        'idx_dependencies_inbound_fw',
+      )
+      table.index(
+        ['source_server_name', 'destination_ip', 'destination_port', 'destination_server_name', 'connection_count'],
+        'idx_dependencies_outbound_fw',
+      )
     })
   }
 
@@ -170,6 +179,22 @@ export async function migrateSchema(): Promise<void> {
       table.index(
         ['source_server_name', 'destination_ip', 'destination_port', 'destination_server_name'],
         'idx_dependencies_outbound_topology',
+      )
+    })
+  }
+  if (!dependencyIndexNames.has('idx_dependencies_inbound_fw')) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.index(
+        ['destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip', 'connection_count'],
+        'idx_dependencies_inbound_fw',
+      )
+    })
+  }
+  if (!dependencyIndexNames.has('idx_dependencies_outbound_fw')) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.index(
+        ['source_server_name', 'destination_ip', 'destination_port', 'destination_server_name', 'connection_count'],
+        'idx_dependencies_outbound_fw',
       )
     })
   }
@@ -235,11 +260,28 @@ export async function migrateSchema(): Promise<void> {
     await database.schema.dropTable('application_inventory')
   }
 
+  if (!(await database.schema.hasTable('applications'))) {
+    await database.schema.createTable('applications', (table) => {
+      table.string('name', 500).primary()
+      table.text('description').nullable()
+      table.string('treatment_plan', 20).nullable()
+      table.string('source', 30).notNullable().defaultTo('Derived')
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+    })
+  }
+
+  if (!(await database.schema.hasColumn('applications', 'treatment_plan'))) {
+    await database.schema.alterTable('applications', (table) => {
+      table.string('treatment_plan', 20).nullable()
+    })
+  }
+
   if (!(await database.schema.hasTable('server_assessments'))) {
     await database.schema.createTable('server_assessments', (table) => {
       table.bigIncrements('id').primary()
       table.bigInteger('import_run_id').unsigned().notNullable().references('id').inTable('import_runs').onDelete('RESTRICT')
-      table.string('application', 500).nullable()
+      table.string('application', 500).nullable().references('name').inTable('applications').onUpdate('CASCADE').onDelete('RESTRICT')
       table.text('application_description').nullable()
       table.string('server_name', 300).notNullable()
       table.string('migration_readiness', 100).nullable()
@@ -303,6 +345,61 @@ export async function migrateSchema(): Promise<void> {
   if (!(await database.schema.hasColumn('server_assessments', 'application_description'))) {
     await database.schema.alterTable('server_assessments', (table) => {
       table.text('application_description').nullable()
+    })
+  }
+
+  if (!(await database.schema.hasTable('environment_identification_rules'))) {
+    await database.schema.createTable('environment_identification_rules', (table) => {
+      table.bigIncrements('id').primary()
+      table.string('environment', 100).notNullable()
+      table.text('name_patterns').nullable()
+      table.text('ip_ranges').nullable()
+      table.string('rule_field', 50).nullable()
+      table.string('rule_operator', 30).nullable()
+      table.text('rule_value').nullable()
+      table.integer('priority').unsigned().notNullable().defaultTo(100)
+      table.integer('sort_order').unsigned().notNullable()
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+      table.index(['sort_order'], 'idx_environment_rules_sort_order')
+    })
+  }
+  if (!(await database.schema.hasColumn('environment_identification_rules', 'rule_field'))) {
+    await database.schema.alterTable('environment_identification_rules', (table) => {
+      table.string('rule_field', 50).nullable()
+      table.string('rule_operator', 30).nullable()
+      table.text('rule_value').nullable()
+      table.integer('priority').unsigned().notNullable().defaultTo(100)
+    })
+  }
+
+  const assessmentApplicationColumn = await database('information_schema.columns')
+    .select({ isNullable: 'is_nullable' })
+    .whereRaw('table_schema = DATABASE()')
+    .where({ table_name: 'server_assessments', column_name: 'application' })
+    .first() as { isNullable: string } | undefined
+  if (assessmentApplicationColumn?.isNullable !== 'YES') {
+    await database.schema.alterTable('server_assessments', (table) => {
+      table.string('application', 500).nullable().alter()
+    })
+  }
+
+  await database.raw(`
+    INSERT INTO applications (name, description, source)
+    SELECT application, MAX(application_description), 'Legacy'
+    FROM server_assessments
+    WHERE application IS NOT NULL AND TRIM(application) <> ''
+    GROUP BY application
+    ON DUPLICATE KEY UPDATE description = COALESCE(applications.description, VALUES(description))
+  `)
+  const assessmentApplicationForeignKey = await database('information_schema.referential_constraints')
+    .select({ constraintName: 'constraint_name' })
+    .whereRaw('constraint_schema = DATABASE()')
+    .where({ table_name: 'server_assessments', referenced_table_name: 'applications' })
+    .first() as { constraintName: string } | undefined
+  if (!assessmentApplicationForeignKey) {
+    await database.schema.alterTable('server_assessments', (table) => {
+      table.foreign('application', 'fk_server_assessments_application')
+        .references('name').inTable('applications').onUpdate('CASCADE').onDelete('RESTRICT')
     })
   }
 
@@ -447,6 +544,15 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  if (!(await database.schema.hasTable('migration_wave_plan_filters'))) {
+    await database.schema.createTable('migration_wave_plan_filters', (table) => {
+      table.integer('id').unsigned().primary()
+      table.json('filter_json').notNullable()
+      table.json('considered_servers_json').notNullable()
+      table.dateTime('saved_at').notNullable().defaultTo(database.fn.now())
+    })
+  }
+
   if (!(await database.schema.hasTable('task_comment_audit'))) {
     await database.schema.createTable('task_comment_audit', (table) => {
       table.bigIncrements('id').primary()
@@ -475,7 +581,11 @@ export async function migrateSchema(): Promise<void> {
 
 }
 
-migrateSchema()
-  .then(() => console.log('MySQL schema is ready.'))
-  .catch((error) => { console.error(error); process.exitCode = 1 })
-  .finally(closeDatabase)
+// Only run the CLI flow (which closes the pool) when executed directly, not when imported.
+const invokedDirectly = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+if (invokedDirectly) {
+  migrateSchema()
+    .then(() => console.log('MySQL schema is ready.'))
+    .catch((error) => { console.error(error); process.exitCode = 1 })
+    .finally(closeDatabase)
+}

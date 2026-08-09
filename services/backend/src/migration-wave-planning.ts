@@ -12,6 +12,9 @@ export type MigrationWaveOptions = {
   excludedServers: string[]
   applicationAffinityGroups: string[][]
   serverAffinityGroups: string[][]
+  environmentFilters: string[]
+  treatmentPlans: string[]
+  previouslyConsideredServers: string[]
 }
 
 type AssessmentRow = {
@@ -24,6 +27,7 @@ type AssessmentRow = {
   databaseServer: number | boolean
   totalIssues: number | null
   recommendedComputeSku: string | null
+  treatmentPlan?: string | null
 }
 
 export type DependencyRow = {
@@ -79,17 +83,22 @@ export const defaultMigrationWaveOptions: MigrationWaveOptions = {
   excludedServers: [],
   applicationAffinityGroups: [],
   serverAffinityGroups: [],
+  environmentFilters: [],
+  treatmentPlans: ['Rehost'],
+  previouslyConsideredServers: [],
 }
 
 export async function createMigrationWavePlan(
   connection: Knex | Knex.Transaction,
   options: MigrationWaveOptions,
 ) {
-  const assessments = await connection('server_assessments').select({
-    serverName: 'server_name', application: 'application', environment: 'environment_type',
-    migrationReadiness: 'migration_readiness', securityReadiness: 'security_readiness',
-    storageGb: 'onprem_storage_gb', databaseServer: 'database_server', totalIssues: 'total_issues_count',
-    recommendedComputeSku: 'recommended_compute_sku',
+  const assessments = await connection('server_assessments as assessments')
+    .leftJoin('applications', 'applications.name', 'assessments.application')
+    .select({
+    serverName: 'assessments.server_name', application: 'assessments.application', environment: 'assessments.environment_type',
+    migrationReadiness: 'assessments.migration_readiness', securityReadiness: 'assessments.security_readiness',
+    storageGb: 'assessments.onprem_storage_gb', databaseServer: 'assessments.database_server', totalIssues: 'assessments.total_issues_count',
+    recommendedComputeSku: 'assessments.recommended_compute_sku', treatmentPlan: 'applications.treatment_plan',
   }) as AssessmentRow[]
 
   const serverNames = assessments.map(({ serverName }) => serverName)
@@ -108,6 +117,16 @@ export function buildMigrationWavePlan(
   dependencies: DependencyRow[],
   options: MigrationWaveOptions,
 ) {
+  const environmentFilters = new Set(options.environmentFilters.map(normalize))
+  const selectedTreatments = new Set(options.treatmentPlans.map(normalize))
+  const previouslyConsidered = new Set(options.previouslyConsideredServers.map(normalize))
+  const eligibleAssessments = assessments.filter((assessment) => {
+    const environmentMatches = environmentFilters.has(normalize(clean(assessment.environment, 'Unspecified')))
+    const environmentEligible = environmentFilters.size === 0 || environmentMatches
+    const treatment = clean(assessment.treatmentPlan, 'Rehost')
+    return environmentEligible && selectedTreatments.has(normalize(treatment)) && !previouslyConsidered.has(normalize(assessment.serverName))
+  })
+
   const rolesByServer = new Map<string, string[]>()
   for (const { serverName, category } of infrastructureRows) {
     const roles = rolesByServer.get(normalize(serverName)) ?? []
@@ -115,7 +134,7 @@ export function buildMigrationWavePlan(
     rolesByServer.set(normalize(serverName), roles)
   }
 
-  const servers = assessments.map((assessment): PlanningServer => {
+  const servers = eligibleAssessments.map((assessment): PlanningServer => {
     const migrationReadiness = clean(assessment.migrationReadiness, 'Unknown')
     const readiness = classifyReadiness(migrationReadiness, assessment.totalIssues)
     const roles = rolesByServer.get(normalize(assessment.serverName)) ?? []

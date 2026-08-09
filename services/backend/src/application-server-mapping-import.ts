@@ -3,6 +3,7 @@ import { extname } from 'node:path'
 import { parse } from 'csv-parse'
 import ExcelJS from 'exceljs'
 import type { Knex } from 'knex'
+import { upsertApplications } from './application-catalog-import.js'
 import { prepareAssessmentWorkbook } from './assessment-workbook.js'
 import { refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
 import { database } from './db.js'
@@ -188,6 +189,10 @@ export async function importApplicationServerMappingFile(
 
       const writeBatch = async () => {
         if (!batch.length) return
+        await upsertApplications(transaction, batch.map((record) => ({
+          name: record.application,
+          description: record.application_description,
+        })), 'ApplicationMapping')
         await transaction('server_assessments')
           .insert(batch)
           .onConflict('server_name')
