@@ -120,6 +120,24 @@ npm start
 
 The backend service serves the built frontend application at http://localhost:3000.
 
+## Continuous integration
+
+The GitHub Actions workflow in `.github/workflows/ci.yml` runs for pull requests and pushes to `main`. It installs the locked dependency graph with `npm ci`, builds both workspaces, runs the backend test suite and typecheck, and uploads the compiled application as a short-lived artifact.
+
+Frontend ESLint and the production dependency audit currently report known upstream findings, so they run as visible non-blocking checks. Once their existing baselines are cleared, remove `continue-on-error` from those workflow steps to make them required gates.
+
+### Azure App Service deployment
+
+After CI succeeds on `main`, `.github/workflows/deploy-app-service.yml` deploys the tested revision directly to the production App Service. The workflow does not use a deployment slot. It can also be started manually from the GitHub Actions page.
+
+Create a GitHub environment named `production`, then configure the repository variables `AZURE_WEBAPP_NAME` and `AZURE_RESOURCE_GROUP` with the existing App Service name and resource group. Add these GitHub environment secrets:
+
+- `AZURE_CLIENT_ID`, `AZURE_SUBSCRIPTION_ID`, and `AZURE_TENANT_ID` for Azure workload identity federation.
+- `DB_HOST`, `DB_NAME`, `DB_PASSWORD`, `DB_PORT`, `DB_SSL`, and `DB_USER` for MySQL.
+- `FRONTEND_ORIGIN` with the public application origin, such as `https://<app-name>.azurewebsites.net`.
+
+Configure a federated identity credential on the Entra application for the GitHub `production` environment, with subject `repo:<owner>/<repository>:environment:production`. Grant that identity the Website Contributor role scoped to the target App Service or its resource group. No Azure client secret or publish profile is required.
+
 ## REST API
 
 `GET /api/health` checks MySQL connectivity.

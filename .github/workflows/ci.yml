@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Run backend tests
+        run: npm test
+
+      - name: Typecheck backend
+        run: npm run lint --workspace backend
+
+      - name: Run frontend lint
+        continue-on-error: true
+        run: npm run lint --workspace frontend
+
+      - name: Audit production dependencies
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Upload compiled application
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            services/backend/dist/
+            services/frontend/dist/
