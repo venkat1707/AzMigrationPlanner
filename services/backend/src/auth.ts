@@ -664,6 +664,10 @@ export function registerAuthentication(app: Express): void {
 
   app.use('/api', (request, response, next) => {
     const context = response.locals.auth as AuthContext
+    if (request.path === '/health') {
+      next()
+      return
+    }
     if (!context.settings.authenticationEnabled) {
       next()
       return
