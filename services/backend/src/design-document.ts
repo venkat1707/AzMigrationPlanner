@@ -62,8 +62,10 @@ async function acquireToken(scope: string): Promise<string> {
     const token = await credential.getToken(scope)
     if (!token?.token) throw new Error('empty token')
     return token.token
-  } catch {
-    throw new DesignDocumentError('The application could not obtain an access token for the agent from its managed identity.', 502)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    console.error(`Failed to acquire agent access token for scope "${scope}":`, error)
+    throw new DesignDocumentError(`The application could not obtain an access token for the agent from its managed identity. ${detail}`, 502)
   }
 }
 
