@@ -213,6 +213,9 @@ function buildResponsesUrl(endpointUrl: string): string {
   return url.toString()
 }
 
+type InputMessage = { type: 'message'; role: string; content: Array<{ type: 'input_text'; text: string }> }
+const inputMessage = (role: string, text: string): InputMessage => ({ type: 'message', role, content: [{ type: 'input_text', text }] })
+
 const responseContract = [
   'You are generating a High-Level Design (HLD) document for hosting an application on Microsoft Azure.',
   'Base the design strictly on the supplied application map.',
@@ -327,7 +330,7 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
   const isLoopback = endpoint.hostname === 'localhost' || endpoint.hostname === '127.0.0.1'
   const token = isLoopback ? null : await acquireToken(agent.auth_scope || defaultAgentScope)
 
-  const messages: Array<{ role: string; content: string }> = []
+  const messages: InputMessage[] = []
   if (!input.conversationId) {
     const applicationMap = {
       application: map.application,
@@ -336,29 +339,23 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
       nodes: map.nodes,
       edges: map.edges,
     }
-    messages.push({ role: 'system', content: responseContract })
-    messages.push({
-      role: 'user',
-      content: [
-        'Task: Produce a high-level design document for hosting this application on Microsoft Azure.',
-        `Application: ${input.application}`,
-        `Environment: ${input.environment}`,
-        'Application map (JSON):',
-        JSON.stringify(applicationMap),
-      ].join('\n'),
-    })
+    messages.push(inputMessage('system', responseContract))
+    messages.push(inputMessage('user', [
+      'Task: Produce a high-level design document for hosting this application on Microsoft Azure.',
+      `Application: ${input.application}`,
+      `Environment: ${input.environment}`,
+      'Application map (JSON):',
+      JSON.stringify(applicationMap),
+    ].join('\n')))
   } else {
     const answersText = input.answers.length
       ? input.answers.map((answer) => `- ${answer.id}: ${answer.response}`).join('\n')
       : '(no additional answers provided)'
-    messages.push({
-      role: 'user',
-      content: [
-        'Here are the answers to your questions:',
-        answersText,
-        'Use these to finalize the design and reply only with the JSON contract as previously instructed.',
-      ].join('\n'),
-    })
+    messages.push(inputMessage('user', [
+      'Here are the answers to your questions:',
+      answersText,
+      'Use these to finalize the design and reply only with the JSON contract as previously instructed.',
+    ].join('\n')))
   }
 
   const payload: Record<string, unknown> = { input: messages }
