@@ -252,6 +252,43 @@ async function enabledAdminCount(excludeId?: number): Promise<number> {
   return Number(result?.count ?? 0)
 }
 
+const agentPurposes = ['design-document', 'firewall-rules', 'general'] as const
+type AgentPurpose = (typeof agentPurposes)[number]
+
+function mapAgent(row: Record<string, unknown>) {
+  return {
+    id: Number(row.id),
+    name: String(row.name),
+    purpose: String(row.purpose) as AgentPurpose,
+    endpointUrl: String(row.endpoint_url),
+    authScope: row.auth_scope ? String(row.auth_scope) : null,
+    description: row.description ? String(row.description) : null,
+    enabled: bool(row.enabled),
+  }
+}
+
+function parseAgentBody(body: Record<string, unknown>): { values?: Record<string, unknown>; error?: string } {
+  const name = String(body.name ?? '').trim()
+  const endpointUrl = String(body.endpointUrl ?? '').trim()
+  const purposeRaw = String(body.purpose ?? 'general').trim()
+  const purpose = (agentPurposes as readonly string[]).includes(purposeRaw) ? purposeRaw : 'general'
+  const authScope = String(body.authScope ?? '').trim() || null
+  const description = String(body.description ?? '').trim() || null
+  if (!name) return { error: 'An agent name is required.' }
+  if (!endpointUrl) return { error: 'An agent endpoint URL is required.' }
+  let parsed: URL
+  try {
+    parsed = new URL(endpointUrl)
+  } catch {
+    return { error: 'The endpoint URL is not valid.' }
+  }
+  const isLoopback = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopback)) {
+    return { error: 'The endpoint URL must use HTTPS.' }
+  }
+  return { values: { name, purpose, endpoint_url: endpointUrl, auth_scope: authScope, description } }
+}
+
 function useManagedIdentity(): boolean {
   return process.env.ENTRA_USE_MANAGED_IDENTITY === 'true'
 }
@@ -551,6 +588,77 @@ export function registerAuthentication(app: Express): void {
       return
     }
     await database('app_users').where('id', id).delete()
+    response.status(204).end()
+  })
+
+  app.get('/api/admin/agents', async (request, response) => {
+    if (!requireAdmin(request, response)) return
+    const rows = await database('agent_endpoints').select('*').orderBy('name')
+    response.json({ items: rows.map(mapAgent) })
+  })
+
+  app.post('/api/admin/agents', async (request, response) => {
+    if (!requireAdmin(request, response)) return
+    const parsed = parseAgentBody(request.body)
+    if (!parsed.values) {
+      response.status(400).json({ error: parsed.error })
+      return
+    }
+    try {
+      const inserted = await database('agent_endpoints').insert({
+        ...parsed.values,
+        enabled: request.body.enabled === undefined ? true : bool(request.body.enabled),
+      })
+      const row = await database('agent_endpoints').where('id', inserted[0]).first()
+      response.status(201).json({ agent: mapAgent(row) })
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ER_DUP_ENTRY') {
+        response.status(409).json({ error: 'An agent with that name already exists.' })
+        return
+      }
+      throw error
+    }
+  })
+
+  app.put('/api/admin/agents/:id', async (request, response) => {
+    if (!requireAdmin(request, response)) return
+    const id = Number(request.params.id)
+    const existing = await database('agent_endpoints').where('id', id).first()
+    if (!existing) {
+      response.status(404).json({ error: 'Agent not found.' })
+      return
+    }
+    const parsed = parseAgentBody(request.body)
+    if (!parsed.values) {
+      response.status(400).json({ error: parsed.error })
+      return
+    }
+    try {
+      await database('agent_endpoints').where('id', id).update({
+        ...parsed.values,
+        enabled: request.body.enabled === undefined ? bool(existing.enabled) : bool(request.body.enabled),
+        updated_at: database.fn.now(),
+      })
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ER_DUP_ENTRY') {
+        response.status(409).json({ error: 'An agent with that name already exists.' })
+        return
+      }
+      throw error
+    }
+    const row = await database('agent_endpoints').where('id', id).first()
+    response.json({ agent: mapAgent(row) })
+  })
+
+  app.delete('/api/admin/agents/:id', async (request, response) => {
+    if (!requireAdmin(request, response)) return
+    const id = Number(request.params.id)
+    const existing = await database('agent_endpoints').where('id', id).first()
+    if (!existing) {
+      response.status(404).json({ error: 'Agent not found.' })
+      return
+    }
+    await database('agent_endpoints').where('id', id).delete()
     response.status(204).end()
   })
 

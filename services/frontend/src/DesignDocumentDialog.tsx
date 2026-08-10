@@ -1,0 +1,205 @@
+import { useEffect, useRef, useState } from 'react'
+import { CheckCircle2, Download, FileText, Loader2, TriangleAlert, X } from 'lucide-react'
+import { apiFetch } from './auth-client'
+
+type DesignQuestion = {
+  id: string
+  prompt: string
+  kind: 'text' | 'multiline' | 'single-choice' | 'multi-choice' | 'boolean'
+  options: string[]
+  required: boolean
+}
+
+type NeedsInput = { status: 'needs-input'; conversationId: string | null; message: string | null; questions: DesignQuestion[] }
+type Completed = { status: 'completed'; fileName: string; contentType: string; contentBase64: string }
+type DesignResponse = NeedsInput | Completed | { error?: string }
+
+type Phase = 'working' | 'questions' | 'saving' | 'done' | 'error'
+
+type SaveFilePicker = (options?: {
+  suggestedName?: string
+  types?: Array<{ description?: string; accept: Record<string, string[]> }>
+}) => Promise<{ createWritable: () => Promise<{ write: (data: BufferSource | Blob) => Promise<void>; close: () => Promise<void> }> }>
+
+function base64ToBlob(base64: string, contentType: string): Blob {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return new Blob([bytes], { type: contentType })
+}
+
+async function saveDocument(file: Completed): Promise<'saved' | 'downloaded'> {
+  const blob = base64ToBlob(file.contentBase64, file.contentType || 'application/octet-stream')
+  const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker
+  if (picker) {
+    const handle = await picker({
+      suggestedName: file.fileName,
+      types: [{ description: 'Word document', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }],
+    })
+    const writable = await handle.createWritable()
+    await writable.write(blob)
+    await writable.close()
+    return 'saved'
+  }
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.fileName
+  link.click()
+  URL.revokeObjectURL(url)
+  return 'downloaded'
+}
+
+export default function DesignDocumentDialog({ application, environment, onClose }: {
+  application: string
+  environment: string
+  onClose: () => void
+}) {
+  const [phase, setPhase] = useState<Phase>('working')
+  const [statusText, setStatusText] = useState('Contacting the design agent and sharing the application map…')
+  const [error, setError] = useState('')
+  const [questions, setQuestions] = useState<DesignQuestion[]>([])
+  const [message, setMessage] = useState<string | null>(null)
+  const [answers, setAnswers] = useState<Record<string, string>>({})
+  const [multi, setMulti] = useState<Record<string, Set<string>>>({})
+  const [savedName, setSavedName] = useState('')
+  const [saveMode, setSaveMode] = useState<'saved' | 'downloaded'>('saved')
+  const conversationId = useRef<string | null>(null)
+
+  const send = async (payloadAnswers: Array<{ id: string; response: string }>) => {
+    setPhase('working')
+    setError('')
+    setStatusText(payloadAnswers.length ? 'Sending your answers to the design agent…' : 'Contacting the design agent and sharing the application map…')
+    try {
+      const response = await apiFetch('/api/application-map/design-document', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ application, environment, conversationId: conversationId.current, answers: payloadAnswers }),
+      })
+      const data = await response.json() as DesignResponse
+      if (!response.ok) throw new Error(('error' in data && data.error) || 'The design document request failed.')
+      if ('status' in data && data.status === 'needs-input') {
+        conversationId.current = data.conversationId ?? conversationId.current
+        setMessage(data.message)
+        setQuestions(data.questions)
+        setAnswers({})
+        setMulti({})
+        setPhase('questions')
+        return
+      }
+      if ('status' in data && data.status === 'completed') {
+        setPhase('saving')
+        setStatusText('Choose where to save the Word document…')
+        const outcome = await saveDocument(data)
+        setSavedName(data.fileName)
+        setSaveMode(outcome)
+        setPhase('done')
+        return
+      }
+      throw new Error('The agent response could not be understood.')
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === 'AbortError') {
+        setError('Saving was cancelled. You can try generating the document again.')
+      } else {
+        setError(reason instanceof Error ? reason.message : 'The design document could not be generated.')
+      }
+      setPhase('error')
+    }
+  }
+
+  useEffect(() => {
+    void send([])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const submitAnswers = () => {
+    const missing = questions.find((question) => {
+      if (!question.required) return false
+      if (question.kind === 'multi-choice') return (multi[question.id]?.size ?? 0) === 0
+      return !(answers[question.id] ?? '').trim()
+    })
+    if (missing) {
+      setError('Please answer all required questions before continuing.')
+      return
+    }
+    const payload = questions.map((question) => ({
+      id: question.id,
+      response: question.kind === 'multi-choice' ? [...(multi[question.id] ?? [])].join(', ') : (answers[question.id] ?? '').trim(),
+    }))
+    void send(payload)
+  }
+
+  const toggleMulti = (questionId: string, option: string) => {
+    setMulti((current) => {
+      const next = new Set(current[questionId] ?? [])
+      if (next.has(option)) next.delete(option)
+      else next.add(option)
+      return { ...current, [questionId]: next }
+    })
+  }
+
+  return <div className="design-dialog-overlay" role="dialog" aria-modal="true" aria-label="Create high-level design document">
+    <div className="design-dialog">
+      <header className="design-dialog-head">
+        <div><span className="design-dialog-icon"><FileText size={18} /></span><div><strong>High-level design document</strong><small>{application} · {environment} · hosted on Azure</small></div></div>
+        <button type="button" className="design-dialog-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
+      </header>
+
+      <div className="design-dialog-body">
+        {phase === 'working' || phase === 'saving'
+          ? <div className="design-dialog-status"><Loader2 className="spin" size={26} /><p>{statusText}</p></div>
+          : null}
+
+        {phase === 'questions'
+          ? <form className="design-dialog-questions" onSubmit={(event) => { event.preventDefault(); submitAnswers() }}>
+            <p className="design-dialog-intro">{message ?? 'The design agent needs a few details before it can finalize the document.'}</p>
+            {questions.map((question) => <fieldset key={question.id} className="design-question">
+              <legend>{question.prompt}{question.required ? <span className="design-required"> *</span> : null}</legend>
+              {question.kind === 'multiline'
+                ? <textarea rows={3} value={answers[question.id] ?? ''} onChange={(event) => setAnswers({ ...answers, [question.id]: event.target.value })} />
+                : question.kind === 'single-choice'
+                  ? <select value={answers[question.id] ?? ''} onChange={(event) => setAnswers({ ...answers, [question.id]: event.target.value })}>
+                    <option value="">Select an option</option>
+                    {question.options.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                  : question.kind === 'boolean'
+                    ? <div className="design-choice-row">
+                      {['Yes', 'No'].map((option) => <label key={option} className="design-choice"><input type="radio" name={question.id} checked={answers[question.id] === option} onChange={() => setAnswers({ ...answers, [question.id]: option })} /> {option}</label>)}
+                    </div>
+                    : question.kind === 'multi-choice'
+                      ? <div className="design-choice-grid">
+                        {question.options.map((option) => <label key={option} className="design-choice"><input type="checkbox" checked={multi[question.id]?.has(option) ?? false} onChange={() => toggleMulti(question.id, option)} /> {option}</label>)}
+                      </div>
+                      : <input type="text" value={answers[question.id] ?? ''} onChange={(event) => setAnswers({ ...answers, [question.id]: event.target.value })} />}
+            </fieldset>)}
+            {error ? <p className="design-dialog-error">{error}</p> : null}
+            <div className="design-dialog-actions">
+              <button type="button" className="ghost" onClick={onClose}>Cancel</button>
+              <button type="submit"><Download size={15} /> Submit answers</button>
+            </div>
+          </form>
+          : null}
+
+        {phase === 'done'
+          ? <div className="design-dialog-status success">
+            <CheckCircle2 size={30} />
+            <p>{saveMode === 'saved' ? 'The high-level design document was saved.' : 'The high-level design document was downloaded.'}</p>
+            <small>{savedName}</small>
+            <div className="design-dialog-actions"><button type="button" onClick={onClose}>Done</button></div>
+          </div>
+          : null}
+
+        {phase === 'error'
+          ? <div className="design-dialog-status error">
+            <TriangleAlert size={28} />
+            <p>{error}</p>
+            <div className="design-dialog-actions">
+              <button type="button" className="ghost" onClick={onClose}>Close</button>
+              <button type="button" onClick={() => void send([])}>Try again</button>
+            </div>
+          </div>
+          : null}
+      </div>
+    </div>
+  </div>
+}

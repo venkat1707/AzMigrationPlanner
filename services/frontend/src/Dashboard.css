@@ -493,6 +493,41 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .application-map-legend i.shared-database { background: #7a3f72; }
 .application-map-legend i.load-balancer { background: #19758a; }
 .application-map-legend i.network { background: #4f6f52; }
+.application-map-summary-meta { display: flex; align-items: center; gap: 20px; }
+.design-doc-button { height: 40px; padding: 0 15px; display: inline-flex; align-items: center; gap: 8px; color: white; background: var(--accent); border: 0; border-radius: 5px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: var(--shadow); }
+.design-doc-button:hover { background: var(--accent-dark); }
+.design-dialog-overlay { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 24px; background: rgb(15 23 42 / 45%); backdrop-filter: blur(2px); }
+.design-dialog { width: min(560px, 100%); max-height: 88vh; display: flex; flex-direction: column; background: white; border-radius: 10px; box-shadow: 0 24px 60px rgb(15 23 42 / 28%); overflow: hidden; }
+.design-dialog-head { padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--line); }
+.design-dialog-head > div:first-child { display: flex; align-items: center; gap: 11px; }
+.design-dialog-icon { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; color: var(--accent); background: var(--accent-soft); border-radius: 8px; }
+.design-dialog-head strong { display: block; font-size: 14px; }
+.design-dialog-head small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.design-dialog-close { width: 32px; height: 32px; display: grid; place-items: center; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+.design-dialog-close:hover { color: var(--ink); background: #f1f4f9; }
+.design-dialog-body { padding: 18px; overflow-y: auto; }
+.design-dialog-status { padding: 22px 8px; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; color: #3a4a60; }
+.design-dialog-status p { margin: 0; font-size: 13px; font-weight: 600; }
+.design-dialog-status small { color: var(--muted); font-size: 12px; word-break: break-all; }
+.design-dialog-status.success { color: var(--success); }
+.design-dialog-status.error { color: var(--danger); }
+.design-dialog-intro { margin: 0 0 14px; color: #3a4a60; font-size: 13px; line-height: 1.5; }
+.design-question { margin: 0 0 14px; padding: 0; border: 0; }
+.design-question legend { padding: 0; margin-bottom: 7px; color: #2b3a4f; font-size: 12px; font-weight: 700; }
+.design-required { color: var(--danger); }
+.design-question input[type="text"], .design-question textarea, .design-question select { width: 100%; padding: 9px 11px; color: var(--ink); background: white; border: 1px solid #c4cfdf; border-radius: 5px; outline: none; font: inherit; font-size: 13px; }
+.design-question textarea { resize: vertical; }
+.design-question input[type="text"]:focus, .design-question textarea:focus, .design-question select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.design-choice-row, .design-choice-grid { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.design-choice-grid { flex-direction: column; }
+.design-choice { display: flex; align-items: center; gap: 7px; color: #33465c; font-size: 13px; font-weight: 600; cursor: pointer; }
+.design-choice input { accent-color: var(--accent); }
+.design-dialog-error { margin: 4px 0 0; color: var(--danger); font-size: 12px; font-weight: 600; }
+.design-dialog-actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 10px; }
+.design-dialog-actions button { height: 38px; padding: 0 16px; display: inline-flex; align-items: center; gap: 7px; color: white; background: var(--accent); border: 0; border-radius: 5px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.design-dialog-actions button:hover { background: var(--accent-dark); }
+.design-dialog-actions button.ghost { color: #41566d; background: white; border: 1px solid #c4cfdf; }
+.design-dialog-actions button.ghost:hover { background: #f1f4f9; }
 .application-graph-panel { margin-top: 12px; overflow: hidden; background: white; border: 1px solid var(--line); border-radius: 5px; }
 .application-graph-toolbar { min-height: 58px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); }
 .application-graph-toolbar strong, .application-graph-toolbar small { display: block; }
@@ -1093,6 +1128,25 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .user-identity input { height: 29px; font-size: 10px; font-weight: 700; }
 .user-identity small { margin-top: 3px; display: block; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .user-privileges { display: flex; flex-wrap: wrap; gap: 9px; }
+.admin-section.section-wide { grid-column: 1 / -1; }
+.agent-intro { margin: 0 0 16px; max-width: 760px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.agent-intro strong { color: #40566e; }
+.agent-create { padding: 18px; background: #f8faff; border: 1px solid #dce4ef; border-radius: 7px; }
+.agent-create .field-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.agent-grid { margin-top: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+.agent-card { display: flex; flex-direction: column; gap: 11px; padding: 16px; background: white; border: 1px solid #dce4ef; border-radius: 8px; box-shadow: var(--shadow); }
+.agent-card-head { display: flex; align-items: center; gap: 10px; }
+.agent-card-head .icon { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; color: #315f8c; background: #eaf1f8; border-radius: 7px; }
+.agent-card .agent-name { flex: 1; min-width: 0; height: 34px; padding: 0 10px; color: var(--ink); background: white; border: 1px solid #c4cfdf; border-radius: 4px; outline: none; font: inherit; font-size: 12px; font-weight: 700; }
+.agent-field { display: grid; gap: 4px; color: #56708c; font-size: 8px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.agent-field input, .agent-field select { height: 33px; padding: 0 10px; color: var(--ink); background: white; border: 1px solid #c4cfdf; border-radius: 4px; outline: none; font: inherit; font-size: 11px; font-weight: 600; }
+.agent-card .agent-name:focus, .agent-field input:focus, .agent-field select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.agent-card-foot { margin-top: 2px; padding-top: 11px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #eef2f8; }
+.agent-enabled { display: flex; align-items: center; gap: 6px; color: #41566d; font-size: 10px; font-weight: 700; }
+.agent-enabled input { width: auto; height: auto; accent-color: var(--accent); }
+.agent-card-actions { display: flex; gap: 6px; }
+.agent-card-actions button { width: 32px; height: 32px; display: grid; place-items: center; color: #315f8c; background: white; border: 1px solid #bdcad9; border-radius: 4px; cursor: pointer; }
+.agent-card-actions button.danger { color: #9b2c22; border-color: #e3bbb5; }
 .user-actions { display: flex; gap: 6px; }
 .user-actions button { width: 32px; height: 32px; display: grid; place-items: center; color: #315f8c; background: white; border: 1px solid #bdcad9; border-radius: 4px; cursor: pointer; }
 .user-actions button.danger { color: #9b2c22; border-color: #e3bbb5; }

@@ -579,6 +579,20 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  if (!(await database.schema.hasTable('agent_endpoints'))) {
+    await database.schema.createTable('agent_endpoints', (table) => {
+      table.bigIncrements('id').primary()
+      table.string('name', 200).notNullable().unique()
+      table.string('purpose', 40).notNullable().defaultTo('general')
+      table.string('endpoint_url', 1000).notNullable()
+      table.string('auth_scope', 400).nullable()
+      table.string('description', 500).nullable()
+      table.boolean('enabled').notNullable().defaultTo(true)
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+    })
+  }
+
 }
 
 // Only run the CLI flow (which closes the pool) when executed directly, not when imported.

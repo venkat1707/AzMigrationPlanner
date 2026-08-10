@@ -22,6 +22,7 @@ import { refreshDatabaseServerFlags } from './database-server-classification.js'
 import { getCleanupStatus, startDataCleanup } from './data-cleanup.js'
 import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
 import { buildApplicationMap, listApplicationEnvironments } from './application-map.js'
+import { requestDesignDocument, DesignDocumentError, type DesignAnswer } from './design-document.js'
 import { createMigrationWavePlan, defaultMigrationWaveOptions, loadDependencyPairs, type MigrationWaveOptions } from './migration-wave-planning.js'
 import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
 import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
@@ -1332,6 +1333,34 @@ app.get('/api/application-map', async (request, response) => {
     return
   }
   response.json(map)
+})
+
+app.post('/api/application-map/design-document', async (request, response) => {
+  const application = String(request.body?.application ?? '').trim()
+  const environment = String(request.body?.environment ?? '').trim()
+  if (!application || !environment) {
+    response.status(400).json({ error: 'Application and environment are required.' })
+    return
+  }
+  const conversationId = request.body?.conversationId ? String(request.body.conversationId) : null
+  const answers: DesignAnswer[] = Array.isArray(request.body?.answers)
+    ? request.body.answers
+        .map((entry: unknown) => {
+          const record = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+          return { id: String(record.id ?? '').trim(), response: String(record.response ?? '').trim() }
+        })
+        .filter((answer: DesignAnswer) => answer.id)
+    : []
+  try {
+    const result = await requestDesignDocument(database, { application, environment, conversationId, answers })
+    response.json(result)
+  } catch (error) {
+    if (error instanceof DesignDocumentError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    response.status(502).json({ error: 'The design document could not be generated.' })
+  }
 })
 
 app.post('/api/server-assessments/refresh-database-servers', async (_request, response) => {
