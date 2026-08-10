@@ -127,6 +127,7 @@ jobs:
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           package: app-service.zip
+          startup-command: 'node services/backend/dist/index.js'
 
       - name: Verify deployed application
         shell: bash
