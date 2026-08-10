@@ -30,4 +30,5 @@ export function getDatabaseConfig(): Knex.Config {
   }
 }
 
-export const port = Number(process.env.PORT ?? 3000)
+// On Windows/iisnode PORT is a named pipe string, so keep it unparsed there.
+export const port: string | number = process.env.PORT ?? 3000

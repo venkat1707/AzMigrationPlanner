@@ -80,6 +80,7 @@ jobs:
         run: |
           mkdir -p release/services/backend release/services/frontend
           cp package.json package-lock.json release/
+          cp deploy/web.config release/
           cp services/backend/package.json release/services/backend/
           cp services/frontend/package.json release/services/frontend/
           cp -R services/backend/dist release/services/backend/dist
@@ -127,7 +128,6 @@ jobs:
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           package: app-service.zip
-          startup-command: 'node services/backend/dist/index.js'
 
       - name: Verify deployed application
         shell: bash
