@@ -1,7 +1,9 @@
 import type { Knex } from 'knex'
 import { ManagedIdentityCredential } from '@azure/identity'
+import JSZip from 'jszip'
 import { buildApplicationMap } from './application-map.js'
 
+const defaultApiVersion = 'v1'
 const defaultAgentScope = 'https://ai.azure.com/.default'
 const defaultDocumentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const maxDocumentBytes = 25 * 1024 * 1024
@@ -199,41 +201,117 @@ function normalizeQuestions(raw: unknown): DesignQuestion[] {
   return questions
 }
 
-function isCompletedStatus(status: string | null): boolean {
-  if (!status) return false
-  return ['completed', 'complete', 'done', 'ready', 'succeeded', 'success', 'finished'].includes(status)
-}
-
 function isQuestionStatus(status: string | null): boolean {
   if (!status) return false
   return ['needs-input', 'needs_input', 'needsinput', 'question', 'questions', 'input-required', 'pending', 'awaiting-input', 'clarification'].includes(status)
 }
 
-async function resolveDocument(document: Record<string, unknown>, agentHost: string, token: string | null): Promise<{ fileName: string; contentType: string; contentBase64: string }> {
-  const fileName = firstString(document.fileName, document.filename, document.name) ?? 'high-level-design.docx'
-  const contentType = firstString(document.contentType, document.mimeType, document.mediaType) ?? defaultDocumentType
-  const inline = firstString(document.contentBase64, document.base64, document.content, document.data)
-  if (inline) {
-    return { fileName, contentType, contentBase64: inline.replace(/^data:[^,]*,/, '') }
-  }
-  const url = firstString(document.url, document.downloadUrl, document.documentUrl, document.href, document.link)
-  if (!url) throw new DesignDocumentError('The agent reported completion but returned no document link or content.', 502)
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    throw new DesignDocumentError('The agent returned an invalid document link.', 502)
-  }
-  if (parsed.protocol !== 'https:') throw new DesignDocumentError('The agent document link must use HTTPS.', 502)
-  const headers: Record<string, string> = {}
-  if (token && parsed.host === agentHost) headers.authorization = `Bearer ${token}`
-  const download = await fetch(parsed.toString(), { headers })
-  if (!download.ok) throw new DesignDocumentError(`The design document could not be downloaded (HTTP ${download.status}).`, 502)
-  const buffer = Buffer.from(await download.arrayBuffer())
-  if (buffer.byteLength > maxDocumentBytes) throw new DesignDocumentError('The generated document exceeds the maximum supported size.', 502)
-  const downloadType = firstString(download.headers.get('content-type')) ?? contentType
-  return { fileName, contentType: downloadType, contentBase64: buffer.toString('base64') }
+// The Foundry agent is exposed through the OpenAI Responses protocol, which requires an api-version.
+function buildResponsesUrl(endpointUrl: string): string {
+  const url = new URL(endpointUrl)
+  if (!url.searchParams.has('api-version')) url.searchParams.set('api-version', defaultApiVersion)
+  return url.toString()
 }
+
+const responseContract = [
+  'You are generating a High-Level Design (HLD) document for hosting an application on Microsoft Azure.',
+  'Base the design strictly on the supplied application map.',
+  'Reply with a SINGLE JSON object and nothing else — no markdown code fences, no commentary.',
+  'If you need clarification before you can produce the document, reply exactly with:',
+  '{"status":"needs-input","message":"<short reason>","questions":[{"id":"q1","prompt":"<question>","kind":"single-choice|multi-choice|boolean|multiline|text","options":["..."],"required":true}]}',
+  'When you have enough information, reply exactly with:',
+  '{"status":"completed","document":{"title":"<document title>","markdown":"<the full HLD as GitHub-flavored markdown>"}}',
+  'Cover target Azure architecture, networking, security, identity, data, and migration considerations.',
+].join('\n')
+
+function extractAssistantText(data: Record<string, unknown>): string {
+  const parts: string[] = []
+  const output = Array.isArray(data.output) ? data.output : []
+  for (const item of output) {
+    const record = asRecord(item)
+    if (record.type && record.type !== 'message') continue
+    const content = Array.isArray(record.content) ? record.content : []
+    for (const chunk of content) {
+      const chunkRecord = asRecord(chunk)
+      const text = firstString(chunkRecord.text, asRecord(chunkRecord.text).value)
+      if (text) parts.push(text)
+    }
+  }
+  if (!parts.length && typeof data.output_text === 'string') parts.push(data.output_text)
+  return parts.join('\n').trim()
+}
+
+function parseAgentJson(text: string): Record<string, unknown> | null {
+  const stripped = text.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim()
+  const candidates = [stripped]
+  const first = stripped.indexOf('{')
+  const last = stripped.lastIndexOf('}')
+  if (first >= 0 && last > first) candidates.push(stripped.slice(first, last + 1))
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate)
+      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>
+    } catch { /* try next candidate */ }
+  }
+  return null
+}
+
+const xmlEscape = (value: string): string => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+function inlineRuns(text: string): string {
+  const segments = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean)
+  if (!segments.length) return '<w:r><w:t xml:space="preserve"></w:t></w:r>'
+  return segments.map((segment) => {
+    const bold = /^\*\*[^*]+\*\*$/.test(segment)
+    const inner = bold ? segment.slice(2, -2) : segment
+    return `<w:r>${bold ? '<w:rPr><w:b/></w:rPr>' : ''}<w:t xml:space="preserve">${xmlEscape(inner)}</w:t></w:r>`
+  }).join('')
+}
+
+function headingParagraph(text: string, size: number): string {
+  return `<w:p><w:r><w:rPr><w:b/><w:sz w:val="${size}"/></w:rPr><w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r></w:p>`
+}
+
+function markdownToDocumentXml(title: string, markdown: string): string {
+  const body: string[] = []
+  if (title.trim()) body.push(headingParagraph(title.trim(), 40))
+  for (const rawLine of markdown.replace(/\r\n/g, '\n').split('\n')) {
+    const line = rawLine.replace(/\s+$/, '')
+    const heading = /^(#{1,4})\s+(.*)$/.exec(line)
+    if (heading) {
+      const level = heading[1]!.length
+      const size = level === 1 ? 36 : level === 2 ? 30 : level === 3 ? 26 : 24
+      body.push(headingParagraph(heading[2]!, size))
+      continue
+    }
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line)
+    if (bullet) {
+      body.push(`<w:p>${inlineRuns(`•  ${bullet[1]}`)}</w:p>`)
+      continue
+    }
+    if (!line.trim()) {
+      body.push('<w:p/>')
+      continue
+    }
+    body.push(`<w:p>${inlineRuns(line)}</w:p>`)
+  }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body.join('')}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`
+}
+
+async function buildDocx(title: string, markdown: string): Promise<string> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`)
+  zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
+  zip.file('word/document.xml', markdownToDocumentXml(title, markdown))
+  const buffer = await zip.generateAsync({ type: 'nodebuffer' })
+  if (buffer.byteLength > maxDocumentBytes) throw new DesignDocumentError('The generated document exceeds the maximum supported size.', 502)
+  return buffer.toString('base64')
+}
+
+const sanitizeFileName = (value: string): string => value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'application'
 
 export async function requestDesignDocument(connection: Knex, input: RequestInput): Promise<DesignDocumentResult> {
   const agent = await findDesignAgent(connection)
@@ -249,29 +327,50 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
   const isLoopback = endpoint.hostname === 'localhost' || endpoint.hostname === '127.0.0.1'
   const token = isLoopback ? null : await acquireToken(agent.auth_scope || defaultAgentScope)
 
-  const payload = {
-    task: 'high-level-design-document',
-    hostingTarget: 'Azure',
-    instructions: 'Produce a high-level design document for hosting this application on Microsoft Azure. Base the design on the supplied application map, covering target Azure architecture, networking, security, and migration considerations. Ask any clarifying questions needed before finalizing.',
-    application: input.application,
-    environment: input.environment,
-    applicationMap: {
+  const messages: Array<{ role: string; content: string }> = []
+  if (!input.conversationId) {
+    const applicationMap = {
       application: map.application,
       environment: map.environment,
       summary: summarizeMap(map),
       nodes: map.nodes,
       edges: map.edges,
-    },
-    conversationId: input.conversationId,
-    answers: input.answers,
+    }
+    messages.push({ role: 'system', content: responseContract })
+    messages.push({
+      role: 'user',
+      content: [
+        'Task: Produce a high-level design document for hosting this application on Microsoft Azure.',
+        `Application: ${input.application}`,
+        `Environment: ${input.environment}`,
+        'Application map (JSON):',
+        JSON.stringify(applicationMap),
+      ].join('\n'),
+    })
+  } else {
+    const answersText = input.answers.length
+      ? input.answers.map((answer) => `- ${answer.id}: ${answer.response}`).join('\n')
+      : '(no additional answers provided)'
+    messages.push({
+      role: 'user',
+      content: [
+        'Here are the answers to your questions:',
+        answersText,
+        'Use these to finalize the design and reply only with the JSON contract as previously instructed.',
+      ].join('\n'),
+    })
   }
+
+  const payload: Record<string, unknown> = { input: messages }
+  if (input.conversationId) payload.previous_response_id = input.conversationId
 
   const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json' }
   if (token) headers.authorization = `Bearer ${token}`
 
+  const requestUrl = buildResponsesUrl(agent.endpoint_url)
   let agentResponse: globalThis.Response
   try {
-    agentResponse = await fetch(agent.endpoint_url, { method: 'POST', headers, body: JSON.stringify(payload) })
+    agentResponse = await fetch(requestUrl, { method: 'POST', headers, body: JSON.stringify(payload) })
   } catch {
     throw new DesignDocumentError('The design-document agent endpoint could not be reached.', 502)
   }
@@ -281,7 +380,7 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
       const body = (await agentResponse.text()).trim()
       if (body) detail = ` ${body.slice(0, 1000)}`
     } catch { /* body unavailable */ }
-    console.error(`Design-document agent error (HTTP ${agentResponse.status}) from ${agent.endpoint_url}:${detail}`)
+    console.error(`Design-document agent error (HTTP ${agentResponse.status}) from ${requestUrl}:${detail}`)
     throw new DesignDocumentError(`The design-document agent returned an error (HTTP ${agentResponse.status}).${detail}`, 502)
   }
 
@@ -292,33 +391,30 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
     throw new DesignDocumentError('The design-document agent returned a response that could not be read.', 502)
   }
 
-  const conversationId = firstString(data.conversationId, data.sessionId, data.threadId, data.id)
-  const status = firstString(data.status, data.state)?.toLowerCase() ?? null
-  const questions = normalizeQuestions(data.questions ?? asRecord(data.result).questions)
-  const documentRecord = asRecord(data.document ?? asRecord(data.result).document)
-  const hasDocument = Boolean(
-    firstString(documentRecord.url, documentRecord.downloadUrl, documentRecord.documentUrl, documentRecord.href, documentRecord.link,
-      documentRecord.contentBase64, documentRecord.base64, documentRecord.content)
-    ?? firstString(data.documentUrl, data.downloadUrl, data.contentBase64),
-  )
-
-  if (isQuestionStatus(status) || (questions.length > 0 && !hasDocument)) {
-    if (questions.length === 0) {
-      throw new DesignDocumentError('The agent requested more input but did not provide any questions.', 502)
-    }
-    return { status: 'needs-input', conversationId, message: firstString(data.message, data.summary), questions }
+  const responseId = firstString(data.id, data.response_id)
+  const assistantText = extractAssistantText(data)
+  if (!assistantText) {
+    throw new DesignDocumentError('The design-document agent returned an empty response.', 502)
   }
 
-  if (isCompletedStatus(status) || hasDocument) {
-    const document = Object.keys(documentRecord).length ? documentRecord : {
-      url: firstString(data.documentUrl, data.downloadUrl, data.url),
-      contentBase64: firstString(data.contentBase64, data.base64),
-      fileName: firstString(data.fileName, data.filename),
-      contentType: firstString(data.contentType),
-    }
-    const resolved = await resolveDocument(document, endpoint.host, token)
-    return { status: 'completed', ...resolved }
+  const contract = parseAgentJson(assistantText)
+  const status = contract ? firstString(contract.status, contract.state)?.toLowerCase() ?? null : null
+  const questions = contract ? normalizeQuestions(contract.questions ?? asRecord(contract.result).questions) : []
+
+  if (isQuestionStatus(status) && questions.length > 0) {
+    return { status: 'needs-input', conversationId: responseId, message: firstString(contract?.message, contract?.summary), questions }
   }
 
-  throw new DesignDocumentError('The agent response could not be interpreted as questions or a completed document.', 502)
+  // Anything not asking for input is treated as the finished document.
+  const documentRecord = contract ? asRecord(contract.document ?? asRecord(contract.result).document) : {}
+  const markdown = firstString(documentRecord.markdown, documentRecord.content, documentRecord.text, documentRecord.body)
+    ?? (contract ? null : assistantText)
+  if (!markdown) {
+    throw new DesignDocumentError('The agent reported completion but returned no document content.', 502)
+  }
+  const title = firstString(documentRecord.title, documentRecord.name) ?? `${input.application} — High-Level Design (${input.environment})`
+  const fileName = `${sanitizeFileName(`${input.application}-${input.environment}`)}-high-level-design.docx`
+  const contentBase64 = await buildDocx(title, markdown)
+  return { status: 'completed', fileName, contentType: defaultDocumentType, contentBase64 }
 }
+
