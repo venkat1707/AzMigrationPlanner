@@ -54,11 +54,11 @@ function findDesignAgent(connection: Knex | Knex.Transaction) {
 }
 
 async function acquireToken(scope: string): Promise<string> {
-  if (!process.env.AZURE_CLIENT_ID) {
-    throw new DesignDocumentError('The application managed identity is not configured (set AZURE_CLIENT_ID) to call the agent.', 500)
+  if (!process.env.AZURE_AGENT_CLIENT_ID) {
+    throw new DesignDocumentError('The application managed identity is not configured (set AZURE_AGENT_CLIENT_ID) to call the agent.', 500)
   }
   try {
-    const credential = new ManagedIdentityCredential({ clientId: process.env.AZURE_CLIENT_ID })
+    const credential = new ManagedIdentityCredential({ clientId: process.env.AZURE_AGENT_CLIENT_ID })
     const token = await credential.getToken(scope)
     if (!token?.token) throw new Error('empty token')
     return token.token
