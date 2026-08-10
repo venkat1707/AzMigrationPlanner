@@ -246,9 +246,38 @@ function extractAssistantText(data: Record<string, unknown>): string {
   return parts.join('\n').trim()
 }
 
+// Extracts the first complete, balanced JSON object, ignoring any leading or trailing junk
+// (agents sometimes append a stray brace, a second object, or prose after the JSON).
+function extractBalancedJson(text: string): string | null {
+  const start = text.indexOf('{')
+  if (start < 0) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i]!
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{') depth += 1
+    else if (ch === '}') {
+      depth -= 1
+      if (depth === 0) return text.slice(start, i + 1)
+    }
+  }
+  return null
+}
+
 function parseAgentJson(text: string): Record<string, unknown> | null {
   const stripped = text.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim()
-  const candidates = [stripped]
+  const candidates: string[] = []
+  const balanced = extractBalancedJson(stripped)
+  if (balanced) candidates.push(balanced)
+  candidates.push(stripped)
   const first = stripped.indexOf('{')
   const last = stripped.lastIndexOf('}')
   if (first >= 0 && last > first) candidates.push(stripped.slice(first, last + 1))
@@ -460,10 +489,11 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
 
   // Anything not asking for input is treated as the finished document.
   const documentRecord = contract ? asRecord(contract.document ?? asRecord(contract.result).document) : {}
+  const looksLikeJson = /^\s*[{[]/.test(assistantText)
   const markdown = firstString(documentRecord.markdown, documentRecord.content, documentRecord.text, documentRecord.body)
-    ?? (contract ? null : assistantText)
+    ?? (contract || looksLikeJson ? null : assistantText)
   if (!markdown) {
-    throw new DesignDocumentError('The agent reported completion but returned no document content.', 502)
+    throw new DesignDocumentError('The agent reported completion but returned no readable document content.', 502)
   }
   const title = firstString(documentRecord.title, documentRecord.name) ?? `${input.application} — High-Level Design (${input.environment})`
   const fileName = `${sanitizeFileName(`${input.application}-${input.environment}`)}-high-level-design.docx`
