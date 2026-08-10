@@ -223,8 +223,10 @@ const responseContract = [
   'If you need clarification before you can produce the document, reply exactly with:',
   '{"status":"needs-input","message":"<short reason>","questions":[{"id":"q1","prompt":"<question>","kind":"single-choice|multi-choice|boolean|multiline|text","options":["..."],"required":true}]}',
   'When you have enough information, reply exactly with:',
-  '{"status":"completed","document":{"title":"<document title>","markdown":"<the full HLD as GitHub-flavored markdown>"}}',
-  'Cover target Azure architecture, networking, security, identity, data, and migration considerations.',
+  '{"status":"completed","document":{"title":"<document title>","markdown":"<full HLD>"}}',
+  'Write the markdown as a professional, well-structured document. Use "## " for each major section and "### " for sub-sections, in this order:',
+  'Executive Summary, Current State, Target Azure Architecture, Networking, Security & Identity, Data & Storage, Availability & Resiliency, Migration Approach, Risks & Considerations.',
+  'Under each section use short paragraphs, bullet lists ("- "), numbered steps ("1. ") and GitHub-style Markdown tables where they aid clarity. Keep the JSON valid and do not wrap it in code fences.',
 ].join('\n')
 
 function extractAssistantText(data: Record<string, unknown>): string {
@@ -261,53 +263,107 @@ function parseAgentJson(text: string): Record<string, unknown> | null {
 
 const xmlEscape = (value: string): string => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
+// Inline markdown (bold / italic / inline code) → WordprocessingML runs.
 function inlineRuns(text: string): string {
-  const segments = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean)
-  if (!segments.length) return '<w:r><w:t xml:space="preserve"></w:t></w:r>'
-  return segments.map((segment) => {
-    const bold = /^\*\*[^*]+\*\*$/.test(segment)
-    const inner = bold ? segment.slice(2, -2) : segment
-    return `<w:r>${bold ? '<w:rPr><w:b/></w:rPr>' : ''}<w:t xml:space="preserve">${xmlEscape(inner)}</w:t></w:r>`
+  const tokens = text.split(/(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*]+\*|_[^_]+_)/g).filter((token) => token !== '')
+  if (!tokens.length) return '<w:r><w:t xml:space="preserve"></w:t></w:r>'
+  return tokens.map((token) => {
+    let inner = token
+    const props: string[] = []
+    if (/^\*\*[\s\S]+\*\*$/.test(token) || /^__[\s\S]+__$/.test(token)) { props.push('<w:b/>'); inner = token.slice(2, -2) }
+    else if (/^`[^`]+`$/.test(token)) { props.push('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/><w:color w:val="A31515"/>'); inner = token.slice(1, -1) }
+    else if (/^\*[\s\S]+\*$/.test(token) || /^_[\s\S]+_$/.test(token)) { props.push('<w:i/>'); inner = token.slice(1, -1) }
+    const rPr = props.length ? `<w:rPr>${props.join('')}</w:rPr>` : ''
+    return `<w:r>${rPr}<w:t xml:space="preserve">${xmlEscape(inner)}</w:t></w:r>`
   }).join('')
 }
 
-function headingParagraph(text: string, size: number): string {
-  return `<w:p><w:r><w:rPr><w:b/><w:sz w:val="${size}"/></w:rPr><w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r></w:p>`
+const styledParagraph = (style: string, content: string): string => `<w:p><w:pPr><w:pStyle w:val="${style}"/></w:pPr>${content}</w:p>`
+const listItem = (numId: number, level: number, content: string): string =>
+  `<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="${level}"/><w:numId w:val="${numId}"/></w:numPr></w:pPr>${content}</w:p>`
+
+const parseTableRow = (line: string): string[] => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim())
+const isTableSeparator = (line: string): boolean => /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes('-')
+
+function renderTable(rows: string[][]): string {
+  const columns = Math.max(1, ...rows.map((row) => row.length))
+  const grid = Array.from({ length: columns }, () => '<w:gridCol/>').join('')
+  const renderRow = (cells: string[], header: boolean): string => {
+    const tcs: string[] = []
+    for (let index = 0; index < columns; index += 1) {
+      const cell = cells[index] ?? ''
+      const shd = header ? '<w:shd w:val="clear" w:color="auto" w:fill="2F5496"/>' : ''
+      const content = header
+        ? `<w:r><w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr><w:t xml:space="preserve">${xmlEscape(cell)}</w:t></w:r>`
+        : inlineRuns(cell)
+      tcs.push(`<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/>${shd}</w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr>${content}</w:p></w:tc>`)
+    }
+    return `<w:tr>${tcs.join('')}</w:tr>`
+  }
+  const border = '<w:top w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/><w:left w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/><w:right w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>'
+  const trs = rows.map((row, index) => renderRow(row, index === 0)).join('')
+  return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>${border}</w:tblBorders></w:tblPr><w:tblGrid>${grid}</w:tblGrid>${trs}</w:tbl><w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>`
 }
 
 function markdownToDocumentXml(title: string, markdown: string): string {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
   const body: string[] = []
-  if (title.trim()) body.push(headingParagraph(title.trim(), 40))
-  for (const rawLine of markdown.replace(/\r\n/g, '\n').split('\n')) {
-    const line = rawLine.replace(/\s+$/, '')
-    const heading = /^(#{1,4})\s+(.*)$/.exec(line)
+  if (title.trim()) body.push(styledParagraph('Title', inlineRuns(title.trim())))
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!.replace(/\s+$/, '')
+    const trimmed = line.trim()
+
+    if (trimmed.startsWith('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1]!)) {
+      const rows: string[][] = [parseTableRow(trimmed)]
+      let j = i + 2
+      while (j < lines.length && lines[j]!.trim().startsWith('|')) { rows.push(parseTableRow(lines[j]!)); j += 1 }
+      body.push(renderTable(rows))
+      i = j - 1
+      continue
+    }
+
+    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed)
     if (heading) {
-      const level = heading[1]!.length
-      const size = level === 1 ? 36 : level === 2 ? 30 : level === 3 ? 26 : 24
-      body.push(headingParagraph(heading[2]!, size))
+      const level = Math.min(heading[1]!.length, 3)
+      body.push(styledParagraph(`Heading${level}`, inlineRuns(heading[2]!)))
       continue
     }
-    const bullet = /^\s*[-*]\s+(.*)$/.exec(line)
+
+    if (/^([-*_])(\s*\1){2,}$/.test(trimmed)) continue
+
+    const numbered = /^(\d+)[.)]\s+(.*)$/.exec(trimmed)
+    if (numbered) { body.push(listItem(2, 0, inlineRuns(numbered[2]!))); continue }
+
+    const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line)
     if (bullet) {
-      body.push(`<w:p>${inlineRuns(`•  ${bullet[1]}`)}</w:p>`)
+      const level = Math.min(Math.floor(bullet[1]!.replace(/\t/g, '  ').length / 2), 2)
+      body.push(listItem(1, level, inlineRuns(bullet[2]!)))
       continue
     }
-    if (!line.trim()) {
-      body.push('<w:p/>')
-      continue
-    }
+
+    if (!trimmed) continue
     body.push(`<w:p>${inlineRuns(line)}</w:p>`)
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body.join('')}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`
 }
 
+const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:spacing w:before="240" w:after="240"/></w:pPr><w:rPr><w:b/><w:color w:val="1F3864"/><w:sz w:val="56"/><w:szCs w:val="56"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="360" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:color w:val="2F5496"/><w:sz w:val="34"/><w:szCs w:val="34"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:color w:val="2F5496"/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="200" w:after="60"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:color w:val="1F3864"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="60"/><w:contextualSpacing/></w:pPr></w:style></w:styles>`
+
+const numberingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="360" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="◦"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="▪"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="1080" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="360" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="lowerRoman"/><w:lvlText w:val="%3."/><w:lvlJc w:val="right"/><w:pPr><w:ind w:left="1080" w:hanging="180"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>`
+
 async function buildDocx(title: string, markdown: string): Promise<string> {
   const zip = new JSZip()
   zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`)
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`)
   zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
+  zip.file('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>`)
+  zip.file('word/styles.xml', stylesXml)
+  zip.file('word/numbering.xml', numberingXml)
   zip.file('word/document.xml', markdownToDocumentXml(title, markdown))
   const buffer = await zip.generateAsync({ type: 'nodebuffer' })
   if (buffer.byteLength > maxDocumentBytes) throw new DesignDocumentError('The generated document exceeds the maximum supported size.', 502)
