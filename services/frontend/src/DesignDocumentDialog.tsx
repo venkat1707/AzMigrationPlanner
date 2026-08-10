@@ -14,7 +14,7 @@ type NeedsInput = { status: 'needs-input'; conversationId: string | null; messag
 type Completed = { status: 'completed'; fileName: string; contentType: string; contentBase64: string }
 type DesignResponse = NeedsInput | Completed | { error?: string }
 
-type Phase = 'working' | 'questions' | 'saving' | 'done' | 'error'
+type Phase = 'working' | 'questions' | 'ready' | 'saving' | 'done' | 'error'
 
 type SaveFilePicker = (options?: {
   suggestedName?: string
@@ -64,6 +64,7 @@ export default function DesignDocumentDialog({ application, environment, onClose
   const [multi, setMulti] = useState<Record<string, Set<string>>>({})
   const [savedName, setSavedName] = useState('')
   const [saveMode, setSaveMode] = useState<'saved' | 'downloaded'>('saved')
+  const [readyFile, setReadyFile] = useState<Completed | null>(null)
   const conversationId = useRef<string | null>(null)
 
   const send = async (payloadAnswers: Array<{ id: string; response: string }>) => {
@@ -88,12 +89,9 @@ export default function DesignDocumentDialog({ application, environment, onClose
         return
       }
       if ('status' in data && data.status === 'completed') {
-        setPhase('saving')
-        setStatusText('Choose where to save the Word document…')
-        const outcome = await saveDocument(data)
-        setSavedName(data.fileName)
-        setSaveMode(outcome)
-        setPhase('done')
+        // The browser only allows the save picker during a user gesture, so wait for a click.
+        setReadyFile(data)
+        setPhase('ready')
         return
       }
       throw new Error('The agent response could not be understood.')
@@ -127,6 +125,26 @@ export default function DesignDocumentDialog({ application, environment, onClose
       response: question.kind === 'multi-choice' ? [...(multi[question.id] ?? [])].join(', ') : (answers[question.id] ?? '').trim(),
     }))
     void send(payload)
+  }
+
+  const handleSave = async () => {
+    if (!readyFile) return
+    setError('')
+    setPhase('saving')
+    setStatusText('Choose where to save the Word document…')
+    try {
+      const outcome = await saveDocument(readyFile)
+      setSavedName(readyFile.fileName)
+      setSaveMode(outcome)
+      setPhase('done')
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === 'AbortError') {
+        setError('Saving was cancelled. Click Save document to choose a location.')
+      } else {
+        setError(reason instanceof Error ? reason.message : 'The document could not be saved.')
+      }
+      setPhase('ready')
+    }
   }
 
   const toggleMulti = (questionId: string, option: string) => {
@@ -178,6 +196,19 @@ export default function DesignDocumentDialog({ application, environment, onClose
               <button type="submit"><Download size={15} /> Submit answers</button>
             </div>
           </form>
+          : null}
+
+        {phase === 'ready'
+          ? <div className="design-dialog-status success">
+            <CheckCircle2 size={30} />
+            <p>The high-level design document is ready.</p>
+            <small>{readyFile?.fileName}</small>
+            {error ? <p className="design-dialog-error">{error}</p> : null}
+            <div className="design-dialog-actions">
+              <button type="button" className="ghost" onClick={onClose}>Cancel</button>
+              <button type="button" onClick={() => void handleSave()}><Download size={15} /> Save document</button>
+            </div>
+          </div>
           : null}
 
         {phase === 'done'
