@@ -209,7 +209,7 @@ function csrfMatches(request: Request, context: AuthContext): boolean {
   return expected.length === actual.length && timingSafeEqual(expected, actual)
 }
 
-function requireAdmin(request: Request, response: Response): AuthContext | null {
+export function requireAdmin(request: Request, response: Response): AuthContext | null {
   const context = response.locals.auth as AuthContext
   if (!context.settings.authenticationEnabled) {
     if (isLoopbackRequest(request)) return context

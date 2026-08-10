@@ -22,12 +22,12 @@ import { refreshDatabaseServerFlags } from './database-server-classification.js'
 import { getCleanupStatus, startDataCleanup } from './data-cleanup.js'
 import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
 import { buildApplicationMap, listApplicationEnvironments } from './application-map.js'
-import { requestDesignDocument, DesignDocumentError, type DesignAnswer } from './design-document.js'
+import { requestDesignDocument, DesignDocumentError, diagnoseAgentIdentity, type DesignAnswer } from './design-document.js'
 import { createMigrationWavePlan, defaultMigrationWaveOptions, loadDependencyPairs, type MigrationWaveOptions } from './migration-wave-planning.js'
 import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
 import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
 import { identifyServerEnvironments, validateEnvironmentRules, type AssessmentIdentity, type EnvironmentRuleInput } from './environment-identification.js'
-import { registerAuthentication } from './auth.js'
+import { registerAuthentication, requireAdmin } from './auth.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -1361,6 +1361,14 @@ app.post('/api/application-map/design-document', async (request, response) => {
     }
     response.status(502).json({ error: 'The design document could not be generated.' })
   }
+})
+
+app.get('/api/admin/agent-identity-diagnostics', async (request, response) => {
+  if (!requireAdmin(request, response)) return
+  const clientId = request.query.clientId ? String(request.query.clientId) : undefined
+  const scope = request.query.scope ? String(request.query.scope) : undefined
+  const diagnostics = await diagnoseAgentIdentity(database, { clientId, scope })
+  response.json(diagnostics)
 })
 
 app.post('/api/server-assessments/refresh-database-servers', async (_request, response) => {

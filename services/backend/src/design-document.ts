@@ -69,6 +69,97 @@ async function acquireToken(scope: string): Promise<string> {
   }
 }
 
+const scopeToResource = (scope: string): string => scope.replace(/\/\.default$/i, '')
+
+type ImdsProbe = {
+  label: string
+  clientId: string | null
+  httpStatus: number | null
+  ok: boolean
+  tokenAcquired: boolean
+  expiresOn?: string
+  returnedClientId?: string
+  body?: unknown
+  error?: string
+}
+
+// Raw call to the App Service identity endpoint so the exact IMDS response is visible.
+async function probeImds(resource: string, clientId: string | null, label: string): Promise<ImdsProbe> {
+  const endpoint = process.env.IDENTITY_ENDPOINT || process.env.MSI_ENDPOINT
+  const header = process.env.IDENTITY_HEADER || process.env.MSI_SECRET
+  if (!endpoint || !header) {
+    return { label, clientId, httpStatus: null, ok: false, tokenAcquired: false, error: 'IDENTITY_ENDPOINT / IDENTITY_HEADER not present — not running under App Service managed identity.' }
+  }
+  const url = new URL(endpoint)
+  url.searchParams.set('api-version', '2019-08-01')
+  url.searchParams.set('resource', resource)
+  if (clientId) url.searchParams.set('client_id', clientId)
+  try {
+    const res = await fetch(url, { headers: { 'X-IDENTITY-HEADER': header } })
+    const text = await res.text()
+    let parsed: unknown = text
+    try { parsed = JSON.parse(text) } catch { /* keep raw text */ }
+    const record = asRecord(parsed)
+    const hasToken = typeof record.access_token === 'string'
+    if (hasToken) delete record.access_token
+    return {
+      label,
+      clientId,
+      httpStatus: res.status,
+      ok: res.ok,
+      tokenAcquired: hasToken,
+      expiresOn: typeof record.expires_on === 'string' ? record.expires_on : undefined,
+      returnedClientId: typeof record.client_id === 'string' ? record.client_id : undefined,
+      body: hasToken ? { ...record, access_token: '[redacted]' } : parsed,
+    }
+  } catch (error) {
+    return { label, clientId, httpStatus: null, ok: false, tokenAcquired: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export type AgentIdentityDiagnostics = {
+  environment: {
+    hasIdentityEndpoint: boolean
+    hasIdentityHeader: boolean
+    hasLegacyMsiEndpoint: boolean
+    configuredAgentClientId: string | null
+  }
+  resource: string
+  scope: string
+  agent: { id: number; name: string; endpointUrl: string; authScope: string | null } | null
+  probes: ImdsProbe[]
+}
+
+export async function diagnoseAgentIdentity(
+  connection: Knex | Knex.Transaction,
+  overrides?: { clientId?: string; scope?: string },
+): Promise<AgentIdentityDiagnostics> {
+  const agent = await findDesignAgent(connection)
+  const scope = firstString(overrides?.scope, agent?.auth_scope, defaultAgentScope) || defaultAgentScope
+  const resource = scopeToResource(scope)
+  const configured = process.env.AZURE_AGENT_CLIENT_ID?.trim() || null
+  const override = overrides?.clientId?.trim() || null
+
+  const probes: ImdsProbe[] = []
+  if (override) probes.push(await probeImds(resource, override, 'override-client-id'))
+  if (configured) probes.push(await probeImds(resource, configured, 'AZURE_AGENT_CLIENT_ID'))
+  probes.push(await probeImds(resource, null, 'system-assigned (no client_id)'))
+
+  return {
+    environment: {
+      hasIdentityEndpoint: Boolean(process.env.IDENTITY_ENDPOINT),
+      hasIdentityHeader: Boolean(process.env.IDENTITY_HEADER),
+      hasLegacyMsiEndpoint: Boolean(process.env.MSI_ENDPOINT),
+      configuredAgentClientId: configured,
+    },
+    resource,
+    scope,
+    agent: agent ? { id: agent.id, name: agent.name, endpointUrl: agent.endpoint_url, authScope: agent.auth_scope } : null,
+    probes,
+  }
+}
+
+
 function summarizeMap(map: NonNullable<Awaited<ReturnType<typeof buildApplicationMap>>>) {
   const localIds = new Set(map.nodes.filter((node) => node.local).map((node) => node.id))
   let inbound = 0
@@ -185,7 +276,13 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
     throw new DesignDocumentError('The design-document agent endpoint could not be reached.', 502)
   }
   if (!agentResponse.ok) {
-    throw new DesignDocumentError(`The design-document agent returned an error (HTTP ${agentResponse.status}).`, 502)
+    let detail = ''
+    try {
+      const body = (await agentResponse.text()).trim()
+      if (body) detail = ` ${body.slice(0, 1000)}`
+    } catch { /* body unavailable */ }
+    console.error(`Design-document agent error (HTTP ${agentResponse.status}) from ${agent.endpoint_url}:${detail}`)
+    throw new DesignDocumentError(`The design-document agent returned an error (HTTP ${agentResponse.status}).${detail}`, 502)
   }
 
   let data: Record<string, unknown>
