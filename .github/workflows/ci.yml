@@ -47,8 +47,7 @@ jobs:
         run: npm run lint --workspace frontend
 
       - name: Audit production dependencies
-        continue-on-error: true
-        run: npm audit --omit=dev --audit-level=high
+        run: npm run audit:check
 
       - name: Upload compiled application
         uses: actions/upload-artifact@v4
