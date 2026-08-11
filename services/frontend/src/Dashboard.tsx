@@ -1,10 +1,11 @@
 import { useEffect, useState, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ClipboardCheck, ClipboardList, Database, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, ScanSearch, Search, Server, ServerOff, Settings2, Shield, TableProperties, Trash2, Upload, UserRoundCog, X, type LucideIcon } from 'lucide-react'
+import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ClipboardCheck, ClipboardList, Cloud, Database, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, ScanSearch, Search, Server, ServerOff, Settings2, Shield, TableProperties, Trash2, Upload, UserRoundCog, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
 import MigrationWavePlanning from './MigrationWavePlanning'
 import CoreInfrastructureInput from './CoreInfrastructureInput'
+import TargetLandingZone from './TargetLandingZone'
 import AdminPage from './AdminPage'
 import TaskWorkspace from './TaskWorkspace'
 import SprintSchedule from './SprintSchedule'
@@ -46,7 +47,7 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'firewall-rules' | 'tasks' | 'imports' | 'cleanup' | 'admin'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'firewall-rules' | 'tasks' | 'imports' | 'cleanup' | 'admin'
 type ImportKind = 'dependencies' | 'applications' | 'server-assessment' | 'application-mapping'
 const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   applications: 'application-mapping',
@@ -64,6 +65,7 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor discovery coverage and continue through the migration planning workflow.' },
   { page: 'imports', label: 'Imports', group: 'Prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, and dependency exports.' },
   { page: 'core-infrastructure', label: 'Core Infrastructure', group: 'Prepare', icon: Settings2, access: 'all', eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
+  { page: 'target-landing-zone', label: 'Target Landing Zone', group: 'Prepare', icon: Cloud, access: 'modify', eyebrow: 'Target networking', title: 'Import target landing zones', description: 'Capture the target subscription, resource group, virtual network, subnet, and NSG that migrated servers attach to.' },
   { page: 'environment-identification', label: 'Environment Identification', group: 'Prepare', icon: ScanSearch, access: 'modify', eyebrow: 'Assessment enrichment', title: 'Identify server environments', description: 'Prioritize assessment rules to identify each server environment.' },
   { page: 'dependencies', label: 'Network Dependencies', group: 'Analyze', icon: TableProperties, access: 'all', eyebrow: 'Dependency inventory', title: 'Explore network dependencies', description: 'Filter observed traffic by server, application, and destination port.' },
   { page: 'application-map', label: 'Application Map', group: 'Analyze', icon: Boxes, access: 'all', eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application boundaries, core infrastructure, and cross-application traffic.' },
@@ -398,6 +400,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'server-coverage' && <ServerCoverage />}
         {activePage === 'application-map' && <ApplicationMap refreshKey={refreshKey} />}
         {activePage === 'core-infrastructure' && <CoreInfrastructureInput />}
+        {activePage === 'target-landing-zone' && <TargetLandingZone />}
         {activePage === 'environment-identification' && canPlanWaves && <EnvironmentIdentification canModify={canPlanWaves} />}
         {activePage === 'wave-planning' && canPlanWaves && <MigrationWavePlanning />}
         {activePage === 'application-treatments' && <ApplicationTreatmentPlanning canModify={canPlanWaves} />}

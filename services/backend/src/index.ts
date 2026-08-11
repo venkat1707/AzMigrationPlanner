@@ -26,6 +26,7 @@ import { requestDesignDocument, DesignDocumentError, diagnoseAgentIdentity, type
 import { createMigrationWavePlan, defaultMigrationWaveOptions, loadDependencyPairs, type MigrationWaveOptions } from './migration-wave-planning.js'
 import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
 import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
+import { deriveLandingZone, parseTargetLandingZoneFile, type LandingZoneInput } from './target-landing-zone.js'
 import { identifyServerEnvironments, validateEnvironmentRules, type AssessmentIdentity, type EnvironmentRuleInput } from './environment-identification.js'
 import { registerAuthentication, requireAdmin } from './auth.js'
 
@@ -1315,6 +1316,142 @@ function isValidCidr(value: string) {
   const prefixLength = Number(prefix)
   return version === 4 ? prefixLength >= 0 && prefixLength <= 32 : version === 6 && prefixLength >= 0 && prefixLength <= 128
 }
+
+const landingZoneColumns = {
+  id: 'id',
+  name: 'name',
+  subscriptionId: 'subscription_id',
+  resourceGroupName: 'resource_group_name',
+  virtualNetwork: 'virtual_network',
+  subnet: 'subnet',
+  subnetId: 'subnet_id',
+  networkSecurityGroup: 'network_security_group',
+  networkSecurityGroupId: 'network_security_group_id',
+  source: 'source',
+  updatedAt: 'updated_at',
+}
+
+app.get('/api/target-landing-zones', async (_request, response) => {
+  const items = await database('target_landing_zones').select(landingZoneColumns).orderBy('name')
+  response.json({ items })
+})
+
+app.put('/api/target-landing-zones', async (request, response) => {
+  const requested = Array.isArray(request.body?.landingZones) ? request.body.landingZones : []
+  if (requested.length === 0) {
+    response.status(400).json({ error: 'Provide at least one landing zone.' })
+    return
+  }
+  if (requested.length > 200) {
+    response.status(400).json({ error: 'No more than 200 landing zones can be saved at once.' })
+    return
+  }
+  const inputs: LandingZoneInput[] = requested.map((item: unknown) => {
+    const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    return {
+      name: String(value.name ?? '').trim(),
+      subnetId: String(value.subnetId ?? '').trim(),
+      networkSecurityGroupId: String(value.networkSecurityGroupId ?? '').trim(),
+    }
+  })
+  const derived: ReturnType<typeof deriveLandingZone>[] = []
+  const seenNames = new Set<string>()
+  for (const [index, input] of inputs.entries()) {
+    try {
+      const zone = deriveLandingZone(input)
+      const nameKey = zone.name.toLowerCase()
+      if (seenNames.has(nameKey)) {
+        response.status(400).json({ error: `Landing zone "${zone.name}" is listed more than once.` })
+        return
+      }
+      seenNames.add(nameKey)
+      derived.push(zone)
+    } catch (error) {
+      response.status(400).json({ error: `Landing zone ${index + 1}: ${error instanceof Error ? error.message : 'is invalid.'}` })
+      return
+    }
+  }
+
+  await database.transaction(async (transaction) => {
+    await transaction('target_landing_zones').insert(derived.map((zone) => ({
+      name: zone.name,
+      subscription_id: zone.subscriptionId,
+      resource_group_name: zone.resourceGroupName,
+      virtual_network: zone.virtualNetwork,
+      subnet: zone.subnet,
+      subnet_id: zone.subnetId,
+      network_security_group: zone.networkSecurityGroup,
+      network_security_group_id: zone.networkSecurityGroupId,
+      source: 'Manual',
+      updated_at: transaction.fn.now(),
+    }))).onConflict('name').merge({
+      subscription_id: transaction.raw('VALUES(subscription_id)'),
+      resource_group_name: transaction.raw('VALUES(resource_group_name)'),
+      virtual_network: transaction.raw('VALUES(virtual_network)'),
+      subnet: transaction.raw('VALUES(subnet)'),
+      subnet_id: transaction.raw('VALUES(subnet_id)'),
+      network_security_group: transaction.raw('VALUES(network_security_group)'),
+      network_security_group_id: transaction.raw('VALUES(network_security_group_id)'),
+      source: 'Manual',
+      updated_at: transaction.fn.now(),
+    })
+  })
+  response.json({ saved: derived.length })
+})
+
+app.post('/api/target-landing-zones/upload', workbookUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a CSV or XLSX file.' })
+    return
+  }
+  try {
+    const parsed = await parseTargetLandingZoneFile(file.path)
+    await database.transaction(async (transaction) => {
+      await transaction('target_landing_zones').insert(parsed.map((zone) => ({
+        name: zone.name,
+        subscription_id: zone.subscriptionId,
+        resource_group_name: zone.resourceGroupName,
+        virtual_network: zone.virtualNetwork,
+        subnet: zone.subnet,
+        subnet_id: zone.subnetId,
+        network_security_group: zone.networkSecurityGroup,
+        network_security_group_id: zone.networkSecurityGroupId,
+        source: 'Upload',
+        updated_at: transaction.fn.now(),
+      }))).onConflict('name').merge({
+        subscription_id: transaction.raw('VALUES(subscription_id)'),
+        resource_group_name: transaction.raw('VALUES(resource_group_name)'),
+        virtual_network: transaction.raw('VALUES(virtual_network)'),
+        subnet: transaction.raw('VALUES(subnet)'),
+        subnet_id: transaction.raw('VALUES(subnet_id)'),
+        network_security_group: transaction.raw('VALUES(network_security_group)'),
+        network_security_group_id: transaction.raw('VALUES(network_security_group_id)'),
+        source: 'Upload',
+        updated_at: transaction.fn.now(),
+      })
+    })
+    response.json({ saved: parsed.length })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Unable to import target landing zones.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.delete('/api/target-landing-zones/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    response.status(400).json({ error: 'A valid landing zone id is required.' })
+    return
+  }
+  const deleted = await database('target_landing_zones').where({ id }).delete()
+  if (deleted === 0) {
+    response.status(404).json({ error: 'The landing zone was not found.' })
+    return
+  }
+  response.json({ deleted })
+})
 
 app.get('/api/application-environments', async (_request, response) => {
   response.json({ items: await listApplicationEnvironments(database) })
