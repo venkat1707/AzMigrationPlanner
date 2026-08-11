@@ -135,13 +135,13 @@ export default function LandingZoneNetwork() {
           {rows.map((row, index) => (
             <div className="landing-zone-row" key={index}>
               <div className="landing-zone-network-fields">
-                <label>Subscription ID<input value={row.subscriptionId} onChange={(event) => updateRow(index, 'subscriptionId', event.target.value)} placeholder="7b6ef73e-ffe4-44e2-a272-af06d077ac5d" /></label>
-                <label>Network resource group<input value={row.networkResourceGroup} onChange={(event) => updateRow(index, 'networkResourceGroup', event.target.value)} placeholder="vt-network-rg" /></label>
-                <label>Virtual network<input value={row.virtualNetwork} onChange={(event) => updateRow(index, 'virtualNetwork', event.target.value)} placeholder="vt-vnet-01" /></label>
-                <label>Virtual network IP segment<input value={row.virtualNetworkIpSegment} onChange={(event) => updateRow(index, 'virtualNetworkIpSegment', event.target.value)} placeholder="10.50.0.0/16" /></label>
-                <label>Subnet<input value={row.subnet} onChange={(event) => updateRow(index, 'subnet', event.target.value)} placeholder="app-subnet" /></label>
-                <label>Subnet IP segment<input value={row.subnetIpSegment} onChange={(event) => updateRow(index, 'subnetIpSegment', event.target.value)} placeholder="10.50.1.0/24" /></label>
-                <label>Network security group <span className="optional-hint">(optional)</span><input value={row.networkSecurityGroup} onChange={(event) => updateRow(index, 'networkSecurityGroup', event.target.value)} placeholder="app-nsg" /></label>
+                <label>Subscription ID<input value={row.subscriptionId} onChange={(event) => updateRow(index, 'subscriptionId', event.target.value)} /></label>
+                <label>Network resource group<input value={row.networkResourceGroup} onChange={(event) => updateRow(index, 'networkResourceGroup', event.target.value)} /></label>
+                <label>Virtual network<input value={row.virtualNetwork} onChange={(event) => updateRow(index, 'virtualNetwork', event.target.value)} /></label>
+                <label>Virtual network IP segment<input value={row.virtualNetworkIpSegment} onChange={(event) => updateRow(index, 'virtualNetworkIpSegment', event.target.value)} /></label>
+                <label>Subnet<input value={row.subnet} onChange={(event) => updateRow(index, 'subnet', event.target.value)} /></label>
+                <label>Subnet IP segment<input value={row.subnetIpSegment} onChange={(event) => updateRow(index, 'subnetIpSegment', event.target.value)} /></label>
+                <label>Network security group <span className="optional-hint">(optional)</span><input value={row.networkSecurityGroup} onChange={(event) => updateRow(index, 'networkSecurityGroup', event.target.value)} /></label>
               </div>
               <button type="button" className="remove-input" title="Remove network" aria-label={`Remove network ${index + 1}`} disabled={rows.length === 1} onClick={() => setRows((current) => current.filter((_, rowIndex) => rowIndex !== index))}><Trash2 size={15} /></button>
             </div>
