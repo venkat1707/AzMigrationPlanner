@@ -119,13 +119,13 @@ export default function TargetLandingZone() {
   return <div className="page core-input-page">
     <form className="core-input-form" onSubmit={submit}>
       <section className="core-upload-section">
-        <span className="core-upload-icon"><FileSpreadsheet size={20} /></span><div><strong>Import landing zone resource groups</strong><small>CSV or XLSX column: resource_group_id. Provide each resource group as its full Azure resource ID; the subscription ID and resource group name are parsed from it.</small></div>
+        <span className="core-upload-icon"><FileSpreadsheet size={20} /></span><div><strong>Import target landing zone resource groups</strong><small>CSV or XLSX column: resource_group_id. Provide each resource group as its full Azure resource ID; the subscription ID and resource group name are parsed from it.</small></div>
         <label className="core-file-picker"><Upload size={14} />{uploadFile ? uploadFile.name : 'Choose file'}<input type="file" accept=".csv,.xlsx" onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)} /></label>
         <button type="button" className="secondary-command" disabled={!uploadFile || uploading} onClick={() => void uploadGroups()}>{uploading ? <RefreshCw className="spin" size={14} /> : <Upload size={14} />}{uploading ? 'Importing...' : 'Import'}</button>
       </section>
 
       <section className="core-input-section">
-        <header><div><p>Target networking</p><h2>Landing zone resource groups</h2><small>Paste the full Azure resource ID for each landing zone resource group. The subscription ID and resource group name are parsed from it. Re-adding the same resource group updates the existing entry.</small></div><button type="button" className="secondary-command" onClick={() => setRows((current) => [...current, emptyGroup()])}><Plus size={15} />Add resource group</button></header>
+        <header><div><p>Target Landing Zone</p><h2>Landing zone resource groups</h2><small>Paste the full Azure resource ID for each landing zone resource group. The subscription ID and resource group name are parsed from it. Re-adding the same resource group updates the existing entry.</small></div><button type="button" className="secondary-command" onClick={() => setRows((current) => [...current, emptyGroup()])}><Plus size={15} />Add resource group</button></header>
         <div className="core-input-rows">
           {rows.map((row, index) => {
             const subscriptionId = segmentAfter(row.resourceGroupId, 'subscriptions')
