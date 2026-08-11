@@ -28,6 +28,7 @@ import { createMigrationWavePlan, defaultMigrationWaveOptions, loadDependencyPai
 import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
 import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
 import { deriveResourceGroup, parseResourceGroupFile, type LandingZoneResourceGroupInput, type DerivedLandingZoneResourceGroup } from './target-landing-zone.js'
+import { deriveNetwork, networkKey, parseNetworkFile, type LandingZoneNetworkInput, type DerivedLandingZoneNetwork } from './landing-zone-network.js'
 import { identifyServerEnvironments, validateEnvironmentRules, type AssessmentIdentity, type EnvironmentRuleInput } from './environment-identification.js'
 import { registerAuthentication, requireAdmin } from './auth.js'
 
@@ -1423,6 +1424,130 @@ app.delete('/api/landing-zone-resource-groups/:id', async (request, response) =>
   const deleted = await database('landing_zone_resource_groups').where({ id }).delete()
   if (deleted === 0) {
     response.status(404).json({ error: 'The resource group was not found.' })
+    return
+  }
+  response.json({ deleted })
+})
+
+const networkColumns = {
+  id: 'id',
+  subscriptionId: 'subscription_id',
+  networkResourceGroup: 'network_resource_group',
+  virtualNetwork: 'virtual_network',
+  virtualNetworkIpSegment: 'virtual_network_ip_segment',
+  subnet: 'subnet',
+  subnetIpSegment: 'subnet_ip_segment',
+  networkSecurityGroup: 'network_security_group',
+  source: 'source',
+  updatedAt: 'updated_at',
+}
+
+const networkRow = (network: DerivedLandingZoneNetwork, source: 'Manual' | 'Upload', transaction: Knex.Transaction) => ({
+  subscription_id: network.subscriptionId,
+  network_resource_group: network.networkResourceGroup,
+  virtual_network: network.virtualNetwork,
+  virtual_network_ip_segment: network.virtualNetworkIpSegment,
+  subnet: network.subnet,
+  subnet_ip_segment: network.subnetIpSegment,
+  network_security_group: network.networkSecurityGroup,
+  network_key_hash: createHash('sha256').update(networkKey(network)).digest('hex'),
+  source,
+  updated_at: transaction.fn.now(),
+})
+
+const networkMerge = (source: 'Manual' | 'Upload', transaction: Knex.Transaction) => ({
+  virtual_network_ip_segment: transaction.raw('VALUES(virtual_network_ip_segment)'),
+  subnet_ip_segment: transaction.raw('VALUES(subnet_ip_segment)'),
+  network_security_group: transaction.raw('VALUES(network_security_group)'),
+  source,
+  updated_at: transaction.fn.now(),
+})
+
+app.get('/api/landing-zone-networks', async (_request, response) => {
+  const items = await database('landing_zone_networks').select(networkColumns).orderBy(['virtual_network', 'subnet', 'subscription_id'])
+  response.json({ items })
+})
+
+app.put('/api/landing-zone-networks', async (request, response) => {
+  const requested = Array.isArray(request.body?.networks) ? request.body.networks : []
+  if (requested.length === 0) {
+    response.status(400).json({ error: 'Provide at least one network.' })
+    return
+  }
+  if (requested.length > 500) {
+    response.status(400).json({ error: 'No more than 500 networks can be saved at once.' })
+    return
+  }
+  const inputs: LandingZoneNetworkInput[] = requested.map((item: unknown) => {
+    const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    return {
+      subscriptionId: String(value.subscriptionId ?? '').trim(),
+      networkResourceGroup: String(value.networkResourceGroup ?? '').trim(),
+      virtualNetwork: String(value.virtualNetwork ?? '').trim(),
+      virtualNetworkIpSegment: String(value.virtualNetworkIpSegment ?? '').trim(),
+      subnet: String(value.subnet ?? '').trim(),
+      subnetIpSegment: String(value.subnetIpSegment ?? '').trim(),
+      networkSecurityGroup: String(value.networkSecurityGroup ?? '').trim(),
+    }
+  })
+  const derived: DerivedLandingZoneNetwork[] = []
+  const seenKeys = new Set<string>()
+  for (const [index, input] of inputs.entries()) {
+    try {
+      const network = deriveNetwork(input)
+      const key = networkKey(network)
+      if (seenKeys.has(key)) {
+        response.status(400).json({ error: `Subnet "${network.virtualNetwork}/${network.subnet}" is listed more than once.` })
+        return
+      }
+      seenKeys.add(key)
+      derived.push(network)
+    } catch (error) {
+      response.status(400).json({ error: `Network ${index + 1}: ${error instanceof Error ? error.message : 'is invalid.'}` })
+      return
+    }
+  }
+
+  await database.transaction(async (transaction) => {
+    await transaction('landing_zone_networks')
+      .insert(derived.map((network) => networkRow(network, 'Manual', transaction)))
+      .onConflict('network_key_hash')
+      .merge(networkMerge('Manual', transaction))
+  })
+  response.json({ saved: derived.length })
+})
+
+app.post('/api/landing-zone-networks/upload', workbookUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a CSV or XLSX file.' })
+    return
+  }
+  try {
+    const parsed = await parseNetworkFile(file.path)
+    await database.transaction(async (transaction) => {
+      await transaction('landing_zone_networks')
+        .insert(parsed.map((network) => networkRow(network, 'Upload', transaction)))
+        .onConflict('network_key_hash')
+        .merge(networkMerge('Upload', transaction))
+    })
+    response.json({ saved: parsed.length })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Unable to import networks.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.delete('/api/landing-zone-networks/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    response.status(400).json({ error: 'A valid network id is required.' })
+    return
+  }
+  const deleted = await database('landing_zone_networks').where({ id }).delete()
+  if (deleted === 0) {
+    response.status(404).json({ error: 'The network was not found.' })
     return
   }
   response.json({ deleted })

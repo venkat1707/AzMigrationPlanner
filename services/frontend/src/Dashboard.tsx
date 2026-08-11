@@ -6,6 +6,7 @@ import DataCleanup from './DataCleanup'
 import MigrationWavePlanning from './MigrationWavePlanning'
 import CoreInfrastructureInput from './CoreInfrastructureInput'
 import TargetLandingZone from './TargetLandingZone'
+import LandingZoneNetwork from './LandingZoneNetwork'
 import AdminPage from './AdminPage'
 import TaskWorkspace from './TaskWorkspace'
 import SprintSchedule from './SprintSchedule'
@@ -47,7 +48,7 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'firewall-rules' | 'tasks' | 'imports' | 'cleanup' | 'admin'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'firewall-rules' | 'tasks' | 'imports' | 'cleanup' | 'admin'
 type ImportKind = 'dependencies' | 'applications' | 'server-assessment' | 'application-mapping'
 const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   applications: 'application-mapping',
@@ -66,6 +67,7 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'imports', label: 'Imports', group: 'Prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, and dependency exports.' },
   { page: 'core-infrastructure', label: 'Core Infrastructure', group: 'Prepare', icon: Settings2, access: 'all', eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
   { page: 'target-landing-zone', label: 'Landing Zone Resource Groups', group: 'Prepare', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Import target landing zone resource groups', description: 'Capture the target landing zone resource groups; the subscription ID and resource group name are parsed from each resource ID.' },
+  { page: 'landing-zone-network', label: 'Landing Zone Network', group: 'Prepare', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Import landing zone networks', description: 'Capture the subscription, network resource group, virtual network and subnet with their IP segments, and optional NSG.' },
   { page: 'environment-identification', label: 'Environment Identification', group: 'Prepare', icon: ScanSearch, access: 'modify', eyebrow: 'Assessment enrichment', title: 'Identify server environments', description: 'Prioritize assessment rules to identify each server environment.' },
   { page: 'dependencies', label: 'Network Dependencies', group: 'Analyze', icon: TableProperties, access: 'all', eyebrow: 'Dependency inventory', title: 'Explore network dependencies', description: 'Filter observed traffic by server, application, and destination port.' },
   { page: 'application-map', label: 'Application Map', group: 'Analyze', icon: Boxes, access: 'all', eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application boundaries, core infrastructure, and cross-application traffic.' },
@@ -401,6 +403,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'application-map' && <ApplicationMap refreshKey={refreshKey} />}
         {activePage === 'core-infrastructure' && <CoreInfrastructureInput />}
         {activePage === 'target-landing-zone' && <TargetLandingZone />}
+        {activePage === 'landing-zone-network' && <LandingZoneNetwork />}
         {activePage === 'environment-identification' && canPlanWaves && <EnvironmentIdentification canModify={canPlanWaves} />}
         {activePage === 'wave-planning' && canPlanWaves && <MigrationWavePlanning />}
         {activePage === 'application-treatments' && <ApplicationTreatmentPlanning canModify={canPlanWaves} />}

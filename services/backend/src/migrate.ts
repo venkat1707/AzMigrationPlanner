@@ -609,6 +609,22 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  if (!(await database.schema.hasTable('landing_zone_networks'))) {
+    await database.schema.createTable('landing_zone_networks', (table) => {
+      table.bigIncrements('id').primary()
+      table.string('subscription_id', 64).notNullable()
+      table.string('network_resource_group', 90).notNullable()
+      table.string('virtual_network', 80).notNullable()
+      table.string('virtual_network_ip_segment', 64).notNullable()
+      table.string('subnet', 80).notNullable()
+      table.string('subnet_ip_segment', 64).notNullable()
+      table.string('network_security_group', 80).notNullable().defaultTo('')
+      table.string('network_key_hash', 64).notNullable().unique()
+      table.string('source', 20).notNullable().defaultTo('Manual')
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+    })
+  }
+
 }
 
 // Only run the CLI flow (which closes the pool) when executed directly, not when imported.
