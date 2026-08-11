@@ -43,7 +43,6 @@ jobs:
         run: npm run lint --workspace backend
 
       - name: Run frontend lint
-        continue-on-error: true
         run: npm run lint --workspace frontend
 
       - name: Audit production dependencies

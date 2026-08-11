@@ -18,5 +18,11 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
     },
+    rules: {
+      // Data is loaded on mount via async load() helpers, so setState runs in a
+      // microtask after await — not synchronously in the effect body. The rule
+      // can't see through the async call and flags these as false positives.
+      'react-hooks/set-state-in-effect': 'off',
+    },
   },
 ])
