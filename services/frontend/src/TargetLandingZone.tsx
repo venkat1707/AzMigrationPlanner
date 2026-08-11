@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { CheckCircle2, Cloud, Download, FileSpreadsheet, Plus, RefreshCw, Save, Trash2, Upload } from 'lucide-react'
+import { CheckCircle2, Cloud, Copy, Download, FileSpreadsheet, Plus, RefreshCw, Save, Trash2, Upload } from 'lucide-react'
 import { apiFetch } from './auth-client'
 
 type ResourceGroupInput = {
@@ -17,6 +17,11 @@ type SavedResourceGroup = {
 
 const emptyGroup = (): ResourceGroupInput => ({ resourceGroupId: '' })
 
+const resourceGraphQuery = `resourcecontainers
+| where type contains "resourcegroups"
+| where subscriptionId == "<Provide Azure subscriptionId>"
+| project id`
+
 function segmentAfter(resourceId: string, key: string): string {
   const parts = resourceId.split('/').filter(Boolean)
   const index = parts.findIndex((part) => part.toLowerCase() === key.toLowerCase())
@@ -32,6 +37,15 @@ export default function TargetLandingZone() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+
+  const copyQuery = async () => {
+    try {
+      await navigator.clipboard.writeText(resourceGraphQuery)
+      setMessage('Resource Graph query copied to the clipboard.')
+    } catch {
+      setError('Unable to copy the query to the clipboard.')
+    }
+  }
 
   const load = async () => {
     setLoading(true)
@@ -122,6 +136,11 @@ export default function TargetLandingZone() {
         <span className="core-upload-icon"><FileSpreadsheet size={20} /></span><div><strong>Import target landing zone resource groups</strong><small>CSV or XLSX column: resource_group_id. Provide each resource group as its full Azure resource ID; the subscription ID and resource group name are parsed from it.</small></div>
         <label className="core-file-picker"><Upload size={14} />{uploadFile ? uploadFile.name : 'Choose file'}<input type="file" accept=".csv,.xlsx" onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)} /></label>
         <button type="button" className="secondary-command" disabled={!uploadFile || uploading} onClick={() => void uploadGroups()}>{uploading ? <RefreshCw className="spin" size={14} /> : <Upload size={14} />}{uploading ? 'Importing...' : 'Import'}</button>
+      </section>
+
+      <section className="landing-zone-query">
+        <div className="landing-zone-query-head"><div><strong>Fetch resource groups from Azure Resource Graph</strong><small>Run this query in the Azure portal (Resource Graph Explorer) or with <code>az graph query</code>. Replace <code>&lt;Provide Azure subscriptionId&gt;</code> with your subscription ID, then paste each returned <code>id</code> above.</small></div><button type="button" className="secondary-command" onClick={() => void copyQuery()}><Copy size={14} />Copy query</button></div>
+        <pre><code>{resourceGraphQuery}</code></pre>
       </section>
 
       <section className="core-input-section">
