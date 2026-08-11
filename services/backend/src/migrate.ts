@@ -593,21 +593,17 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
-  if ((await database.schema.hasTable('target_landing_zones')) && (await database.schema.hasColumn('target_landing_zones', 'virtual_network_id'))) {
-    // Replace the earlier prototype shape (separate resource group / virtual network IDs) with the NSG-centric model.
+  if (await database.schema.hasTable('target_landing_zones')) {
+    // Replaced by the resource-group-only landing zone model.
     await database.schema.dropTable('target_landing_zones')
   }
-  if (!(await database.schema.hasTable('target_landing_zones'))) {
-    await database.schema.createTable('target_landing_zones', (table) => {
+  if (!(await database.schema.hasTable('landing_zone_resource_groups'))) {
+    await database.schema.createTable('landing_zone_resource_groups', (table) => {
       table.bigIncrements('id').primary()
-      table.string('name', 200).notNullable().unique()
       table.string('subscription_id', 64).notNullable()
       table.string('resource_group_name', 90).notNullable()
-      table.string('virtual_network', 80).notNullable()
-      table.string('subnet', 80).notNullable()
-      table.text('subnet_id').notNullable()
-      table.string('network_security_group', 80).notNullable()
-      table.text('network_security_group_id').notNullable()
+      table.text('resource_group_id').notNullable()
+      table.string('resource_group_id_hash', 64).notNullable().unique()
       table.string('source', 20).notNullable().defaultTo('Manual')
       table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
     })

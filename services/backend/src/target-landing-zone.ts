@@ -3,18 +3,14 @@ import { extname } from 'node:path'
 import { parse } from 'csv-parse'
 import ExcelJS from 'exceljs'
 
-export type LandingZoneInput = {
-  name: string
-  subnetId: string
-  networkSecurityGroupId: string
+export type LandingZoneResourceGroupInput = {
+  resourceGroupId: string
 }
 
-export type DerivedLandingZone = LandingZoneInput & {
+export type DerivedLandingZoneResourceGroup = {
   subscriptionId: string
   resourceGroupName: string
-  virtualNetwork: string
-  subnet: string
-  networkSecurityGroup: string
+  resourceGroupId: string
 }
 
 type ResourceChainEntry = { type: string; name: string }
@@ -28,8 +24,6 @@ type ParsedResourceId = {
 const guidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 // Azure resource group names: letters, digits, unicode letters, '.', '_', '-', '(', ')'; may not end with '.'.
 const resourceGroupNamePattern = /^[\p{L}\p{N}._()\-]{1,90}$/u
-// Network resource names (VNet/Subnet/NSG): alphanumerics plus '_', '.', '-'; up to 80 characters.
-const resourceNamePattern = /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,78}[\p{L}\p{N}_]$|^[\p{L}\p{N}]$/u
 
 function parseAzureResourceId(value: string, label: string): ParsedResourceId {
   const raw = value.trim()
@@ -67,47 +61,15 @@ function parseAzureResourceId(value: string, label: string): ParsedResourceId {
   return { subscriptionId, resourceGroupName, provider, chain }
 }
 
-function requireProvider(parsed: ParsedResourceId, label: string): void {
-  if (parsed.provider?.toLowerCase() !== 'microsoft.network') {
-    throw new Error(`${label} must reference the Microsoft.Network provider.`)
+export function deriveResourceGroup(input: LandingZoneResourceGroupInput): DerivedLandingZoneResourceGroup {
+  const parsed = parseAzureResourceId(input.resourceGroupId, 'Resource group ID')
+  if (parsed.provider !== null || parsed.chain.length > 0) {
+    throw new Error('Resource group ID must reference a resource group only, e.g. /subscriptions/{id}/resourceGroups/{name}.')
   }
-}
-
-function chainEntry(parsed: ParsedResourceId, expectedType: string, label: string, position: number): ResourceChainEntry {
-  const entry = parsed.chain[position]
-  if (!entry || entry.type.toLowerCase() !== expectedType.toLowerCase()) {
-    throw new Error(`${label} must reference a "${expectedType}" resource.`)
-  }
-  if (!resourceNamePattern.test(entry.name)) throw new Error(`${label} contains an invalid ${expectedType} name.`)
-  return entry
-}
-
-export function deriveLandingZone(input: LandingZoneInput): DerivedLandingZone {
-  const name = input.name.trim()
-  if (!name) throw new Error('Each landing zone requires a name.')
-  if (name.length > 200) throw new Error('A landing zone name may not exceed 200 characters.')
-
-  const subnet = parseAzureResourceId(input.subnetId, 'Subnet ID')
-  requireProvider(subnet, 'Subnet ID')
-  const subnetVnetEntry = chainEntry(subnet, 'virtualNetworks', 'Subnet ID', 0)
-  const subnetEntry = chainEntry(subnet, 'subnets', 'Subnet ID', 1)
-  if (subnet.chain.length !== 2) throw new Error('Subnet ID must reference a subnet within a virtual network.')
-
-  const networkSecurityGroup = parseAzureResourceId(input.networkSecurityGroupId, 'Network security group ID')
-  requireProvider(networkSecurityGroup, 'Network security group ID')
-  const nsgEntry = chainEntry(networkSecurityGroup, 'networkSecurityGroups', 'Network security group ID', 0)
-  if (networkSecurityGroup.chain.length !== 1) throw new Error('Network security group ID must reference a network security group, not a child resource.')
-
-  // Subscription and resource group are taken from the NSG, as the NSG resource ID is the primary input.
   return {
-    name,
-    subscriptionId: networkSecurityGroup.subscriptionId,
-    resourceGroupName: networkSecurityGroup.resourceGroupName,
-    virtualNetwork: subnetVnetEntry.name,
-    subnet: subnetEntry.name,
-    subnetId: input.subnetId.trim(),
-    networkSecurityGroup: nsgEntry.name,
-    networkSecurityGroupId: input.networkSecurityGroupId.trim(),
+    subscriptionId: parsed.subscriptionId,
+    resourceGroupName: parsed.resourceGroupName,
+    resourceGroupId: input.resourceGroupId.trim(),
   }
 }
 
@@ -128,30 +90,28 @@ function readColumn(values: Map<string, string>, ...keys: string[]): string {
   return ''
 }
 
-function parseRows(rows: RawRow[]): DerivedLandingZone[] {
-  const landingZones: DerivedLandingZone[] = []
-  const seenNames = new Set<string>()
+function parseRows(rows: RawRow[]): DerivedLandingZoneResourceGroup[] {
+  const resourceGroups: DerivedLandingZoneResourceGroup[] = []
+  const seenIds = new Set<string>()
   rows.forEach((row, index) => {
     const values = new Map(Object.entries(row).map(([header, value]) => [normalizeHeader(header), cellText(value)]))
-    const input: LandingZoneInput = {
-      name: readColumn(values, 'name', 'landingzone', 'landingzonename'),
-      subnetId: readColumn(values, 'subnetid', 'subnet', 'subnetresourceid'),
-      networkSecurityGroupId: readColumn(values, 'networksecuritygroupid', 'nsgid', 'nsgresourceid', 'networksecuritygroup'),
+    const input: LandingZoneResourceGroupInput = {
+      resourceGroupId: readColumn(values, 'resourcegroupid', 'resourcegroup', 'resourcegroupresourceid', 'rgid', 'id'),
     }
-    if (!input.name && !input.subnetId && !input.networkSecurityGroupId) return
-    let derived: DerivedLandingZone
+    if (!input.resourceGroupId) return
+    let derived: DerivedLandingZoneResourceGroup
     try {
-      derived = deriveLandingZone(input)
+      derived = deriveResourceGroup(input)
     } catch (error) {
-      throw new Error(`Row ${index + 2}: ${error instanceof Error ? error.message : 'invalid landing zone.'}`)
+      throw new Error(`Row ${index + 2}: ${error instanceof Error ? error.message : 'invalid resource group.'}`)
     }
-    const nameKey = derived.name.toLowerCase()
-    if (seenNames.has(nameKey)) throw new Error(`Row ${index + 2}: duplicate landing zone name "${derived.name}".`)
-    seenNames.add(nameKey)
-    landingZones.push(derived)
+    const key = derived.resourceGroupId.toLowerCase()
+    if (seenIds.has(key)) throw new Error(`Row ${index + 2}: duplicate resource group "${derived.resourceGroupId}".`)
+    seenIds.add(key)
+    resourceGroups.push(derived)
   })
-  if (landingZones.length === 0) throw new Error('The file contains no landing zone rows.')
-  return landingZones
+  if (resourceGroups.length === 0) throw new Error('The file contains no resource group rows.')
+  return resourceGroups
 }
 
 async function csvRows(filePath: string): Promise<RawRow[]> {
@@ -177,7 +137,7 @@ async function excelRows(filePath: string): Promise<RawRow[]> {
   return rows
 }
 
-export async function parseTargetLandingZoneFile(filePath: string): Promise<DerivedLandingZone[]> {
+export async function parseResourceGroupFile(filePath: string): Promise<DerivedLandingZoneResourceGroup[]> {
   const extension = extname(filePath).toLowerCase()
   const rows = extension === '.csv' ? await csvRows(filePath) : extension === '.xlsx' ? await excelRows(filePath) : null
   if (!rows) throw new Error('Unsupported file type. Upload a CSV or XLSX file.')
