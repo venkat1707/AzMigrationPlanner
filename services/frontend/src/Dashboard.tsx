@@ -57,7 +57,7 @@ const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   'server-assessment': 'dependencies',
 }
 type PageAccess = 'all' | 'modify' | 'delete' | 'admin'
-type NavigationGroup = 'Workspace' | 'Prepare' | 'Analyze' | 'Plan & deliver' | 'Manage'
+type NavigationGroup = 'Workspace' | 'Discover & prepare' | 'Target landing zone' | 'Assess workloads' | 'Plan & deliver' | 'Manage workspace'
 type CollapsibleNavigationGroup = Exclude<NavigationGroup, 'Workspace'>
 type PageDefinition = { page: AppPage; label: string; group: NavigationGroup; icon: LucideIcon; access: PageAccess; eyebrow: string; title: string; description: string }
 
@@ -65,31 +65,32 @@ const emptyFilters: Filters = { server: '', ip: '', port: '' }
 const formatNumber = new Intl.NumberFormat('en-US')
 const pageDefinitions: PageDefinition[] = [
   { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor discovery coverage and continue through the migration planning workflow.' },
-  { page: 'imports', label: 'Imports', group: 'Prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, and dependency exports.' },
-  { page: 'core-infrastructure', label: 'Core Infrastructure', group: 'Prepare', icon: Settings2, access: 'all', eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
-  { page: 'target-landing-zone', label: 'Landing Zone Resource Groups', group: 'Prepare', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Import target landing zone resource groups', description: 'Capture the target landing zone resource groups; the subscription ID and resource group name are parsed from each resource ID.' },
-  { page: 'landing-zone-network', label: 'Landing Zone Network', group: 'Prepare', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Import landing zone networks', description: 'Capture the subscription, network resource group, virtual network and subnet with their IP segments, and optional NSG.' },
-  { page: 'landing-zone-platform', label: 'Landing Zone Platform', group: 'Prepare', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Landing zone platform design decisions', description: 'Record platform-level choices: connectivity, firewall, DNS, regions, resiliency, identity, monitoring, backup, endpoint protection, SIEM, and patching.' },
-  { page: 'environment-identification', label: 'Environment Identification', group: 'Prepare', icon: ScanSearch, access: 'modify', eyebrow: 'Assessment enrichment', title: 'Identify server environments', description: 'Prioritize assessment rules to identify each server environment.' },
-  { page: 'dependencies', label: 'Network Dependencies', group: 'Analyze', icon: TableProperties, access: 'all', eyebrow: 'Dependency inventory', title: 'Explore network dependencies', description: 'Filter observed traffic by server, application, and destination port.' },
-  { page: 'application-map', label: 'Application Map', group: 'Analyze', icon: Boxes, access: 'all', eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application boundaries, core infrastructure, and cross-application traffic.' },
-  { page: 'topology', label: 'Server Information', group: 'Analyze', icon: Route, access: 'all', eyebrow: 'Server information', title: 'Server configuration and dependencies', description: 'Review current infrastructure, proposed Azure sizing, and observed connections.' },
-  { page: 'server-coverage', label: 'Server Coverage', group: 'Analyze', icon: ServerOff, access: 'all', eyebrow: 'Discovery coverage', title: 'Review server coverage gaps', description: 'Find assessed servers without application mappings or observed dependency connections.' },
+  { page: 'imports', label: 'Imports', group: 'Discover & prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, and dependency exports.' },
+  { page: 'core-infrastructure', label: 'Core Infrastructure', group: 'Discover & prepare', icon: Settings2, access: 'all', eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
+  { page: 'environment-identification', label: 'Environment Identification', group: 'Discover & prepare', icon: ScanSearch, access: 'modify', eyebrow: 'Assessment enrichment', title: 'Identify server environments', description: 'Prioritize assessment rules to identify each server environment.' },
+  { page: 'landing-zone-platform', label: 'Landing Zone Platform', group: 'Target landing zone', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Landing zone platform design decisions', description: 'Record platform-level choices: connectivity, firewall, DNS, regions, resiliency, identity, monitoring, backup, endpoint protection, SIEM, and patching.' },
+  { page: 'target-landing-zone', label: 'Landing Zone Resource Groups', group: 'Target landing zone', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Import target landing zone resource groups', description: 'Capture the target landing zone resource groups; the subscription ID and resource group name are parsed from each resource ID.' },
+  { page: 'landing-zone-network', label: 'Landing Zone Network', group: 'Target landing zone', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Import landing zone networks', description: 'Capture the subscription, network resource group, virtual network and subnet with their IP segments, and optional NSG.' },
+  { page: 'server-coverage', label: 'Server Coverage', group: 'Assess workloads', icon: ServerOff, access: 'all', eyebrow: 'Discovery coverage', title: 'Review server coverage gaps', description: 'Find assessed servers without application mappings or observed dependency connections.' },
+  { page: 'topology', label: 'Server Information', group: 'Assess workloads', icon: Route, access: 'all', eyebrow: 'Server information', title: 'Server configuration and dependencies', description: 'Review current infrastructure, proposed Azure sizing, and observed connections.' },
+  { page: 'dependencies', label: 'Network Dependencies', group: 'Assess workloads', icon: TableProperties, access: 'all', eyebrow: 'Dependency inventory', title: 'Explore network dependencies', description: 'Filter observed traffic by server, application, and destination port.' },
+  { page: 'application-map', label: 'Application Map', group: 'Assess workloads', icon: Boxes, access: 'all', eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application boundaries, core infrastructure, and cross-application traffic.' },
   { page: 'application-treatments', label: 'Application Treatments', group: 'Plan & deliver', icon: ClipboardCheck, access: 'all', eyebrow: 'Migration strategy', title: 'Define application treatment plans', description: 'Assign a migration treatment to every application in the catalog.' },
   { page: 'wave-planning', label: 'Wave Planning', group: 'Plan & deliver', icon: CalendarRange, access: 'modify', eyebrow: 'Migration wave planning', title: 'Sequence migration waves and sprints', description: 'Group ready workloads using application affinity, environments, dependencies, and data gravity.' },
-  { page: 'tasks', label: 'Finalize Sprints', group: 'Plan & deliver', icon: ClipboardList, access: 'all', eyebrow: 'Delivery workspace', title: 'Finalize Sprints', description: 'Track sprint and cross-dependency ownership, status, decisions, and comment history.' },
-  { page: 'sprint-schedule', label: 'Sprint Schedule', group: 'Plan & deliver', icon: CalendarClock, access: 'modify', eyebrow: 'Migration timeline', title: 'Schedule waves and sprints', description: 'Set target migration dates and review delivery across environments and waves.' },
   { page: 'firewall-rules', label: 'Firewall Rules', group: 'Plan & deliver', icon: Shield, access: 'modify', eyebrow: 'Network security', title: 'Generate NSG and firewall rules', description: 'Produce Azure NSG, Azure Firewall, and on-premise firewall rules for each sprint from observed dependencies.' },
-  { page: 'cleanup', label: 'Data Cleanup', group: 'Manage', icon: Trash2, access: 'delete', eyebrow: 'Data management', title: 'Clean up application data', description: 'Remove imported data through a controlled, observable cleanup flow.' },
-  { page: 'admin', label: 'Administration', group: 'Manage', icon: UserRoundCog, access: 'admin', eyebrow: 'Administration', title: 'Identity and access', description: 'Manage local users, application privileges, and Microsoft Entra ID authentication.' },
+  { page: 'sprint-schedule', label: 'Sprint Schedule', group: 'Plan & deliver', icon: CalendarClock, access: 'modify', eyebrow: 'Migration timeline', title: 'Schedule waves and sprints', description: 'Set target migration dates and review delivery across environments and waves.' },
+  { page: 'tasks', label: 'Finalize Sprints', group: 'Plan & deliver', icon: ClipboardList, access: 'all', eyebrow: 'Delivery workspace', title: 'Finalize Sprints', description: 'Track sprint and cross-dependency ownership, status, decisions, and comment history.' },
+  { page: 'cleanup', label: 'Data Cleanup', group: 'Manage workspace', icon: Trash2, access: 'delete', eyebrow: 'Data management', title: 'Clean up application data', description: 'Remove imported data through a controlled, observable cleanup flow.' },
+  { page: 'admin', label: 'Administration', group: 'Manage workspace', icon: UserRoundCog, access: 'admin', eyebrow: 'Administration', title: 'Identity and access', description: 'Manage local users, application privileges, and Microsoft Entra ID authentication.' },
 ]
-const navigationGroups: NavigationGroup[] = ['Workspace', 'Prepare', 'Analyze', 'Plan & deliver', 'Manage']
+const navigationGroups: NavigationGroup[] = ['Workspace', 'Discover & prepare', 'Target landing zone', 'Assess workloads', 'Plan & deliver', 'Manage workspace']
 const navigationStateKey = 'migration-planner-navigation-groups'
 const defaultExpandedGroups: Record<CollapsibleNavigationGroup, boolean> = {
-  Prepare: true,
-  Analyze: true,
+  'Discover & prepare': true,
+  'Target landing zone': true,
+  'Assess workloads': true,
   'Plan & deliver': true,
-  Manage: false,
+  'Manage workspace': false,
 }
 
 function readExpandedGroups(): Record<CollapsibleNavigationGroup, boolean> {
