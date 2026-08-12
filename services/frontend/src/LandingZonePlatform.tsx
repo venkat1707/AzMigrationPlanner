@@ -4,6 +4,7 @@ import { apiFetch } from './auth-client'
 
 type PlatformForm = {
   networkConnectivity: string
+  networkTopology: string
   firewall: string
   dns: string
   primaryRegion: string
@@ -22,6 +23,7 @@ type SavedPlatform = PlatformForm & { updatedAt?: string }
 
 const emptyForm = (): PlatformForm => ({
   networkConnectivity: '',
+  networkTopology: '',
   firewall: '',
   dns: '',
   primaryRegion: '',
@@ -39,7 +41,8 @@ const emptyForm = (): PlatformForm => ({
 const azureRegions = ['East US', 'East US 2', 'Central US', 'South Central US', 'West US 2', 'West US 3', 'North Europe', 'West Europe', 'UK South', 'Sweden Central', 'Southeast Asia', 'Australia East', 'Japan East', 'Canada Central', 'Brazil South']
 
 const suggestions: Record<keyof Omit<PlatformForm, 'notes'>, string[]> = {
-  networkConnectivity: ['ExpressRoute', 'Site-to-Site VPN', 'Point-to-Site VPN', 'Azure Virtual WAN', 'Hub-and-spoke peering', 'Internet-only'],
+  networkConnectivity: ['ExpressRoute', 'Site-to-Site VPN', 'Point-to-Site VPN'],
+  networkTopology: ['Hub and spoke', 'Azure Virtual WAN', 'Virtual network peering', 'Internet only'],
   firewall: ['Azure Firewall', 'Azure Firewall Premium', 'Third-party NVA', 'NSG only', 'On-premises firewall', 'None'],
   dns: ['Azure DNS (public)', 'Azure Private DNS zones', 'Azure DNS Private Resolver', 'On-premises DNS', 'Third-party DNS'],
   primaryRegion: azureRegions,
@@ -129,6 +132,7 @@ export default function LandingZonePlatform() {
           <legend>Connectivity &amp; network</legend>
           <div className="platform-grid">
             {renderField('networkConnectivity', 'Network connectivity')}
+            {renderField('networkTopology', 'Network topology')}
             {renderField('firewall', 'Firewall')}
             {renderField('dns', 'DNS')}
           </div>

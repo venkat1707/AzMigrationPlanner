@@ -380,21 +380,28 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             <article><span className="metric-icon"><Server /></span><div><span>Destination servers</span><strong>{summary ? formatNumber.format(summary.destinationServers) : '-'}</strong><small>Unique endpoints</small></div></article>
           </section>
           <section className="overview-grid">
-            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Guided workflow</p><h2>Continue migration planning</h2></div></div><div className="workflow-list">
-              <section><span className="workflow-step">1</span><div><p>Prepare</p><div className="action-list">
-                {canPlanWaves && <a href="#imports"><span className="action-icon"><Upload size={19} /></span><span><strong>Import discovery data</strong><small>Add assessment, mapping, and dependency exports.</small></span><ArrowUpRight size={18} /></a>}
-                <a href="#core-infrastructure"><span className="action-icon"><Settings2 size={19} /></span><span><strong>Define core infrastructure</strong><small>Identify shared services and network boundaries.</small></span><ArrowUpRight size={18} /></a>
-              </div></div></section>
-              <section><span className="workflow-step">2</span><div><p>Analyze</p><div className="action-list">
-                <a href="#dependencies"><span className="action-icon"><Search size={19} /></span><span><strong>Explore dependencies</strong><small>Search observed communication and application traffic.</small></span><ArrowUpRight size={18} /></a>
-                <a href="#application-map"><span className="action-icon"><Boxes size={19} /></span><span><strong>Review application boundaries</strong><small>Understand environment and shared-service relationships.</small></span><ArrowUpRight size={18} /></a>
-                <a href="#topology"><span className="action-icon"><Route size={19} /></span><span><strong>Inspect server information</strong><small>Review sizing, services, ports, and connected systems.</small></span><ArrowUpRight size={18} /></a>
-              </div></div></section>
-              <section><span className="workflow-step">3</span><div><p>Plan & deliver</p><div className="action-list">
-                {canPlanWaves && <a href="#wave-planning"><span className="action-icon"><CalendarRange size={19} /></span><span><strong>Plan migration waves</strong><small>Sequence application groups into bounded sprints.</small></span><ArrowUpRight size={18} /></a>}
-                {canPlanWaves && <a href="#sprint-schedule"><span className="action-icon"><CalendarClock size={19} /></span><span><strong>Schedule migration sprints</strong><small>Set target dates and review the delivery timeline.</small></span><ArrowUpRight size={18} /></a>}
-                <a href="#tasks"><span className="action-icon"><ClipboardList size={19} /></span><span><strong>Finalize sprints</strong><small>Assign ownership and track decisions and status.</small></span><ArrowUpRight size={18} /></a>
-              </div></div></section>
+            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Migration journey</p><h2>Build a delivery-ready plan</h2><small className="overview-intro">Follow the flow from discovered estate to an approved migration backlog.</small></div></div><div className="journey-map">
+              <section className="journey-phase discovery"><div className="journey-phase-heading"><span>01</span><div><p>Discover the estate</p><small>Load source data and establish the current-state baseline.</small></div></div><div className="journey-actions">
+                {canPlanWaves && <a href="#imports"><Upload size={16} /><span><strong>Import source data</strong><small>Catalog, assessment, mappings, and dependencies</small></span><ArrowUpRight size={16} /></a>}
+                <a href="#core-infrastructure"><Settings2 size={16} /><span><strong>Define core infrastructure</strong><small>Shared services, roles, IPs, and ranges</small></span><ArrowUpRight size={16} /></a>
+                <a href="#environment-identification"><ScanSearch size={16} /><span><strong>Identify environments</strong><small>Classify servers for planning</small></span><ArrowUpRight size={16} /></a>
+              </div></section>
+              <section className="journey-phase landing-zone"><div className="journey-phase-heading"><span>02</span><div><p>Define the landing zone</p><small>Document the destination platform before workload planning.</small></div></div><div className="journey-actions">
+                <a href="#landing-zone-platform"><Cloud size={16} /><span><strong>Capture platform decisions</strong><small>Connectivity, regions, identity, security, and operations</small></span><ArrowUpRight size={16} /></a>
+                <a href="#target-landing-zone"><Cloud size={16} /><span><strong>Register resource groups</strong><small>Target subscriptions and resource groups</small></span><ArrowUpRight size={16} /></a>
+                <a href="#landing-zone-network"><Network size={16} /><span><strong>Map landing-zone networks</strong><small>Virtual networks, subnets, segments, and NSGs</small></span><ArrowUpRight size={16} /></a>
+              </div></section>
+              <section className="journey-phase analysis"><div className="journey-phase-heading"><span>03</span><div><p>Understand the workload</p><small>Turn discovery records into an application and dependency view.</small></div></div><div className="journey-actions">
+                <a href="#dependencies"><Search size={16} /><span><strong>Explore dependencies</strong><small>Observed traffic and communication paths</small></span><ArrowUpRight size={16} /></a>
+                <a href="#application-map"><Boxes size={16} /><span><strong>Review application map</strong><small>Application boundaries and shared services</small></span><ArrowUpRight size={16} /></a>
+                <a href="#server-coverage"><ServerOff size={16} /><span><strong>Resolve coverage gaps</strong><small>Find missing mapping or observation evidence</small></span><ArrowUpRight size={16} /></a>
+              </div></section>
+              <section className="journey-phase delivery"><div className="journey-phase-heading"><span>04</span><div><p>Plan &amp; deliver</p><small>Choose treatments, sequence work, and execute with controls.</small></div></div><div className="journey-actions">
+                <a href="#application-treatments"><ClipboardCheck size={16} /><span><strong>Set application treatments</strong><small>Assign migration approaches</small></span><ArrowUpRight size={16} /></a>
+                {canPlanWaves && <a href="#wave-planning"><CalendarRange size={16} /><span><strong>Plan waves</strong><small>Group ready workloads into sprints</small></span><ArrowUpRight size={16} /></a>}
+                {canPlanWaves && <a href="#firewall-rules"><Shield size={16} /><span><strong>Generate security rules</strong><small>Derive firewall rules from dependencies</small></span><ArrowUpRight size={16} /></a>}
+                <a href="#tasks"><ClipboardList size={16} /><span><strong>Finalize sprints</strong><small>Assign ownership and track decisions</small></span><ArrowUpRight size={16} /></a>
+              </div></section>
             </div></div>
             <div className="activity-panel"><div className="section-heading"><div><p className="eyebrow">Import activity</p><h2>Latest files</h2></div><a href="#imports">View all</a></div><ImportHistory items={imports.slice(0, 5)} /></div>
           </section>

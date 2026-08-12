@@ -629,6 +629,7 @@ export async function migrateSchema(): Promise<void> {
     await database.schema.createTable('landing_zone_platform', (table) => {
       table.integer('id').unsigned().primary()
       table.string('network_connectivity', 200).notNullable().defaultTo('')
+      table.string('network_topology', 200).notNullable().defaultTo('')
       table.string('firewall', 200).notNullable().defaultTo('')
       table.string('dns', 200).notNullable().defaultTo('')
       table.string('primary_region', 100).notNullable().defaultTo('')
@@ -644,6 +645,12 @@ export async function migrateSchema(): Promise<void> {
       table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
     })
     await database('landing_zone_platform').insert({ id: 1 })
+  }
+
+  if (!(await database.schema.hasColumn('landing_zone_platform', 'network_topology'))) {
+    await database.schema.alterTable('landing_zone_platform', (table) => {
+      table.string('network_topology', 200).notNullable().defaultTo('')
+    })
   }
 
 }

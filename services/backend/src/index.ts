@@ -1555,6 +1555,7 @@ app.delete('/api/landing-zone-networks/:id', async (request, response) => {
 
 const platformFields = [
   { key: 'networkConnectivity', column: 'network_connectivity', max: 200 },
+  { key: 'networkTopology', column: 'network_topology', max: 200 },
   { key: 'firewall', column: 'firewall', max: 200 },
   { key: 'dns', column: 'dns', max: 200 },
   { key: 'primaryRegion', column: 'primary_region', max: 100 },
