@@ -601,11 +601,17 @@ export async function migrateSchema(): Promise<void> {
     await database.schema.createTable('landing_zone_resource_groups', (table) => {
       table.bigIncrements('id').primary()
       table.string('subscription_id', 64).notNullable()
+      table.string('subscription_name', 200).notNullable().defaultTo('')
       table.string('resource_group_name', 90).notNullable()
       table.text('resource_group_id').notNullable()
       table.string('resource_group_id_hash', 64).notNullable().unique()
       table.string('source', 20).notNullable().defaultTo('Manual')
       table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+    })
+  }
+  if (!(await database.schema.hasColumn('landing_zone_resource_groups', 'subscription_name'))) {
+    await database.schema.alterTable('landing_zone_resource_groups', (table) => {
+      table.string('subscription_name', 200).notNullable().defaultTo('')
     })
   }
 

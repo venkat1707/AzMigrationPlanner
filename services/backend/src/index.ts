@@ -1322,6 +1322,7 @@ function isValidCidr(value: string) {
 const resourceGroupColumns = {
   id: 'id',
   subscriptionId: 'subscription_id',
+  subscriptionName: 'subscription_name',
   resourceGroupName: 'resource_group_name',
   resourceGroupId: 'resource_group_id',
   source: 'source',
@@ -1332,6 +1333,7 @@ const resourceGroupIdHash = (resourceGroupId: string) => createHash('sha256').up
 
 const resourceGroupRow = (group: DerivedLandingZoneResourceGroup, source: 'Manual' | 'Upload', transaction: Knex.Transaction) => ({
   subscription_id: group.subscriptionId,
+  subscription_name: group.subscriptionName,
   resource_group_name: group.resourceGroupName,
   resource_group_id: group.resourceGroupId,
   resource_group_id_hash: resourceGroupIdHash(group.resourceGroupId),
@@ -1341,6 +1343,7 @@ const resourceGroupRow = (group: DerivedLandingZoneResourceGroup, source: 'Manua
 
 const resourceGroupMerge = (source: 'Manual' | 'Upload', transaction: Knex.Transaction) => ({
   subscription_id: transaction.raw('VALUES(subscription_id)'),
+  subscription_name: transaction.raw('VALUES(subscription_name)'),
   resource_group_name: transaction.raw('VALUES(resource_group_name)'),
   resource_group_id: transaction.raw('VALUES(resource_group_id)'),
   source,
@@ -1364,7 +1367,10 @@ app.put('/api/landing-zone-resource-groups', async (request, response) => {
   }
   const inputs: LandingZoneResourceGroupInput[] = requested.map((item: unknown) => {
     const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
-    return { resourceGroupId: String(value.resourceGroupId ?? '').trim() }
+    return {
+      subscriptionName: String(value.subscriptionName ?? '').trim(),
+      resourceGroupId: String(value.resourceGroupId ?? '').trim(),
+    }
   })
   const derived: DerivedLandingZoneResourceGroup[] = []
   const seenIds = new Set<string>()

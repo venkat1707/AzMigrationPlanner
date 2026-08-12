@@ -4,11 +4,13 @@ import { parse } from 'csv-parse'
 import ExcelJS from 'exceljs'
 
 export type LandingZoneResourceGroupInput = {
+  subscriptionName: string
   resourceGroupId: string
 }
 
 export type DerivedLandingZoneResourceGroup = {
   subscriptionId: string
+  subscriptionName: string
   resourceGroupName: string
   resourceGroupId: string
 }
@@ -24,6 +26,13 @@ type ParsedResourceId = {
 const guidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 // Azure resource group names: letters, digits, unicode letters, '.', '_', '-', '(', ')'; may not end with '.'.
 const resourceGroupNamePattern = /^[\p{L}\p{N}._()\-]{1,90}$/u
+
+function requireSubscriptionName(value: string): string {
+  const name = value.trim()
+  if (!name) throw new Error('Subscription name is required.')
+  if (name.length > 200) throw new Error('Subscription name must be 200 characters or fewer.')
+  return name
+}
 
 function parseAzureResourceId(value: string, label: string): ParsedResourceId {
   const raw = value.trim()
@@ -68,6 +77,7 @@ export function deriveResourceGroup(input: LandingZoneResourceGroupInput): Deriv
   }
   return {
     subscriptionId: parsed.subscriptionId,
+    subscriptionName: requireSubscriptionName(input.subscriptionName),
     resourceGroupName: parsed.resourceGroupName,
     resourceGroupId: input.resourceGroupId.trim(),
   }
@@ -96,9 +106,10 @@ function parseRows(rows: RawRow[]): DerivedLandingZoneResourceGroup[] {
   rows.forEach((row, index) => {
     const values = new Map(Object.entries(row).map(([header, value]) => [normalizeHeader(header), cellText(value)]))
     const input: LandingZoneResourceGroupInput = {
+      subscriptionName: readColumn(values, 'subscriptionname', 'subscriptiondisplayname'),
       resourceGroupId: readColumn(values, 'resourcegroupid', 'resourcegroup', 'resourcegroupresourceid', 'rgid', 'id'),
     }
-    if (!input.resourceGroupId) return
+    if (!input.subscriptionName && !input.resourceGroupId) return
     let derived: DerivedLandingZoneResourceGroup
     try {
       derived = deriveResourceGroup(input)
