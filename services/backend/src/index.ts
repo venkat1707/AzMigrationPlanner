@@ -1553,6 +1553,51 @@ app.delete('/api/landing-zone-networks/:id', async (request, response) => {
   response.json({ deleted })
 })
 
+const platformFields = [
+  { key: 'networkConnectivity', column: 'network_connectivity', max: 200 },
+  { key: 'firewall', column: 'firewall', max: 200 },
+  { key: 'dns', column: 'dns', max: 200 },
+  { key: 'primaryRegion', column: 'primary_region', max: 100 },
+  { key: 'secondaryRegion', column: 'secondary_region', max: 100 },
+  { key: 'availabilityStrategy', column: 'availability_strategy', max: 200 },
+  { key: 'identityDomainController', column: 'identity_domain_controller', max: 200 },
+  { key: 'monitoringSolution', column: 'monitoring_solution', max: 200 },
+  { key: 'backupSolution', column: 'backup_solution', max: 200 },
+  { key: 'endpointProtectionSolution', column: 'endpoint_protection_solution', max: 200 },
+  { key: 'siemSolution', column: 'siem_solution', max: 200 },
+  { key: 'patchManagement', column: 'patch_management', max: 200 },
+  { key: 'notes', column: 'notes', max: 2000 },
+] as const
+
+const platformSelect = {
+  ...Object.fromEntries(platformFields.map((field) => [field.key, field.column])),
+  updatedAt: 'updated_at',
+}
+
+app.get('/api/landing-zone-platform', async (_request, response) => {
+  const row = await database('landing_zone_platform').where({ id: 1 }).select(platformSelect).first()
+  response.json({ item: row ?? null })
+})
+
+app.put('/api/landing-zone-platform', async (request, response) => {
+  const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {}
+  const values: Record<string, string> = {}
+  for (const field of platformFields) {
+    const value = String(body[field.key] ?? '').trim()
+    if (value.length > field.max) {
+      response.status(400).json({ error: `${field.key} must be ${field.max} characters or fewer.` })
+      return
+    }
+    values[field.column] = value
+  }
+  await database('landing_zone_platform')
+    .insert({ id: 1, ...values, updated_at: database.fn.now() })
+    .onConflict('id')
+    .merge({ ...values, updated_at: database.fn.now() })
+  const row = await database('landing_zone_platform').where({ id: 1 }).select(platformSelect).first()
+  response.json({ item: row ?? null })
+})
+
 app.get('/api/application-environments', async (_request, response) => {
   response.json({ items: await listApplicationEnvironments(database) })
 })

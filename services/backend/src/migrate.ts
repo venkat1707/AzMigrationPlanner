@@ -625,6 +625,27 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  if (!(await database.schema.hasTable('landing_zone_platform'))) {
+    await database.schema.createTable('landing_zone_platform', (table) => {
+      table.integer('id').unsigned().primary()
+      table.string('network_connectivity', 200).notNullable().defaultTo('')
+      table.string('firewall', 200).notNullable().defaultTo('')
+      table.string('dns', 200).notNullable().defaultTo('')
+      table.string('primary_region', 100).notNullable().defaultTo('')
+      table.string('secondary_region', 100).notNullable().defaultTo('')
+      table.string('availability_strategy', 200).notNullable().defaultTo('')
+      table.string('identity_domain_controller', 200).notNullable().defaultTo('')
+      table.string('monitoring_solution', 200).notNullable().defaultTo('')
+      table.string('backup_solution', 200).notNullable().defaultTo('')
+      table.string('endpoint_protection_solution', 200).notNullable().defaultTo('')
+      table.string('siem_solution', 200).notNullable().defaultTo('')
+      table.string('patch_management', 200).notNullable().defaultTo('')
+      table.text('notes').nullable()
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+    })
+    await database('landing_zone_platform').insert({ id: 1 })
+  }
+
 }
 
 // Only run the CLI flow (which closes the pool) when executed directly, not when imported.

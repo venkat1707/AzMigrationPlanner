@@ -1040,6 +1040,18 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .landing-zone-query-head code { padding: 1px 4px; background: #e2ecf7; border-radius: 3px; font-size: 10px; }
 .landing-zone-query pre { margin: 0; padding: 12px 14px; background: #0f2033; border-radius: 6px; overflow-x: auto; }
 .landing-zone-query pre code { color: #d9e6f4; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; line-height: 1.6; white-space: pre; }
+.platform-group { margin: 0; padding: 14px 16px; border: 1px solid #dce5ef; border-radius: 8px; background: #fbfdff; }
+.platform-group + .platform-group { margin-top: 12px; }
+.platform-group legend { padding: 0 6px; color: #2e4359; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
+.platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.platform-field { display: flex; flex-direction: column; }
+.platform-field > span { display: flex; align-items: baseline; gap: 6px; color: #445a71; font-size: 10px; font-weight: 700; }
+.platform-field > span small { color: #8496a8; font-weight: 600; }
+.platform-field input, .platform-field textarea { width: 100%; margin-top: 5px; padding: 8px 10px; color: #2e4359; background: white; border: 1px solid #cbd6e3; border-radius: 4px; font: inherit; font-size: 11px; outline: none; }
+.platform-field input { height: 36px; padding: 0 10px; }
+.platform-field textarea { resize: vertical; line-height: 1.5; }
+.platform-field input:focus, .platform-field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.platform-field-wide { grid-column: 1 / -1; }
 .landing-zone-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .landing-zone-fields label { color: #445a71; font-size: 9px; font-weight: 700; }
 .landing-zone-fields input { width: 100%; height: 36px; margin-top: 5px; padding: 0 10px; color: #2e4359; background: white; border: 1px solid #cbd6e3; border-radius: 4px; font: inherit; font-size: 10px; outline: none; }
