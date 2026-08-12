@@ -73,10 +73,18 @@ export function networkKey(network: DerivedLandingZoneNetwork): string {
 type RawRow = Record<string, unknown>
 
 const normalizeHeader = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
+// Azure Resource Graph exports array columns as `["value"]`; unwrap to the first bracketed value.
+const unwrapArray = (value: string): string => {
+  let text = value.trim()
+  if (text.startsWith('[') && text.endsWith(']')) {
+    text = (text.slice(1, -1).split(',')[0] ?? '').trim()
+  }
+  return text.replace(/^["']|["']$/g, '').trim()
+}
 const cellText = (value: unknown) => {
   if (value === null || value === undefined) return ''
-  if (typeof value === 'object' && 'text' in value) return String((value as { text: unknown }).text).trim()
-  return String(value).trim()
+  if (typeof value === 'object' && 'text' in value) return unwrapArray(String((value as { text: unknown }).text))
+  return unwrapArray(String(value))
 }
 
 function readColumn(values: Map<string, string>, ...keys: string[]): string {
