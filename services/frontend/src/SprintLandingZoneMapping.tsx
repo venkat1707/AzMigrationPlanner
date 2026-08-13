@@ -30,6 +30,7 @@ export default function SprintLandingZoneMapping() {
   const [resourceGroups, setResourceGroups] = useState<ResourceGroup[]>([])
   const [networks, setNetworks] = useState<LandingZoneNetwork[]>([])
   const [selectedSprint, setSelectedSprint] = useState('')
+  const [sprintFilter, setSprintFilter] = useState('')
   const [serverFilter, setServerFilter] = useState('')
   const [mappings, setMappings] = useState<EditableMapping[]>([])
   const [loading, setLoading] = useState(true)
@@ -132,6 +133,7 @@ export default function SprintLandingZoneMapping() {
   if (loading) return <div className="page sprint-landing-zone-page"><div className="schedule-loading"><RefreshCw className="spin" size={18} /> Loading sprint landing zone inventory...</div></div>
 
   const subscriptionIds = unique(resourceGroups.map((group) => group.subscriptionId))
+  const visibleSprints = sprints.filter((item) => item.name.toLowerCase().includes(sprintFilter.trim().toLowerCase()))
   const visibleMappings = mappings.filter((mapping) => mapping.serverName.toLowerCase().includes(serverFilter.trim().toLowerCase()))
   const completedMappings = mappings.filter((mapping) => mapping.subscriptionId && mapping.resourceGroupId && mapping.networkResourceGroup && mapping.virtualNetwork && mapping.subnet).length
 
@@ -142,7 +144,9 @@ export default function SprintLandingZoneMapping() {
     </section>
 
     <section className="sprint-landing-zone-controls">
-      <label>Migration sprint<select value={selectedSprint} onChange={(event) => selectSprint(event.target.value)}><option value="">Select a sprint</option>{sprints.map((item) => <option key={item.sequence} value={item.sequence}>{item.name} · Wave {item.wave} · {item.environment} · {item.servers.length} servers</option>)}</select></label>
+      <label className="sprint-landing-zone-filter">Filter sprint name<span><Search size={14} /><input value={sprintFilter} onChange={(event) => setSprintFilter(event.target.value)} placeholder="Find a sprint" /></span></label>
+      <label>Migration sprint<select value={selectedSprint} onChange={(event) => selectSprint(event.target.value)}><option value="">Select a sprint</option>{visibleSprints.map((item) => <option key={item.sequence} value={item.sequence}>{item.name} · Wave {item.wave} · {item.environment} · {item.servers.length} servers</option>)}</select></label>
+      {sprints.length > 0 && visibleSprints.length === 0 && <small className="sprint-landing-zone-empty">No sprints match this filter.</small>}
       {sprints.length === 0 && <small className="sprint-landing-zone-empty">Create and save a migration wave plan before mapping target landing zone resources.</small>}
       {resourceGroups.length === 0 || networks.length === 0 ? <small className="sprint-landing-zone-empty">Import landing zone resource groups and networks to enable all placement choices.</small> : null}
     </section>
