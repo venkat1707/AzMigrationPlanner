@@ -1058,6 +1058,12 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .landing-zone-query-head strong { display: block; color: #2e4359; font-size: 12px; }
 .landing-zone-query-head small { display: block; margin-top: 3px; color: #5c7186; font-size: 10px; line-height: 1.5; }
 .landing-zone-query-head code { padding: 1px 4px; background: #e2ecf7; border-radius: 3px; font-size: 10px; }
+.landing-zone-control { display: grid; justify-items: end; gap: 4px; }
+.landing-zone-control small, .landing-zone-table-message { font-size: 9px; font-weight: 700; }
+.landing-zone-control small.success { color: #176847; }
+.landing-zone-control small.error { color: #a3392e; }
+.landing-zone-table-message { display: block; margin-top: 4px !important; color: #176847 !important; }
+.saved-report-actions .table-delete-all { color: #a3392e; background: #fff5f3; border-color: #e9c1bc; }
 .landing-zone-query pre { margin: 0; padding: 12px 14px; background: #0f2033; border-radius: 6px; overflow-x: auto; }
 .landing-zone-query pre code { color: #d9e6f4; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; line-height: 1.6; white-space: pre; }
 .platform-group { margin: 0; padding: 14px 16px; border: 1px solid #dce5ef; border-radius: 8px; background: #fbfdff; }
@@ -1347,7 +1353,8 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 	.landing-zone-fields { grid-template-columns: 1fr; }
 	.landing-zone-network-fields { grid-template-columns: 1fr; }
 	.core-upload-section { grid-template-columns: 38px minmax(0, 1fr); }
-	.core-upload-section .core-file-picker, .core-upload-section > button { grid-column: 1 / -1; width: 100%; }
+	.core-upload-section .core-file-picker, .core-upload-section > button, .core-upload-section > .landing-zone-control { grid-column: 1 / -1; width: 100%; }
+	.core-upload-section > .landing-zone-control { justify-items: stretch; }
 	.remove-input { width: 100%; }
 	.network-range-grid { grid-template-columns: 1fr; }
 	.load-balancer-inputs > header { align-items: stretch; flex-direction: column; }

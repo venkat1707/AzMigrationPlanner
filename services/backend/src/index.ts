@@ -1435,6 +1435,11 @@ app.delete('/api/landing-zone-resource-groups/:id', async (request, response) =>
   response.json({ deleted })
 })
 
+app.delete('/api/landing-zone-resource-groups', async (_request, response) => {
+  const deleted = await database('landing_zone_resource_groups').delete()
+  response.json({ deleted })
+})
+
 const networkColumns = {
   id: 'id',
   subscriptionId: 'subscription_id',

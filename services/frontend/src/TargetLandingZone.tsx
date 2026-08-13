@@ -45,13 +45,17 @@ export default function TargetLandingZone() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [copyMessage, setCopyMessage] = useState('')
+  const [importMessage, setImportMessage] = useState('')
+  const [tableMessage, setTableMessage] = useState('')
 
   const copyQuery = async () => {
+    setCopyMessage('')
     try {
       await navigator.clipboard.writeText(resourceGraphQuery)
-      setMessage('Resource Graph query copied to the clipboard.')
+      setCopyMessage('Query copied.')
     } catch {
-      setError('Unable to copy the query to the clipboard.')
+      setCopyMessage('Unable to copy query.')
     }
   }
 
@@ -105,18 +109,18 @@ export default function TargetLandingZone() {
     if (!uploadFile) return
     setUploading(true)
     setError('')
-    setMessage('')
+    setImportMessage('')
     try {
       const body = new FormData()
       body.append('file', uploadFile)
       const response = await apiFetch('/api/landing-zone-resource-groups/upload', { method: 'POST', body })
       const payload = await response.json() as { saved?: number; error?: string }
       if (!response.ok) throw new Error(payload.error ?? 'Unable to import resource groups.')
-      setMessage(`Imported ${payload.saved ?? 0} resource group${payload.saved === 1 ? '' : 's'}.`)
+      setImportMessage(`Imported ${payload.saved ?? 0} resource group${payload.saved === 1 ? '' : 's'}.`)
       setUploadFile(null)
       await load()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Unable to import resource groups.')
+      setImportMessage(reason instanceof Error ? reason.message : 'Unable to import resource groups.')
     } finally {
       setUploading(false)
     }
@@ -124,17 +128,31 @@ export default function TargetLandingZone() {
 
   const deleteGroup = async (group: SavedResourceGroup) => {
     setError('')
-    setMessage('')
+    setTableMessage('')
     try {
       const response = await apiFetch(`/api/landing-zone-resource-groups/${group.id}`, { method: 'DELETE' })
       if (!response.ok) {
         const payload = await response.json().catch(() => ({})) as { error?: string }
         throw new Error(payload.error ?? 'Unable to remove the resource group.')
       }
-      setMessage(`Removed resource group "${group.resourceGroupName}".`)
+      setTableMessage(`Removed resource group "${group.resourceGroupName}".`)
       await load()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to remove the resource group.')
+    }
+  }
+
+  const deleteAllGroups = async () => {
+    if (!window.confirm(`Delete all ${savedGroups.length} landing zone resource group${savedGroups.length === 1 ? '' : 's'}? This cannot be undone.`)) return
+    setTableMessage('')
+    try {
+      const response = await apiFetch('/api/landing-zone-resource-groups', { method: 'DELETE' })
+      const payload = await response.json() as { deleted?: number; error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Unable to delete resource groups.')
+      setTableMessage(`Deleted ${payload.deleted ?? 0} resource group${payload.deleted === 1 ? '' : 's'}.`)
+      await load()
+    } catch (reason) {
+      setTableMessage(reason instanceof Error ? reason.message : 'Unable to delete resource groups.')
     }
   }
 
@@ -143,11 +161,11 @@ export default function TargetLandingZone() {
       <section className="core-upload-section">
         <span className="core-upload-icon"><FileSpreadsheet size={20} /></span><div><strong>Import target landing zone resource groups</strong><small>CSV or XLSX columns: subscription_name and resource_group_id. Provide each resource group as its full Azure resource ID; the subscription ID and resource group name are parsed from it.</small></div>
         <label className="core-file-picker"><Upload size={14} />{uploadFile ? uploadFile.name : 'Choose file'}<input type="file" accept=".csv,.xlsx" onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)} /></label>
-        <button type="button" className="secondary-command" disabled={!uploadFile || uploading} onClick={() => void uploadGroups()}>{uploading ? <RefreshCw className="spin" size={14} /> : <Upload size={14} />}{uploading ? 'Importing...' : 'Import'}</button>
+        <div className="landing-zone-control"><button type="button" className="secondary-command" disabled={!uploadFile || uploading} onClick={() => void uploadGroups()}>{uploading ? <RefreshCw className="spin" size={14} /> : <Upload size={14} />}{uploading ? 'Importing...' : 'Import'}</button>{importMessage && <small className={importMessage.startsWith('Imported') ? 'success' : 'error'}>{importMessage}</small>}</div>
       </section>
 
       <section className="landing-zone-query">
-        <div className="landing-zone-query-head"><div><strong>Fetch resource groups from Azure Resource Graph</strong><small>Run this query in the Azure portal (Resource Graph Explorer) or with <code>az graph query</code>. Replace <code>&lt;Provide Azure subscriptionId&gt;</code> with your subscription ID, then import the returned <code>subscriptionName</code> and <code>id</code> columns.</small></div><button type="button" className="secondary-command" onClick={() => void copyQuery()}><Copy size={14} />Copy query</button></div>
+        <div className="landing-zone-query-head"><div><strong>Fetch resource groups from Azure Resource Graph</strong><small>Run this query in the Azure portal (Resource Graph Explorer) or with <code>az graph query</code>. Replace <code>&lt;Provide Azure subscriptionId&gt;</code> with your subscription ID, then import the returned <code>subscriptionName</code> and <code>id</code> columns.</small></div><div className="landing-zone-control"><button type="button" className="secondary-command" onClick={() => void copyQuery()}><Copy size={14} />Copy query</button>{copyMessage && <small className={copyMessage === 'Query copied.' ? 'success' : 'error'}>{copyMessage}</small>}</div></div>
         <pre><code>{resourceGraphQuery}</code></pre>
       </section>
 
@@ -180,7 +198,7 @@ export default function TargetLandingZone() {
     </form>
 
     <section className="saved-core-infrastructure">
-      <header><div><p>Target inventory</p><h2>Saved resource groups</h2><small>{savedGroups.length} resource group{savedGroups.length === 1 ? '' : 's'} from manual entry and imports</small></div><div className="saved-report-actions"><button type="button" title="Export saved resource groups" aria-label="Export saved resource groups" disabled={savedGroups.length === 0} onClick={() => exportResourceGroups(savedGroups)}><Download size={15} /></button><button type="button" title="Refresh saved resource groups" aria-label="Refresh saved resource groups" onClick={() => void load()}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button></div></header>
+      <header><div><p>Target inventory</p><h2>Saved resource groups</h2><small>{savedGroups.length} resource group{savedGroups.length === 1 ? '' : 's'} from manual entry and imports</small>{tableMessage && <small className="landing-zone-table-message">{tableMessage}</small>}</div><div className="saved-report-actions"><button type="button" title="Export saved resource groups" aria-label="Export saved resource groups" disabled={savedGroups.length === 0} onClick={() => exportResourceGroups(savedGroups)}><Download size={15} /></button><button type="button" className="table-delete-all" title="Delete all saved resource groups" aria-label="Delete all saved resource groups" disabled={savedGroups.length === 0} onClick={() => void deleteAllGroups()}><Trash2 size={15} /></button><button type="button" title="Refresh saved resource groups" aria-label="Refresh saved resource groups" onClick={() => void load()}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button></div></header>
       <div className="table-wrap"><table><thead><tr><th>Resource group</th><th>Subscription name</th><th>Subscription ID</th><th>Resource group ID</th><th>Source</th><th>Last updated</th><th aria-label="Actions"></th></tr></thead><tbody>
         {loading ? <tr><td colSpan={7} className="empty-state">Loading resource groups...</td></tr> : savedGroups.length === 0 ? <tr><td colSpan={7} className="empty-state">No landing zone resource groups are stored.</td></tr> : savedGroups.map((group) => <tr key={group.id}>
           <td><strong>{group.resourceGroupName}</strong></td>

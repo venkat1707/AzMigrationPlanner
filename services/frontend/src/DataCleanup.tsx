@@ -83,7 +83,7 @@ export default function DataCleanup({ onComplete }: { onComplete: () => void }) 
     <section className="cleanup-intro">
       <div className="cleanup-heading"><span><Trash2 size={21} /></span><div><p className="eyebrow">Destructive operation</p><h2>Remove imported application data</h2><p>Run a controlled cleanup in dependency-safe sequence and monitor each table as records are removed.</p></div></div>
       <div className="protected-data"><ShieldCheck size={20} /><span><strong>Windows service reference data is protected</strong><small>The WindowsServicesPorts table is excluded from this cleanup and will not be modified.</small></span></div>
-      <div className="cleanup-warning"><AlertTriangle size={19} /><span><strong>This operation cannot be undone</strong><small>Server Assessments, dependency records, import history, and derived dependency totals will be permanently removed.</small></span></div>
+      <div className="cleanup-warning"><AlertTriangle size={19} /><span><strong>This operation cannot be undone</strong><small>Landing zone resource groups, Server Assessments, dependency records, import history, and derived dependency totals will be permanently removed.</small></span></div>
       {error && <div className="upload-message failed"><AlertTriangle size={16} />{error}</div>}
       <button className="danger-button" type="button" disabled={cleanup?.status === 'Running'} onClick={() => setShowConfirmation(true)}><Trash2 size={17} />{cleanup?.status === 'Running' ? 'Cleanup in progress' : 'Start data cleanup'}</button>
     </section>
@@ -105,7 +105,7 @@ export default function DataCleanup({ onComplete }: { onComplete: () => void }) 
     {showConfirmation && <div className="modal-backdrop" role="presentation"><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="cleanup-confirmation-title">
       <header><span><AlertTriangle size={20} /></span><div><h2 id="cleanup-confirmation-title">Confirm permanent data cleanup</h2><p>Review these warnings before continuing.</p></div><button type="button" title="Close confirmation" onClick={() => setShowConfirmation(false)}><X size={18} /></button></header>
       <div className="confirmation-warnings">
-        <p><strong>Permanent deletion:</strong> Imported Server Assessments, dependencies, import history, and summary totals cannot be recovered.</p>
+        <p><strong>Permanent deletion:</strong> Landing zone resource groups, imported Server Assessments, dependencies, import history, and summary totals cannot be recovered.</p>
         <p><strong>Application impact:</strong> Overview metrics, dependency search, and topology will be empty until data is imported again.</p>
         <p><strong>Active imports:</strong> Cleanup will be rejected if an import is currently running.</p>
         <p className="protected"><ShieldCheck size={16} /><span><strong>Preserved:</strong> WindowsServicesPorts reference data will not be deleted.</span></p>
