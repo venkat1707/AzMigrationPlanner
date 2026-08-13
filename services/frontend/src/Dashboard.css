@@ -1273,6 +1273,11 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .saved-core-infrastructure td strong { font-family: var(--mono); color: #30445b; }
 
 .firewall-rules-page { display: grid; gap: 18px; }
+.firewall-preview-notice { padding: 13px 15px; display: flex; align-items: flex-start; gap: 9px; color: #6b4f17; background: #fff9e8; border: 1px solid #ead9a4; border-radius: 6px; }
+.firewall-preview-notice svg { flex: 0 0 auto; margin-top: 1px; }
+.firewall-preview-notice strong, .firewall-preview-notice small { display: block; }
+.firewall-preview-notice strong { font-size: 12px; }
+.firewall-preview-notice small { margin-top: 2px; font-size: 11px; line-height: 1.45; }
 .firewall-controls, .firewall-downloads, .firewall-table-section { min-width: 0; padding: 22px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
 .firewall-filters { display: grid; grid-template-columns: minmax(240px, 420px) 1fr; align-items: end; gap: 16px; }
 .firewall-filters label { display: grid; gap: 6px; color: #415169; font-size: 11px; font-weight: 700; }

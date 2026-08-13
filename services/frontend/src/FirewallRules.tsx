@@ -174,6 +174,7 @@ export default function FirewallRules() {
   const canExportInfrastructure = target !== 'on-prem'
 
   return <div className="page firewall-rules-page">
+    <section className="firewall-preview-notice"><Info size={18} /><span><strong>Preview feature</strong><small>Review generated rules carefully before using them in a production firewall or network security group.</small></span></section>
     <section className="firewall-controls" aria-labelledby="firewall-scope-heading">
       <div className="section-heading"><div><p className="eyebrow">Rule scope</p><h2 id="firewall-scope-heading">Choose a firewall target and sprint</h2></div><Shield size={19} /></div>
       <div className="firewall-filters">
