@@ -14,6 +14,7 @@ import SprintSchedule from './SprintSchedule'
 import SprintLandingZoneMapping from './SprintLandingZoneMapping'
 import FirewallRules from './FirewallRules'
 import ArtefactGeneration from './ArtefactGeneration'
+import VisualizeSprints from './VisualizeSprints'
 import ApplicationTreatmentPlanning from './ApplicationTreatmentPlanning'
 import ServerCoverage from './ServerCoverage'
 import EnvironmentIdentification from './EnvironmentIdentification'
@@ -51,7 +52,7 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'firewall-rules' | 'artefact-generation' | 'tasks' | 'imports' | 'cleanup' | 'admin'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'tasks' | 'imports' | 'cleanup' | 'admin'
 type ImportKind = 'dependencies' | 'applications' | 'server-assessment' | 'application-mapping'
 const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   applications: 'application-mapping',
@@ -79,6 +80,7 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'application-map', label: 'Application Map', group: 'Assess workloads', icon: Boxes, access: 'all', eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application boundaries, core infrastructure, and cross-application traffic.' },
   { page: 'application-treatments', label: 'Application Treatments', group: 'Plan & deliver', icon: ClipboardCheck, access: 'all', eyebrow: 'Migration strategy', title: 'Define application treatment plans', description: 'Assign a migration treatment to every application in the catalog.' },
   { page: 'wave-planning', label: 'Wave Planning', group: 'Plan & deliver', icon: CalendarRange, access: 'modify', eyebrow: 'Migration wave planning', title: 'Sequence migration waves and sprints', description: 'Group ready workloads using application affinity, environments, dependencies, and data gravity.' },
+  { page: 'visualize-sprints', label: 'Visualize Sprints', group: 'Plan & deliver', icon: Network, access: 'all', eyebrow: 'Sprint topology', title: 'Visualize sprint proximity', description: 'Explore application and server dependency proximity with KNN clusters and sprint boundaries.' },
   { page: 'artefact-generation', label: 'Migration (Preview)', group: 'Artefacts (Preview)', icon: WandSparkles, access: 'modify', eyebrow: 'Migration deliverables', title: 'Generate migration artefacts', description: 'Preview feature: create Foundry-assisted design, migration plan, and runsheet documents.' },
   { page: 'firewall-rules', label: 'Security (Preview)', group: 'Artefacts (Preview)', icon: Shield, access: 'modify', eyebrow: 'Security deliverables', title: 'Generate firewall rules', description: 'Preview feature: review and export Azure NSG, Azure Firewall, and on-premise firewall rules as Excel, Terraform, or Bicep.' },
   { page: 'sprint-schedule', label: 'Sprint Schedule', group: 'Plan & deliver', icon: CalendarClock, access: 'modify', eyebrow: 'Migration timeline', title: 'Schedule waves and sprints', description: 'Set target migration dates and review delivery across environments and waves.' },
@@ -422,6 +424,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'landing-zone-platform' && <LandingZonePlatform />}
         {activePage === 'environment-identification' && canPlanWaves && <EnvironmentIdentification canModify={canPlanWaves} />}
         {activePage === 'wave-planning' && canPlanWaves && <MigrationWavePlanning />}
+        {activePage === 'visualize-sprints' && <VisualizeSprints />}
         {activePage === 'application-treatments' && <ApplicationTreatmentPlanning canModify={canPlanWaves} />}
         {activePage === 'sprint-schedule' && canPlanWaves && <SprintSchedule />}
         {activePage === 'sprint-landing-zone-mapping' && canPlanWaves && <SprintLandingZoneMapping />}
