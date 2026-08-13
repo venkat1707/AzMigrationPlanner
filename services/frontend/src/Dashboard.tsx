@@ -59,7 +59,7 @@ const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   'server-assessment': 'dependencies',
 }
 type PageAccess = 'all' | 'modify' | 'delete' | 'admin'
-type NavigationGroup = 'Workspace' | 'Discover & prepare' | 'Target landing zone' | 'Assess workloads' | 'Plan & deliver' | 'Migration artefacts' | 'Security Artefacts (Preview)' | 'Manage workspace'
+type NavigationGroup = 'Workspace' | 'Discover & prepare' | 'Target landing zone' | 'Assess workloads' | 'Plan & deliver' | 'Artefacts (Preview)' | 'Manage workspace'
 type CollapsibleNavigationGroup = Exclude<NavigationGroup, 'Workspace'>
 type PageDefinition = { page: AppPage; label: string; group: NavigationGroup; icon: LucideIcon; access: PageAccess; eyebrow: string; title: string; description: string }
 
@@ -79,23 +79,22 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'application-map', label: 'Application Map', group: 'Assess workloads', icon: Boxes, access: 'all', eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application boundaries, core infrastructure, and cross-application traffic.' },
   { page: 'application-treatments', label: 'Application Treatments', group: 'Plan & deliver', icon: ClipboardCheck, access: 'all', eyebrow: 'Migration strategy', title: 'Define application treatment plans', description: 'Assign a migration treatment to every application in the catalog.' },
   { page: 'wave-planning', label: 'Wave Planning', group: 'Plan & deliver', icon: CalendarRange, access: 'modify', eyebrow: 'Migration wave planning', title: 'Sequence migration waves and sprints', description: 'Group ready workloads using application affinity, environments, dependencies, and data gravity.' },
-  { page: 'artefact-generation', label: 'Migration artefacts (Preview)', group: 'Migration artefacts', icon: WandSparkles, access: 'modify', eyebrow: 'Migration deliverables', title: 'Generate migration artefacts', description: 'Preview feature: create Foundry-assisted design, migration plan, and runsheet documents.' },
-  { page: 'firewall-rules', label: 'Firewall Rules (Preview)', group: 'Security Artefacts (Preview)', icon: Shield, access: 'modify', eyebrow: 'Security deliverables', title: 'Generate firewall rules', description: 'Preview feature: review and export Azure NSG, Azure Firewall, and on-premise firewall rules as Excel, Terraform, or Bicep.' },
+  { page: 'artefact-generation', label: 'Migration (Preview)', group: 'Artefacts (Preview)', icon: WandSparkles, access: 'modify', eyebrow: 'Migration deliverables', title: 'Generate migration artefacts', description: 'Preview feature: create Foundry-assisted design, migration plan, and runsheet documents.' },
+  { page: 'firewall-rules', label: 'Security (Preview)', group: 'Artefacts (Preview)', icon: Shield, access: 'modify', eyebrow: 'Security deliverables', title: 'Generate firewall rules', description: 'Preview feature: review and export Azure NSG, Azure Firewall, and on-premise firewall rules as Excel, Terraform, or Bicep.' },
   { page: 'sprint-schedule', label: 'Sprint Schedule', group: 'Plan & deliver', icon: CalendarClock, access: 'modify', eyebrow: 'Migration timeline', title: 'Schedule waves and sprints', description: 'Set target migration dates and review delivery across environments and waves.' },
   { page: 'sprint-landing-zone-mapping', label: 'Sprint Landing Zone Mapping', group: 'Plan & deliver', icon: Network, access: 'modify', eyebrow: 'Target placement', title: 'Map sprint servers to landing zone resources', description: 'Assign each sprint server to a target subscription, resource group, virtual network, subnet, and NSG.' },
   { page: 'tasks', label: 'Finalize Sprints', group: 'Plan & deliver', icon: ClipboardList, access: 'all', eyebrow: 'Delivery workspace', title: 'Finalize Sprints', description: 'Track sprint and cross-dependency ownership, status, decisions, and comment history.' },
   { page: 'cleanup', label: 'Data Cleanup', group: 'Manage workspace', icon: Trash2, access: 'delete', eyebrow: 'Data management', title: 'Clean up application data', description: 'Remove imported data through a controlled, observable cleanup flow.' },
   { page: 'admin', label: 'Administration', group: 'Manage workspace', icon: UserRoundCog, access: 'admin', eyebrow: 'Administration', title: 'Identity and access', description: 'Manage local users, application privileges, and Microsoft Entra ID authentication.' },
 ]
-const navigationGroups: NavigationGroup[] = ['Workspace', 'Discover & prepare', 'Target landing zone', 'Assess workloads', 'Plan & deliver', 'Migration artefacts', 'Security Artefacts (Preview)', 'Manage workspace']
+const navigationGroups: NavigationGroup[] = ['Workspace', 'Discover & prepare', 'Target landing zone', 'Assess workloads', 'Plan & deliver', 'Artefacts (Preview)', 'Manage workspace']
 const navigationStateKey = 'migration-planner-navigation-groups'
 const defaultExpandedGroups: Record<CollapsibleNavigationGroup, boolean> = {
   'Discover & prepare': true,
   'Target landing zone': true,
   'Assess workloads': true,
   'Plan & deliver': true,
-  'Migration artefacts': true,
-  'Security Artefacts (Preview)': true,
+  'Artefacts (Preview)': true,
   'Manage workspace': false,
 }
 
