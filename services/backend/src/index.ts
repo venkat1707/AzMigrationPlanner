@@ -1569,6 +1569,87 @@ app.delete('/api/landing-zone-networks/:id', async (request, response) => {
   response.json({ deleted })
 })
 
+app.get('/api/sprint-landing-zone-mappings', async (_request, response) => {
+  const [saved, resourceGroups, networks, mappingRows] = await Promise.all([
+    loadSavedTaskPlan(),
+    database('landing_zone_resource_groups').select({ subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', resourceGroupName: 'resource_group_name' }).orderBy(['subscription_name', 'resource_group_name']),
+    database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }).orderBy(['network_resource_group', 'virtual_network', 'subnet']),
+    database('sprint_server_landing_zone_mappings').select({ serverName: 'server_name', sprintSequence: 'sprint_sequence', subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }),
+  ])
+  const mappings = new Map(mappingRows.map((mapping) => [String(mapping.serverName).trim().toLowerCase(), mapping]))
+  const sprints = saved?.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
+    sequence: sprint.sequence,
+    name: sprint.name,
+    wave: wave.wave,
+    environment: wave.environment,
+    servers: sprint.servers.map((server) => ({ serverName: server.name, mapping: mappings.get(server.name.trim().toLowerCase()) ?? null })).sort((left, right) => left.serverName.localeCompare(right.serverName)),
+  }))) ?? []
+  response.json({ sprints, resourceGroups, networks })
+})
+
+app.put('/api/sprint-landing-zone-mappings', async (request, response) => {
+  const sprintSequence = Number(request.body?.sprintSequence)
+  const requestedMappings = Array.isArray(request.body?.mappings) ? request.body.mappings : []
+  if (!Number.isInteger(sprintSequence) || sprintSequence <= 0 || requestedMappings.length === 0 || requestedMappings.length > 500) {
+    response.status(400).json({ error: 'Provide a sprint and between 1 and 500 server mappings.' })
+    return
+  }
+  const saved = await loadSavedTaskPlan()
+  const sprint = saved?.plan.waves.flatMap((wave) => wave.sprints).find((item) => item.sequence === sprintSequence)
+  if (!sprint) {
+    response.status(400).json({ error: 'The selected sprint no longer exists.' })
+    return
+  }
+  const allowedServers = new Set(sprint.servers.map((server) => server.name.trim().toLowerCase()))
+  const seenServers = new Set<string>()
+  const mappings: Array<{ serverName: string; subscriptionId: string; subscriptionName: string; resourceGroupId: string; networkResourceGroup: string; virtualNetwork: string; subnet: string; networkSecurityGroup: string }> = []
+  for (const item of requestedMappings) {
+    const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    const mapping = {
+      serverName: String(value.serverName ?? '').trim(),
+      subscriptionId: String(value.subscriptionId ?? '').trim(),
+      subscriptionName: String(value.subscriptionName ?? '').trim(),
+      resourceGroupId: String(value.resourceGroupId ?? '').trim(),
+      networkResourceGroup: String(value.networkResourceGroup ?? '').trim(),
+      virtualNetwork: String(value.virtualNetwork ?? '').trim(),
+      subnet: String(value.subnet ?? '').trim(),
+      networkSecurityGroup: String(value.networkSecurityGroup ?? '').trim(),
+    }
+    const serverKey = mapping.serverName.toLowerCase()
+    if (!mapping.serverName || !mapping.subscriptionId || !mapping.subscriptionName || !mapping.resourceGroupId || !mapping.networkResourceGroup || !mapping.virtualNetwork || !mapping.subnet || !allowedServers.has(serverKey) || seenServers.has(serverKey)) {
+      response.status(400).json({ error: 'Every mapping must belong to the selected sprint and include a server, subscription, resource group, network resource group, virtual network, and subnet.' })
+      return
+    }
+    seenServers.add(serverKey)
+    mappings.push(mapping)
+  }
+  const resourceGroupIds = new Set((await database('landing_zone_resource_groups').pluck('resource_group_id') as string[]).map((id) => id.toLowerCase()))
+  const subnetKeys = new Set((await database('landing_zone_networks').select('subscription_id', 'network_resource_group', 'virtual_network', 'subnet')).map((network) => `${network.subscription_id}|${network.network_resource_group}|${network.virtual_network}|${network.subnet}`.toLowerCase()))
+  for (const mapping of mappings) {
+    const subnetKey = `${mapping.subscriptionId}|${mapping.networkResourceGroup}|${mapping.virtualNetwork}|${mapping.subnet}`.toLowerCase()
+    if (!resourceGroupIds.has(mapping.resourceGroupId.toLowerCase()) || !subnetKeys.has(subnetKey)) {
+      response.status(400).json({ error: `The selected landing zone resources for ${mapping.serverName} are no longer available.` })
+      return
+    }
+  }
+  await database.transaction(async (transaction) => {
+    await transaction('sprint_server_landing_zone_mappings').where({ sprint_sequence: sprintSequence }).delete()
+    await transaction('sprint_server_landing_zone_mappings').insert(mappings.map((mapping) => ({
+      server_name: mapping.serverName,
+      sprint_sequence: sprintSequence,
+      subscription_id: mapping.subscriptionId,
+      subscription_name: mapping.subscriptionName,
+      resource_group_id: mapping.resourceGroupId,
+      network_resource_group: mapping.networkResourceGroup,
+      virtual_network: mapping.virtualNetwork,
+      subnet: mapping.subnet,
+      network_security_group: mapping.networkSecurityGroup,
+      updated_at: transaction.fn.now(),
+    }))).onConflict('server_name').merge(['sprint_sequence', 'subscription_id', 'subscription_name', 'resource_group_id', 'network_resource_group', 'virtual_network', 'subnet', 'network_security_group', 'updated_at'])
+  })
+  response.json({ saved: mappings.length })
+})
+
 const platformFields = [
   { key: 'networkConnectivity', column: 'network_connectivity', max: 200 },
   { key: 'networkTopology', column: 'network_topology', max: 200 },

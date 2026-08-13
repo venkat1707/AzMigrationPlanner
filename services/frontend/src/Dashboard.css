@@ -1065,6 +1065,27 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .landing-zone-table-message { display: block; margin-top: 4px !important; color: #176847 !important; }
 .landing-zone-table-message.error { color: #a3392e !important; }
 .saved-report-actions .table-delete-all { color: #a3392e; background: #fff5f3; border-color: #e9c1bc; }
+.sprint-landing-zone-page { display: grid; gap: 16px; }
+.sprint-landing-zone-intro { display: flex; align-items: center; gap: 12px; padding: 16px 18px; background: #f2f7fd; border: 1px solid #d5e2f0; border-radius: 8px; }
+.sprint-landing-zone-intro > span { width: 40px; height: 40px; display: grid; place-items: center; color: #176847; background: #e7f3ec; border-radius: 6px; }
+.sprint-landing-zone-intro p, .sprint-landing-zone-intro h2, .sprint-landing-zone-table h2, .sprint-landing-zone-table p { margin: 0; }
+.sprint-landing-zone-intro p, .sprint-landing-zone-table p { color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.sprint-landing-zone-intro h2, .sprint-landing-zone-table h2 { margin-top: 3px; color: #2b4057; font-size: 15px; }
+.sprint-landing-zone-intro small, .sprint-landing-zone-table small { display: block; margin-top: 4px; color: #718194; font-size: 10px; }
+.sprint-landing-zone-intro .secondary-command { margin-left: auto; }
+.sprint-landing-zone-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 14px; padding: 15px 18px; background: #fff; border: 1px solid #dce5ef; border-radius: 8px; }
+.sprint-landing-zone-controls label { min-width: 320px; color: #445a71; font-size: 10px; font-weight: 700; }
+.sprint-landing-zone-controls select, .sprint-landing-zone-table select { width: 100%; height: 34px; margin-top: 5px; padding: 0 8px; color: #2e4359; background: white; border: 1px solid #cbd6e3; border-radius: 4px; font: inherit; font-size: 10px; }
+.sprint-landing-zone-table { border: 1px solid #dce5ef; border-radius: 8px; overflow: hidden; background: white; }
+.sprint-landing-zone-table > header { padding: 15px 18px; border-bottom: 1px solid #dce5ef; }
+.sprint-landing-zone-table th { min-width: 160px; }
+.sprint-landing-zone-table td { vertical-align: middle; }
+.sprint-landing-zone-table select { min-width: 170px; margin: 0; }
+.sprint-landing-zone-table select:disabled { color: #8391a0; background: #f4f7fa; }
+.sprint-landing-zone-table footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-top: 1px solid #dce5ef; color: #718194; font-size: 10px; }
+.sprint-landing-zone-table footer button { min-height: 36px; padding: 0 14px; display: inline-flex; align-items: center; gap: 7px; color: white; background: #176847; border: 1px solid #176847; border-radius: 4px; font: inherit; font-size: 10px; font-weight: 800; cursor: pointer; }
+.sprint-landing-zone-table footer button:disabled { cursor: not-allowed; opacity: .55; }
+.sprint-landing-zone-empty { color: #9b6425; font-size: 10px; font-weight: 700; }
 .landing-zone-query pre { margin: 0; padding: 12px 14px; background: #0f2033; border-radius: 6px; overflow-x: auto; }
 .landing-zone-query pre code { color: #d9e6f4; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; line-height: 1.6; white-space: pre; }
 .platform-group { margin: 0; padding: 14px 16px; border: 1px solid #dce5ef; border-radius: 8px; background: #fbfdff; }
