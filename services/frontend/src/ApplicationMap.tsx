@@ -1,7 +1,6 @@
 import { useEffect, useId, useState, type FormEvent } from 'react'
-import { AppWindow, ArrowLeftRight, Boxes, Database, Download, FileText, Network, RefreshCw, RotateCcw, Router, Server, ShieldCheck, ZoomIn, ZoomOut } from 'lucide-react'
+import { AppWindow, ArrowLeftRight, Boxes, Database, Download, Network, RefreshCw, RotateCcw, Router, Server, ShieldCheck, ZoomIn, ZoomOut } from 'lucide-react'
 import { apiFetch } from './auth-client'
-import DesignDocumentDialog from './DesignDocumentDialog'
 
 type Direction = 'Inbound' | 'Outbound' | 'Bidirectional'
 type InventoryItem = { application: string; environment: string; serverCount: number }
@@ -45,7 +44,6 @@ export default function ApplicationMap({ refreshKey }: { refreshKey: number }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [zoom, setZoom] = useState(.8)
-  const [designOpen, setDesignOpen] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -144,7 +142,6 @@ export default function ApplicationMap({ refreshKey }: { refreshKey: number }) {
           <div><span><AppWindow size={21} /></span><div><strong>{map.application}</strong><small>{map.environment} environment</small></div></div>
           <div className="application-map-summary-meta">
             <dl><div><dt>Servers</dt><dd>{localNodes.length}</dd></div><div><dt>Inbound</dt><dd>{inbound.length}</dd></div><div><dt>Internal</dt><dd>{internal.length}</dd></div><div><dt>Outbound</dt><dd>{outbound.length}</dd></div></dl>
-            <button type="button" className="design-doc-button" onClick={() => setDesignOpen(true)}><FileText size={16} /> Create design document</button>
           </div>
         </header>
         <div className="application-map-legend"><span><i className="server" /> Application server</span><span><i className="shared-database" /> Shared DB</span><span><i className="core" /> Core infrastructure</span><span><i className="load-balancer" /> Load balancer</span><span><i className="network" /> VPN / office network</span><span><i className="external" /> Other application</span><span><ArrowLeftRight size={13} /> Bidirectional traffic</span></div>
@@ -152,7 +149,6 @@ export default function ApplicationMap({ refreshKey }: { refreshKey: number }) {
         <ApplicationGraph map={map} coreCategories={coreCategories} zoom={zoom} setZoom={setZoom} onOpenApplication={openApplication} />
       </div>}
     </section>
-    {designOpen && map && <DesignDocumentDialog application={map.application} environment={map.environment} onClose={() => setDesignOpen(false)} />}
   </div>
 }
 

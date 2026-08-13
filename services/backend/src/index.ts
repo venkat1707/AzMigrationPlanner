@@ -1731,7 +1731,7 @@ app.post('/api/application-map/design-document', async (request, response) => {
         .filter((answer: DesignAnswer) => answer.id)
     : []
   try {
-    const result = await requestDesignDocument(database, { application, environment, conversationId, answers })
+    const result = await requestDesignDocument(database, { artifactType: 'design-document', application, environment, conversationId, answers })
     response.json(result)
   } catch (error) {
     if (error instanceof DesignDocumentError) {
@@ -1739,6 +1739,29 @@ app.post('/api/application-map/design-document', async (request, response) => {
       return
     }
     response.status(502).json({ error: 'The design document could not be generated.' })
+  }
+})
+
+app.post('/api/artefacts/document', async (request, response) => {
+  const artifactType = String(request.body?.artifactType ?? '') as 'migration-plan' | 'migration-runsheet'
+  if (artifactType !== 'migration-plan' && artifactType !== 'migration-runsheet') {
+    response.status(400).json({ error: 'Choose a migration plan or migration runsheet artefact.' })
+    return
+  }
+  const sprintSequence = request.body?.sprintSequence === undefined ? undefined : Number(request.body.sprintSequence)
+  const conversationId = request.body?.conversationId ? String(request.body.conversationId) : null
+  const answers: DesignAnswer[] = Array.isArray(request.body?.answers) ? request.body.answers.map((entry: unknown) => {
+    const record = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+    return { id: String(record.id ?? '').trim(), response: String(record.response ?? '').trim() }
+  }).filter((answer: DesignAnswer) => answer.id) : []
+  try {
+    response.json(await requestDesignDocument(database, { artifactType, sprintSequence, conversationId, answers }))
+  } catch (error) {
+    if (error instanceof DesignDocumentError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    response.status(502).json({ error: 'The artefact could not be generated.' })
   }
 })
 

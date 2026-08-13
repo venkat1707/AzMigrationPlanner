@@ -34,8 +34,10 @@ export type DesignDocumentResult =
   | { status: 'completed'; fileName: string; contentType: string; contentBase64: string }
 
 type RequestInput = {
-  application: string
-  environment: string
+  artifactType: 'design-document' | 'migration-plan' | 'migration-runsheet'
+  application?: string
+  environment?: string
+  sprintSequence?: number
   conversationId: string | null
   answers: DesignAnswer[]
 }
@@ -48,9 +50,9 @@ const firstString = (...candidates: unknown[]): string | null => {
   return null
 }
 
-function findDesignAgent(connection: Knex | Knex.Transaction) {
+function findDesignAgent(connection: Knex | Knex.Transaction, artifactType: RequestInput['artifactType']) {
   return connection('agent_endpoints')
-    .where({ purpose: 'design-document', enabled: true })
+    .where({ purpose: artifactType === 'design-document' ? 'design-document' : 'general', enabled: true })
     .orderBy('name')
     .first() as Promise<AgentRow | undefined>
 }
@@ -136,7 +138,7 @@ export async function diagnoseAgentIdentity(
   connection: Knex | Knex.Transaction,
   overrides?: { clientId?: string; scope?: string },
 ): Promise<AgentIdentityDiagnostics> {
-  const agent = await findDesignAgent(connection)
+  const agent = await findDesignAgent(connection, 'design-document')
   const scope = firstString(overrides?.scope, agent?.auth_scope, defaultAgentScope) || defaultAgentScope
   const resource = scopeToResource(scope)
   const configured = process.env.AZURE_AGENT_CLIENT_ID?.trim() || null
@@ -402,14 +404,21 @@ async function buildDocx(title: string, markdown: string): Promise<string> {
 const sanitizeFileName = (value: string): string => value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'application'
 
 export async function requestDesignDocument(connection: Knex, input: RequestInput): Promise<DesignDocumentResult> {
-  const agent = await findDesignAgent(connection)
+  const agent = await findDesignAgent(connection, input.artifactType)
   if (!agent) {
-    throw new DesignDocumentError('No enabled design-document agent is configured. Add one in Administration → Foundry agents.', 409)
+    throw new DesignDocumentError(`No enabled ${input.artifactType === 'design-document' ? 'design-document' : 'general'} Foundry agent is configured. Add one in Administration → Foundry agents.`, 409)
   }
-  const map = await buildApplicationMap(connection, input.application, input.environment)
-  if (!map) {
-    throw new DesignDocumentError('No servers match that application and environment, so a design document cannot be produced.', 404)
-  }
+  const map = input.artifactType === 'design-document' && input.application && input.environment
+    ? await buildApplicationMap(connection, input.application, input.environment)
+    : null
+  if (input.artifactType === 'design-document' && !map) throw new DesignDocumentError('No servers match that application and environment, so a design document cannot be produced.', 404)
+  const savedPlan = input.artifactType === 'design-document' ? null : await connection('migration_wave_plans').where({ id: 1 }).first('plan_json') as { plan_json?: string } | undefined
+  const plan = savedPlan?.plan_json ? JSON.parse(savedPlan.plan_json) as { waves?: Array<{ sprints?: Array<{ sequence?: number }> }> } : null
+  const selectedSprint = input.sprintSequence
+    ? plan?.waves?.flatMap((wave) => wave.sprints ?? []).find((sprint) => sprint.sequence === input.sprintSequence)
+    : undefined
+  if (input.artifactType !== 'design-document' && !plan) throw new DesignDocumentError('A saved migration wave plan is required before generating this artefact.', 404)
+  if (input.artifactType === 'migration-runsheet' && !selectedSprint) throw new DesignDocumentError('Select a valid sprint before generating a migration runsheet.', 400)
 
   const endpoint = new URL(agent.endpoint_url)
   const isLoopback = endpoint.hostname === 'localhost' || endpoint.hostname === '127.0.0.1'
@@ -417,20 +426,18 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
 
   const messages: InputMessage[] = []
   if (!input.conversationId) {
-    const applicationMap = {
-      application: map.application,
-      environment: map.environment,
-      summary: summarizeMap(map),
-      nodes: map.nodes,
-      edges: map.edges,
-    }
-    messages.push(inputMessage('system', responseContract))
+    const artifactInstructions = input.artifactType === 'design-document' ? responseContract : [
+      `You are generating a ${input.artifactType === 'migration-plan' ? 'migration plan' : 'migration runsheet'} for an Azure migration programme.`,
+      'Base the document strictly on the supplied migration plan data.',
+      'Reply with a SINGLE JSON object and nothing else, using exactly: {"status":"completed","document":{"title":"<title>","markdown":"<full document>"}}.',
+      input.artifactType === 'migration-plan'
+        ? 'Use sections: Executive Summary, Migration Waves, Sprint Sequence, Dependencies and Risks, Readiness Gates, Roles and Responsibilities, and Reporting.'
+        : 'Use sections: Objective and Scope, Preconditions, Roles and Contacts, Migration Steps, Validation, Rollback, and Completion Criteria.',
+    ].join('\n')
+    messages.push(inputMessage('system', artifactInstructions))
     messages.push(inputMessage('user', [
-      'Task: Produce a high-level design document for hosting this application on Microsoft Azure.',
-      `Application: ${input.application}`,
-      `Environment: ${input.environment}`,
-      'Application map (JSON):',
-      JSON.stringify(applicationMap),
+      `Task: Produce a ${input.artifactType.replace('-', ' ')}.`,
+      ...(map ? [`Application: ${input.application}`, `Environment: ${input.environment}`, 'Application map (JSON):', JSON.stringify({ application: map.application, environment: map.environment, summary: summarizeMap(map), nodes: map.nodes, edges: map.edges })] : ['Migration plan data (JSON):', JSON.stringify(input.artifactType === 'migration-runsheet' ? selectedSprint : plan)]),
     ].join('\n')))
   } else {
     const answersText = input.answers.length
@@ -495,8 +502,8 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
   if (!markdown) {
     throw new DesignDocumentError('The agent reported completion but returned no readable document content.', 502)
   }
-  const title = firstString(documentRecord.title, documentRecord.name) ?? `${input.application} — High-Level Design (${input.environment})`
-  const fileName = `${sanitizeFileName(`${input.application}-${input.environment}`)}-high-level-design.docx`
+  const title = firstString(documentRecord.title, documentRecord.name) ?? (input.artifactType === 'design-document' ? `${input.application} — High-Level Design (${input.environment})` : input.artifactType === 'migration-plan' ? 'Azure Migration Plan' : `Migration Runsheet — Sprint ${input.sprintSequence}`)
+  const fileName = `${sanitizeFileName(input.artifactType === 'design-document' ? `${input.application}-${input.environment}-high-level-design` : input.artifactType === 'migration-plan' ? 'azure-migration-plan' : `migration-runsheet-sprint-${input.sprintSequence}`)}.docx`
   const contentBase64 = await buildDocx(title, markdown)
   return { status: 'completed', fileName, contentType: defaultDocumentType, contentBase64 }
 }

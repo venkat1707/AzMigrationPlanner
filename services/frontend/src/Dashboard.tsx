@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ClipboardCheck, ClipboardList, Cloud, Database, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, ScanSearch, Search, Server, ServerOff, Settings2, Shield, TableProperties, Trash2, Upload, UserRoundCog, X, type LucideIcon } from 'lucide-react'
+import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ClipboardCheck, ClipboardList, Cloud, Database, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, ScanSearch, Search, Server, ServerOff, Settings2, Shield, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
@@ -13,6 +13,7 @@ import TaskWorkspace from './TaskWorkspace'
 import SprintSchedule from './SprintSchedule'
 import SprintLandingZoneMapping from './SprintLandingZoneMapping'
 import FirewallRules from './FirewallRules'
+import ArtefactGeneration from './ArtefactGeneration'
 import ApplicationTreatmentPlanning from './ApplicationTreatmentPlanning'
 import ServerCoverage from './ServerCoverage'
 import EnvironmentIdentification from './EnvironmentIdentification'
@@ -50,7 +51,7 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'firewall-rules' | 'tasks' | 'imports' | 'cleanup' | 'admin'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'firewall-rules' | 'artefact-generation' | 'tasks' | 'imports' | 'cleanup' | 'admin'
 type ImportKind = 'dependencies' | 'applications' | 'server-assessment' | 'application-mapping'
 const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   applications: 'application-mapping',
@@ -58,7 +59,7 @@ const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   'server-assessment': 'dependencies',
 }
 type PageAccess = 'all' | 'modify' | 'delete' | 'admin'
-type NavigationGroup = 'Workspace' | 'Discover & prepare' | 'Target landing zone' | 'Assess workloads' | 'Plan & deliver' | 'Manage workspace'
+type NavigationGroup = 'Workspace' | 'Discover & prepare' | 'Target landing zone' | 'Assess workloads' | 'Plan & deliver' | 'Generate artefacts' | 'Manage workspace'
 type CollapsibleNavigationGroup = Exclude<NavigationGroup, 'Workspace'>
 type PageDefinition = { page: AppPage; label: string; group: NavigationGroup; icon: LucideIcon; access: PageAccess; eyebrow: string; title: string; description: string }
 
@@ -79,19 +80,21 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'application-treatments', label: 'Application Treatments', group: 'Plan & deliver', icon: ClipboardCheck, access: 'all', eyebrow: 'Migration strategy', title: 'Define application treatment plans', description: 'Assign a migration treatment to every application in the catalog.' },
   { page: 'wave-planning', label: 'Wave Planning', group: 'Plan & deliver', icon: CalendarRange, access: 'modify', eyebrow: 'Migration wave planning', title: 'Sequence migration waves and sprints', description: 'Group ready workloads using application affinity, environments, dependencies, and data gravity.' },
   { page: 'firewall-rules', label: 'Firewall Rules (Preview)', group: 'Plan & deliver', icon: Shield, access: 'modify', eyebrow: 'Network security', title: 'Generate NSG and firewall rules', description: 'Preview feature: produce Azure NSG, Azure Firewall, and on-premise firewall rules for each sprint from observed dependencies.' },
+  { page: 'artefact-generation', label: 'Generate artefacts', group: 'Generate artefacts', icon: WandSparkles, access: 'modify', eyebrow: 'Migration deliverables', title: 'Generate migration artefacts', description: 'Create Foundry-assisted design, migration plan, and runsheet documents, then export firewall rules as Excel, Terraform, or Bicep.' },
   { page: 'sprint-schedule', label: 'Sprint Schedule', group: 'Plan & deliver', icon: CalendarClock, access: 'modify', eyebrow: 'Migration timeline', title: 'Schedule waves and sprints', description: 'Set target migration dates and review delivery across environments and waves.' },
   { page: 'sprint-landing-zone-mapping', label: 'Sprint Landing Zone Mapping', group: 'Plan & deliver', icon: Network, access: 'modify', eyebrow: 'Target placement', title: 'Map sprint servers to landing zone resources', description: 'Assign each sprint server to a target subscription, resource group, virtual network, subnet, and NSG.' },
   { page: 'tasks', label: 'Finalize Sprints', group: 'Plan & deliver', icon: ClipboardList, access: 'all', eyebrow: 'Delivery workspace', title: 'Finalize Sprints', description: 'Track sprint and cross-dependency ownership, status, decisions, and comment history.' },
   { page: 'cleanup', label: 'Data Cleanup', group: 'Manage workspace', icon: Trash2, access: 'delete', eyebrow: 'Data management', title: 'Clean up application data', description: 'Remove imported data through a controlled, observable cleanup flow.' },
   { page: 'admin', label: 'Administration', group: 'Manage workspace', icon: UserRoundCog, access: 'admin', eyebrow: 'Administration', title: 'Identity and access', description: 'Manage local users, application privileges, and Microsoft Entra ID authentication.' },
 ]
-const navigationGroups: NavigationGroup[] = ['Workspace', 'Discover & prepare', 'Target landing zone', 'Assess workloads', 'Plan & deliver', 'Manage workspace']
+const navigationGroups: NavigationGroup[] = ['Workspace', 'Discover & prepare', 'Target landing zone', 'Assess workloads', 'Plan & deliver', 'Generate artefacts', 'Manage workspace']
 const navigationStateKey = 'migration-planner-navigation-groups'
 const defaultExpandedGroups: Record<CollapsibleNavigationGroup, boolean> = {
   'Discover & prepare': true,
   'Target landing zone': true,
   'Assess workloads': true,
   'Plan & deliver': true,
+  'Generate artefacts': true,
   'Manage workspace': false,
 }
 
@@ -423,6 +426,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'sprint-schedule' && canPlanWaves && <SprintSchedule />}
         {activePage === 'sprint-landing-zone-mapping' && canPlanWaves && <SprintLandingZoneMapping />}
         {activePage === 'firewall-rules' && canPlanWaves && <FirewallRules />}
+        {activePage === 'artefact-generation' && canPlanWaves && <ArtefactGeneration />}
         {activePage === 'tasks' && <TaskWorkspace canModify={canManageTasks} canReassign={canPlanWaves} currentUserId={auth.user?.id} />}
         {activePage === 'admin' && <AdminPage onAuthChanged={onAuthChanged} />}
 
