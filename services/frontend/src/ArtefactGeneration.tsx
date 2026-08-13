@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { ClipboardList, FileText, Loader2, Network, Route, Sparkles } from 'lucide-react'
 import { apiFetch } from './auth-client'
 import DesignDocumentDialog from './DesignDocumentDialog'
-import FirewallRules from './FirewallRules'
 
 type ApplicationEnvironment = { application: string; environment: string; serverCount: number }
 type Sprint = { sequence: number; name: string; wave: number; environment: string }
@@ -51,7 +50,6 @@ export default function ArtefactGeneration() {
       {error ? <p className="artefact-error">{error}</p> : null}
       {!applications.length && !sprints.length && !error ? <p className="artefact-loading"><Loader2 className="spin" size={17} /> Loading available migration data…</p> : null}
     </section>
-    <section className="artefact-firewall-workspace"><div className="artefact-section-heading"><span>Security delivery</span><h2>Firewall rules</h2><p>Review rules, change the target and scope, and export Excel, Terraform, or Bicep from one workspace.</p></div><FirewallRules embedded /></section>
     {dialog ? <DesignDocumentDialog application={application || undefined} environment={environment || undefined} documentTitle={kind === 'design' ? 'High-level design document' : kind === 'plan' ? 'Migration plan document' : 'Migration runsheet'} requestUrl={kind === 'design' ? '/api/application-map/design-document' : '/api/artefacts/document'} requestBody={kind === 'design' ? {} : { artifactType: kind === 'plan' ? 'migration-plan' : 'migration-runsheet', ...(kind === 'runsheet' ? { sprintSequence: Number(sprintSequence) } : {}) }} onClose={() => setDialog(false)} /> : null}
   </div>
 }
