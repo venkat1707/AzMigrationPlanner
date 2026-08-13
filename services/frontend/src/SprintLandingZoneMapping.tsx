@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertCircle, CheckCircle2, Network, RefreshCw, Save } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Network, RefreshCw, Save, Search } from 'lucide-react'
 import { apiFetch } from './auth-client'
 
 type ResourceGroup = { subscriptionId: string; subscriptionName: string; resourceGroupId: string; resourceGroupName: string }
@@ -30,6 +30,7 @@ export default function SprintLandingZoneMapping() {
   const [resourceGroups, setResourceGroups] = useState<ResourceGroup[]>([])
   const [networks, setNetworks] = useState<LandingZoneNetwork[]>([])
   const [selectedSprint, setSelectedSprint] = useState('')
+  const [serverFilter, setServerFilter] = useState('')
   const [mappings, setMappings] = useState<EditableMapping[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -59,6 +60,7 @@ export default function SprintLandingZoneMapping() {
 
   const selectSprint = (value: string) => {
     setSelectedSprint(value)
+    setServerFilter('')
     setError('')
     setNotice('')
     const nextSprint = sprints.find((item) => item.sequence === Number(value))
@@ -107,10 +109,6 @@ export default function SprintLandingZoneMapping() {
 
   const save = async () => {
     if (!sprint) return
-    if (mappings.some((mapping) => !mapping.subscriptionId || !mapping.resourceGroupId || !mapping.networkResourceGroup || !mapping.virtualNetwork || !mapping.subnet)) {
-      setError('Select a subscription, resource group, network resource group, virtual network, and subnet for every server before saving.')
-      return
-    }
     setSaving(true)
     setError('')
     setNotice('')
@@ -122,7 +120,7 @@ export default function SprintLandingZoneMapping() {
       })
       const payload = await response.json() as { saved?: number; error?: string }
       if (!response.ok) throw new Error(payload.error ?? 'Unable to save sprint landing zone mappings.')
-      setNotice(`Saved ${payload.saved ?? 0} server mapping${payload.saved === 1 ? '' : 's'} for ${sprint.name}.`)
+      setNotice(`Saved ${payload.saved ?? 0} draft mapping${payload.saved === 1 ? '' : 's'} for ${sprint.name}.`)
       await load()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to save sprint landing zone mappings.')
@@ -134,6 +132,8 @@ export default function SprintLandingZoneMapping() {
   if (loading) return <div className="page sprint-landing-zone-page"><div className="schedule-loading"><RefreshCw className="spin" size={18} /> Loading sprint landing zone inventory...</div></div>
 
   const subscriptionIds = unique(resourceGroups.map((group) => group.subscriptionId))
+  const visibleMappings = mappings.filter((mapping) => mapping.serverName.toLowerCase().includes(serverFilter.trim().toLowerCase()))
+  const completedMappings = mappings.filter((mapping) => mapping.subscriptionId && mapping.resourceGroupId && mapping.networkResourceGroup && mapping.virtualNetwork && mapping.subnet).length
 
   return <div className="page sprint-landing-zone-page">
     <section className="sprint-landing-zone-intro">
@@ -150,13 +150,13 @@ export default function SprintLandingZoneMapping() {
     {error && <div className="core-input-feedback error"><AlertCircle size={15} />{error}</div>}
     {notice && <div className="core-input-feedback success"><CheckCircle2 size={15} />{notice}</div>}
 
-    {sprint && <section className="sprint-landing-zone-table"><header><div><p>Selected sprint</p><h2>{sprint.name}</h2><small>Wave {sprint.wave} · {sprint.environment} · {mappings.length} servers</small></div></header><div className="table-wrap"><table><thead><tr><th>Server name</th><th>Subscription name</th><th>Resource group</th><th>Network resource group</th><th>Virtual network</th><th>Subnet</th><th>NSG</th></tr></thead><tbody>{mappings.map((mapping) => {
+    {sprint && <section className="sprint-landing-zone-table"><header><div><p>Selected sprint</p><h2>{sprint.name}</h2><small>Wave {sprint.wave} · {sprint.environment} · {completedMappings} of {mappings.length} fully mapped</small></div><label className="sprint-server-filter"><Search size={14} /><input value={serverFilter} onChange={(event) => setServerFilter(event.target.value)} placeholder="Filter server name" aria-label="Filter server name" /></label></header><div className="table-wrap"><table><thead><tr><th>Server name</th><th>Subscription name</th><th>Resource group</th><th>Network resource group</th><th>Virtual network</th><th>Subnet</th><th>NSG</th></tr></thead><tbody>{visibleMappings.length === 0 ? <tr><td colSpan={7} className="empty-state">No servers match this filter.</td></tr> : visibleMappings.map((mapping) => {
       const groupsForSubscription = resourceGroups.filter((group) => group.subscriptionId === mapping.subscriptionId)
       const networksForSubscription = networks.filter((network) => network.subscriptionId === mapping.subscriptionId)
       const networkResourceGroups = unique(networksForSubscription.map((network) => network.networkResourceGroup))
       const virtualNetworks = unique(networksForSubscription.filter((network) => network.networkResourceGroup === mapping.networkResourceGroup).map((network) => network.virtualNetwork))
       const subnets = networksForSubscription.filter((network) => network.networkResourceGroup === mapping.networkResourceGroup && network.virtualNetwork === mapping.virtualNetwork)
       return <tr key={mapping.serverName}><td><strong>{mapping.serverName}</strong></td><td><select value={mapping.subscriptionId} onChange={(event) => selectSubscription(mapping, event.target.value)}><option value="">Select subscription</option>{subscriptionIds.map((subscriptionId) => <option key={subscriptionId} value={subscriptionId}>{resourceGroups.find((group) => group.subscriptionId === subscriptionId)?.subscriptionName || subscriptionId}</option>)}</select></td><td><select value={mapping.resourceGroupId} disabled={!mapping.subscriptionId} onChange={(event) => updateMapping(mapping.serverName, { resourceGroupId: event.target.value })}><option value="">Select resource group</option>{groupsForSubscription.map((group) => <option key={group.resourceGroupId} value={group.resourceGroupId}>{group.resourceGroupName}</option>)}</select></td><td><select value={mapping.networkResourceGroup} disabled={!mapping.subscriptionId} onChange={(event) => selectNetworkResourceGroup(mapping, event.target.value)}><option value="">Select network resource group</option>{networkResourceGroups.map((group) => <option key={group} value={group}>{group}</option>)}</select></td><td><select value={mapping.virtualNetwork} disabled={!mapping.networkResourceGroup} onChange={(event) => selectVirtualNetwork(mapping, event.target.value)}><option value="">Select virtual network</option>{virtualNetworks.map((network) => <option key={network} value={network}>{network}</option>)}</select></td><td><select value={mapping.subnet} disabled={!mapping.virtualNetwork} onChange={(event) => selectSubnet(mapping, event.target.value)}><option value="">Select subnet</option>{subnets.map((network) => <option key={network.subnet} value={network.subnet}>{network.subnet}</option>)}</select></td><td><select value={mapping.networkSecurityGroup} disabled><option value="">No NSG attached</option>{mapping.networkSecurityGroup && <option value={mapping.networkSecurityGroup}>{mapping.networkSecurityGroup}</option>}</select></td></tr>
-    })}</tbody></table></div><footer><span>Mappings are saved against the selected sprint and server. Reassigning a server updates its existing placement.</span><button type="button" disabled={saving || mappings.length === 0} onClick={() => void save()}><Save size={16} />{saving ? 'Saving...' : 'Save mappings'}</button></footer></section>}
+    })}</tbody></table></div><footer><span>Save at any point. Partial selections are stored as drafts and remain available when you return. The server filter does not remove hidden rows.</span><button type="button" disabled={saving || mappings.length === 0} onClick={() => void save()}><Save size={16} />{saving ? 'Saving...' : 'Save draft'}</button></footer></section>}
   </div>
 }

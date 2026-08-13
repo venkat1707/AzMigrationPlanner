@@ -636,17 +636,32 @@ export async function migrateSchema(): Promise<void> {
       table.bigIncrements('id').primary()
       table.string('server_name', 300).notNullable().unique('uq_sprint_server_landing_zone_mapping_server')
       table.integer('sprint_sequence').unsigned().notNullable()
-      table.string('subscription_id', 64).notNullable()
-      table.string('subscription_name', 200).notNullable()
-      table.text('resource_group_id').notNullable()
-      table.string('network_resource_group', 90).notNullable()
-      table.string('virtual_network', 80).notNullable()
-      table.string('subnet', 80).notNullable()
-      table.string('network_security_group', 80).notNullable().defaultTo('')
+      table.string('subscription_id', 64).nullable()
+      table.string('subscription_name', 200).nullable()
+      table.text('resource_group_id').nullable()
+      table.string('network_resource_group', 90).nullable()
+      table.string('virtual_network', 80).nullable()
+      table.string('subnet', 80).nullable()
+      table.string('network_security_group', 80).nullable()
       table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
       table.index(['sprint_sequence'], 'idx_sprint_server_landing_zone_mapping_sprint')
     })
   }
+
+  const mappingColumns = await database('information_schema.columns')
+    .whereRaw('table_schema = DATABASE()')
+    .where('table_name', 'sprint_server_landing_zone_mappings')
+    .select({ name: 'column_name', nullable: 'is_nullable' }) as Array<{ name: string; nullable: string }>
+  const nonNullableMappingColumns = new Set(mappingColumns.filter((column) => column.nullable === 'NO').map((column) => column.name))
+  for (const [column, length] of [['subscription_id', 64], ['subscription_name', 200], ['network_resource_group', 90], ['virtual_network', 80], ['subnet', 80], ['network_security_group', 80]] as const) {
+    if (!nonNullableMappingColumns.has(column)) continue
+    await database.schema.alterTable('sprint_server_landing_zone_mappings', (table) => {
+      table.string(column, length).nullable().alter()
+    })
+  }
+  if (nonNullableMappingColumns.has('resource_group_id')) await database.schema.alterTable('sprint_server_landing_zone_mappings', (table) => {
+    table.text('resource_group_id').nullable().alter()
+  })
 
   if (!(await database.schema.hasTable('landing_zone_platform'))) {
     await database.schema.createTable('landing_zone_platform', (table) => {

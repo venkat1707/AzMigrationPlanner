@@ -1576,7 +1576,16 @@ app.get('/api/sprint-landing-zone-mappings', async (_request, response) => {
     database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }).orderBy(['network_resource_group', 'virtual_network', 'subnet']),
     database('sprint_server_landing_zone_mappings').select({ serverName: 'server_name', sprintSequence: 'sprint_sequence', subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }),
   ])
-  const mappings = new Map(mappingRows.map((mapping) => [String(mapping.serverName).trim().toLowerCase(), mapping]))
+  const mappings = new Map(mappingRows.map((mapping) => [String(mapping.serverName).trim().toLowerCase(), {
+    ...mapping,
+    subscriptionId: mapping.subscriptionId ?? '',
+    subscriptionName: mapping.subscriptionName ?? '',
+    resourceGroupId: mapping.resourceGroupId ?? '',
+    networkResourceGroup: mapping.networkResourceGroup ?? '',
+    virtualNetwork: mapping.virtualNetwork ?? '',
+    subnet: mapping.subnet ?? '',
+    networkSecurityGroup: mapping.networkSecurityGroup ?? '',
+  }]))
   const sprints = saved?.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
     sequence: sprint.sequence,
     name: sprint.name,
@@ -1616,34 +1625,24 @@ app.put('/api/sprint-landing-zone-mappings', async (request, response) => {
       networkSecurityGroup: String(value.networkSecurityGroup ?? '').trim(),
     }
     const serverKey = mapping.serverName.toLowerCase()
-    if (!mapping.serverName || !mapping.subscriptionId || !mapping.subscriptionName || !mapping.resourceGroupId || !mapping.networkResourceGroup || !mapping.virtualNetwork || !mapping.subnet || !allowedServers.has(serverKey) || seenServers.has(serverKey)) {
-      response.status(400).json({ error: 'Every mapping must belong to the selected sprint and include a server, subscription, resource group, network resource group, virtual network, and subnet.' })
+    if (!mapping.serverName || !allowedServers.has(serverKey) || seenServers.has(serverKey)) {
+      response.status(400).json({ error: 'Every draft mapping must belong to the selected sprint and include a unique server name.' })
       return
     }
     seenServers.add(serverKey)
     mappings.push(mapping)
   }
-  const resourceGroupIds = new Set((await database('landing_zone_resource_groups').pluck('resource_group_id') as string[]).map((id) => id.toLowerCase()))
-  const subnetKeys = new Set((await database('landing_zone_networks').select('subscription_id', 'network_resource_group', 'virtual_network', 'subnet')).map((network) => `${network.subscription_id}|${network.network_resource_group}|${network.virtual_network}|${network.subnet}`.toLowerCase()))
-  for (const mapping of mappings) {
-    const subnetKey = `${mapping.subscriptionId}|${mapping.networkResourceGroup}|${mapping.virtualNetwork}|${mapping.subnet}`.toLowerCase()
-    if (!resourceGroupIds.has(mapping.resourceGroupId.toLowerCase()) || !subnetKeys.has(subnetKey)) {
-      response.status(400).json({ error: `The selected landing zone resources for ${mapping.serverName} are no longer available.` })
-      return
-    }
-  }
   await database.transaction(async (transaction) => {
-    await transaction('sprint_server_landing_zone_mappings').where({ sprint_sequence: sprintSequence }).delete()
     await transaction('sprint_server_landing_zone_mappings').insert(mappings.map((mapping) => ({
       server_name: mapping.serverName,
       sprint_sequence: sprintSequence,
-      subscription_id: mapping.subscriptionId,
-      subscription_name: mapping.subscriptionName,
-      resource_group_id: mapping.resourceGroupId,
-      network_resource_group: mapping.networkResourceGroup,
-      virtual_network: mapping.virtualNetwork,
-      subnet: mapping.subnet,
-      network_security_group: mapping.networkSecurityGroup,
+      subscription_id: mapping.subscriptionId || null,
+      subscription_name: mapping.subscriptionName || null,
+      resource_group_id: mapping.resourceGroupId || null,
+      network_resource_group: mapping.networkResourceGroup || null,
+      virtual_network: mapping.virtualNetwork || null,
+      subnet: mapping.subnet || null,
+      network_security_group: mapping.networkSecurityGroup || null,
       updated_at: transaction.fn.now(),
     }))).onConflict('server_name').merge(['sprint_sequence', 'subscription_id', 'subscription_name', 'resource_group_id', 'network_resource_group', 'virtual_network', 'subnet', 'network_security_group', 'updated_at'])
   })
