@@ -38,6 +38,7 @@ export type SchedulePlan = {
       serverCount: number
       targetedStartDate?: string
       targetedEndDate?: string
+      status?: string
       servers: Array<{ name: string; application: string; environment: string }>
     }>
   }>
@@ -55,6 +56,7 @@ export type SprintScheduleView = {
       applications: string[]
       targetedStartDate: string | null
       targetedEndDate: string | null
+      status: string
     }>
   }>
   serverTimeline: Array<{
@@ -104,6 +106,7 @@ export function buildSprintScheduleView(plan: SchedulePlan, assessedServers: Sch
         applications: [...new Set(sprint.servers.map(({ application }) => application).filter(Boolean))].sort(),
         targetedStartDate: sprint.targetedStartDate ?? null,
         targetedEndDate: sprint.targetedEndDate ?? null,
+        status: sprint.status ?? 'Scheduled',
       })),
     })),
     serverTimeline: assessedServers.map((server) => ({
@@ -152,7 +155,7 @@ export async function createSprintScheduleWorkbook(view: SprintScheduleView): Pr
   const summary = workbook.addWorksheet('Sprint Summary', { views: [{ state: 'frozen', ySplit: 1 }] })
   summary.columns = [
     { header: 'Wave', key: 'wave' }, { header: 'Environment', key: 'environment' }, { header: 'Sprint', key: 'sprint' },
-    { header: 'Sequence', key: 'sequence' }, { header: 'Targeted Start', key: 'start' }, { header: 'Targeted End', key: 'end' },
+    { header: 'Sequence', key: 'sequence' }, { header: 'Status', key: 'status' }, { header: 'Targeted Start', key: 'start' }, { header: 'Targeted End', key: 'end' },
     { header: 'Duration Days', key: 'duration' }, { header: 'Servers', key: 'servers' }, { header: 'Applications', key: 'applicationCount' },
     { header: 'Application Summary', key: 'applications' },
   ]
@@ -161,6 +164,7 @@ export async function createSprintScheduleWorkbook(view: SprintScheduleView): Pr
     environment: wave.environment,
     sprint: sprint.name,
     sequence: sprint.sequence,
+    status: sprint.status,
     start: sprint.targetedStartDate,
     end: sprint.targetedEndDate,
     duration: sprint.targetedStartDate && sprint.targetedEndDate ? Math.round((dateValue(sprint.targetedEndDate) - dateValue(sprint.targetedStartDate)) / millisecondsPerDay) : null,
@@ -169,7 +173,7 @@ export async function createSprintScheduleWorkbook(view: SprintScheduleView): Pr
     applications: sprint.applications.join(' | '),
   })
   styleHeader(summary.getRow(1))
-  summary.autoFilter = { from: 'A1', to: 'J1' }
+  summary.autoFilter = { from: 'A1', to: 'K1' }
   fitColumns(summary)
 
   const serverSheet = workbook.addWorksheet('Server Timeline', { views: [{ state: 'frozen', ySplit: 1 }] })

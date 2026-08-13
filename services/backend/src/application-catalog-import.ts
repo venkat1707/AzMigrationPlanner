@@ -7,11 +7,11 @@ import { prepareAssessmentWorkbook, readAssessmentWorkbookSheets } from './asses
 import { database } from './db.js'
 import { createHeaderMapping, mapImportRow, type HeaderMapping } from './import-schema.js'
 
-export const applicationCatalogHeaders = ['APPLICATION', 'DESCRIPTION'] as const
+export const applicationCatalogHeaders = ['APPLICATION', 'DESCRIPTION', 'FIRST_NAME', 'LAST_NAME', 'EMAIL_ADDRESS'] as const
 
 type ApplicationCatalogHeader = (typeof applicationCatalogHeaders)[number]
 type RawApplicationRow = Record<ApplicationCatalogHeader, unknown>
-type ApplicationRecord = { name: string; description: string | null }
+type ApplicationRecord = { name: string; description: string | null; firstName?: string | null; lastName?: string | null; emailAddress?: string | null }
 type CatalogValidation = { warnings: Set<string> }
 
 export type ApplicationCatalogImportResult = {
@@ -36,6 +36,16 @@ const catalogHeaderContract = {
     APPLICATION_DESCRIPTIONS: 'DESCRIPTION',
     APP_DESCRIPTION: 'DESCRIPTION',
     DESCRIPTIONS: 'DESCRIPTION',
+    FIRSTNAME: 'FIRST_NAME',
+    FIRST_NAMES: 'FIRST_NAME',
+    CONTACT_FIRST_NAME: 'FIRST_NAME',
+    LASTNAME: 'LAST_NAME',
+    LAST_NAMES: 'LAST_NAME',
+    CONTACT_LAST_NAME: 'LAST_NAME',
+    EMAIL: 'EMAIL_ADDRESS',
+    EMAILADDRESS: 'EMAIL_ADDRESS',
+    EMAIL_ADDRESSES: 'EMAIL_ADDRESS',
+    CONTACT_EMAIL: 'EMAIL_ADDRESS',
   } satisfies Record<string, ApplicationCatalogHeader>,
   formatName: 'Application catalog',
 }
@@ -56,9 +66,15 @@ function headerMapping(headers: string[], validation: CatalogValidation): Header
 function toApplicationRecord(row: RawApplicationRow, rowNumber: number): ApplicationRecord {
   const name = cellText(row.APPLICATION)
   const description = cellText(row.DESCRIPTION) || null
+  const firstName = cellText(row.FIRST_NAME) || null
+  const lastName = cellText(row.LAST_NAME) || null
+  const emailAddress = cellText(row.EMAIL_ADDRESS) || null
   if (!name) throw new Error(`APPLICATION is required at row ${rowNumber}.`)
   if (name.length > 500) throw new Error(`APPLICATION exceeds 500 characters at row ${rowNumber}.`)
-  return { name, description }
+  if (firstName && firstName.length > 100) throw new Error(`FIRST_NAME exceeds 100 characters at row ${rowNumber}.`)
+  if (lastName && lastName.length > 100) throw new Error(`LAST_NAME exceeds 100 characters at row ${rowNumber}.`)
+  if (emailAddress && emailAddress.length > 254) throw new Error(`EMAIL_ADDRESS exceeds 254 characters at row ${rowNumber}.`)
+  return { name, description, firstName, lastName, emailAddress }
 }
 
 async function* csvRows(filePath: string, validation: CatalogValidation): AsyncGenerator<RawApplicationRow> {
@@ -121,10 +137,13 @@ export async function upsertApplications(
 ): Promise<void> {
   if (!applications.length) return
   await transaction('applications')
-    .insert(applications.map(({ name, description }) => ({ name, description, source })))
+    .insert(applications.map(({ name, description, firstName, lastName, emailAddress }) => ({ name, description, first_name: firstName ?? null, last_name: lastName ?? null, email_address: emailAddress ?? null, source })))
     .onConflict('name')
     .merge({
       description: transaction.raw('COALESCE(VALUES(??), ??)', ['description', 'description']),
+      first_name: transaction.raw('COALESCE(VALUES(??), ??)', ['first_name', 'first_name']),
+      last_name: transaction.raw('COALESCE(VALUES(??), ??)', ['last_name', 'last_name']),
+      email_address: transaction.raw('COALESCE(VALUES(??), ??)', ['email_address', 'email_address']),
       source: transaction.raw("CASE WHEN VALUES(??) = 'Catalog' THEN VALUES(??) ELSE ?? END", ['source', 'source', 'source']),
       updated_at: transaction.fn.now(),
     })

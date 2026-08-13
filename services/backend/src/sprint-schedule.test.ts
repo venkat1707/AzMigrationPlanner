@@ -17,7 +17,13 @@ test('sprint schedules default to three weeks when the end date is omitted', () 
     sequence: 7,
     targetedStartDate: '2026-08-10',
     targetedEndDate: '2026-08-31',
+    status: 'Scheduled',
   })
+})
+
+test('sprint schedules accept a valid status and reject an invalid one', () => {
+  assert.equal(normalizeSprintSchedule({ sequence: 3, targetedStartDate: '2026-08-10', status: 'At Risk' }).status, 'At Risk')
+  assert.throws(() => normalizeSprintSchedule({ sequence: 3, targetedStartDate: '2026-08-10', status: 'Unknown' }), /status is not valid/)
 })
 
 test('three-week defaults cross month and year boundaries', () => {

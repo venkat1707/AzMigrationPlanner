@@ -264,6 +264,9 @@ export async function migrateSchema(): Promise<void> {
     await database.schema.createTable('applications', (table) => {
       table.string('name', 500).primary()
       table.text('description').nullable()
+      table.string('first_name', 100).nullable()
+      table.string('last_name', 100).nullable()
+      table.string('email_address', 254).nullable()
       table.string('treatment_plan', 20).nullable()
       table.string('source', 30).notNullable().defaultTo('Derived')
       table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
@@ -274,6 +277,21 @@ export async function migrateSchema(): Promise<void> {
   if (!(await database.schema.hasColumn('applications', 'treatment_plan'))) {
     await database.schema.alterTable('applications', (table) => {
       table.string('treatment_plan', 20).nullable()
+    })
+  }
+  if (!(await database.schema.hasColumn('applications', 'first_name'))) {
+    await database.schema.alterTable('applications', (table) => {
+      table.string('first_name', 100).nullable()
+    })
+  }
+  if (!(await database.schema.hasColumn('applications', 'last_name'))) {
+    await database.schema.alterTable('applications', (table) => {
+      table.string('last_name', 100).nullable()
+    })
+  }
+  if (!(await database.schema.hasColumn('applications', 'email_address'))) {
+    await database.schema.alterTable('applications', (table) => {
+      table.string('email_address', 254).nullable()
     })
   }
 

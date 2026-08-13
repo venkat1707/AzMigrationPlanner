@@ -98,7 +98,7 @@ type PlanServer = {
 }
 type PlanSprintTask = {
   sprint: number; sequence: number; name: string; taskCreated?: boolean; comment?: string; task?: PlanTaskAssignment; applications?: string[]
-  targetedStartDate?: string; targetedEndDate?: string
+  targetedStartDate?: string; targetedEndDate?: string; status?: string
   servers: PlanServer[]; serverCount: number; complexityPoints: number; totalStorageGb: number
   dataHeavyServerCount: number; environments: string[]; readiness: { ready: number; conditional: number }
   groupingRationale: string[]; exceptions: string[]
@@ -914,14 +914,81 @@ app.post('/api/server-assessments/import', workbookUpload.single('file'), async 
   }
 })
 
+const applicationTreatmentPlans = new Set(['Rehost', 'Replatform', 'Refactor', 'Rearchitect', 'Retire', 'Retain', 'Replace'])
+
 app.get('/api/applications', async (_request, response) => {
   const items = await database('applications')
-    .select({ name: 'name', description: 'description', treatmentPlan: 'treatment_plan', source: 'source', updatedAt: 'updated_at' })
+    .select({ name: 'name', description: 'description', firstName: 'first_name', lastName: 'last_name', emailAddress: 'email_address', treatmentPlan: 'treatment_plan', source: 'source', updatedAt: 'updated_at' })
     .orderBy('name')
   response.json({ items })
 })
 
-const applicationTreatmentPlans = new Set(['Rehost', 'Replatform', 'Refactor', 'Rearchitect', 'Retire', 'Retain', 'Replace'])
+function applicationCatalogInput(value: unknown): { name: string; description: string | null; firstName: string | null; lastName: string | null; emailAddress: string | null; treatmentPlan: string | null } {
+  const input = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const text = (key: string, limit: number) => {
+    const result = String(input[key] ?? '').trim()
+    if (result.length > limit) throw new Error(`${key} exceeds ${limit} characters.`)
+    return result || null
+  }
+  const name = text('name', 500)
+  if (!name) throw new Error('Application name is required.')
+  const treatmentPlan = text('treatmentPlan', 20)
+  if (treatmentPlan && !applicationTreatmentPlans.has(treatmentPlan)) throw new Error('Treatment plan is not valid.')
+  return { name, description: text('description', 10_000), firstName: text('firstName', 100), lastName: text('lastName', 100), emailAddress: text('emailAddress', 254), treatmentPlan }
+}
+
+app.post('/api/applications', async (request, response) => {
+  try {
+    const item = applicationCatalogInput(request.body)
+    await database('applications').insert({ name: item.name, description: item.description, first_name: item.firstName, last_name: item.lastName, email_address: item.emailAddress, treatment_plan: item.treatmentPlan, source: 'Manual' })
+    response.status(201).json({ item: { ...item, source: 'Manual' } })
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to add application.' })
+  }
+})
+
+app.put('/api/applications/:name', async (request, response) => {
+  try {
+    const item = applicationCatalogInput(request.body)
+    if (item.name !== request.params.name) throw new Error('Application name cannot be changed. Delete and add a replacement application instead.')
+    const updated = await database('applications').where({ name: request.params.name }).update({ description: item.description, first_name: item.firstName, last_name: item.lastName, email_address: item.emailAddress, treatment_plan: item.treatmentPlan, source: 'Manual', updated_at: database.fn.now() })
+    if (updated === 0) {
+      response.status(404).json({ error: 'The application was not found.' })
+      return
+    }
+    response.json({ item: { ...item, source: 'Manual' } })
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to update application.' })
+  }
+})
+
+app.delete('/api/applications/:name', async (request, response) => {
+  const name = String(request.params.name ?? '').trim()
+  if (!name) {
+    response.status(400).json({ error: 'Application name is required.' })
+    return
+  }
+  const existing = await database('applications').where({ name }).first('name')
+  if (!existing) {
+    response.status(404).json({ error: 'The application was not found.' })
+    return
+  }
+  await database.transaction(async (transaction) => {
+    await transaction('server_assessments').where({ application: name }).update({ application: null })
+    await transaction('applications').where({ name }).delete()
+  })
+  response.json({ deleted: 1 })
+})
+
+app.delete('/api/applications', async (_request, response) => {
+  const result = await database('applications').count<{ count: number }>({ count: 'name' }).first()
+  const deleted = Number(result?.count ?? 0)
+  await database.transaction(async (transaction) => {
+    await transaction('server_assessments').whereNotNull('application').update({ application: null })
+    await transaction('applications').delete()
+  })
+  response.json({ deleted })
+})
 
 app.put('/api/applications/treatment-plans', async (request, response) => {
   const requestedItems = Array.isArray(request.body?.items) ? request.body.items : []
@@ -2076,6 +2143,7 @@ app.put('/api/sprint-schedule', async (request, response) => {
     const sprint = sprintsBySequence.get(schedule.sequence)!
     sprint.targetedStartDate = schedule.targetedStartDate
     sprint.targetedEndDate = schedule.targetedEndDate
+    sprint.status = schedule.status
   }
   const savedAt = new Date()
   await database('migration_wave_plans').where({ id: 1 }).update({

@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ClipboardCheck, ClipboardList, Cloud, Database, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, ScanSearch, Search, Server, ServerOff, Settings2, Shield, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, X, type LucideIcon } from 'lucide-react'
+import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, ScanSearch, Search, Server, ServerOff, Settings2, Shield, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
@@ -16,6 +16,7 @@ import FirewallRules from './FirewallRules'
 import ArtefactGeneration from './ArtefactGeneration'
 import VisualizeSprints from './VisualizeSprints'
 import ApplicationTreatmentPlanning from './ApplicationTreatmentPlanning'
+import ApplicationCatalog from './ApplicationCatalog'
 import ServerCoverage from './ServerCoverage'
 import EnvironmentIdentification from './EnvironmentIdentification'
 import type { AuthSettings, AuthUser } from './Authentication'
@@ -52,7 +53,7 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'tasks' | 'imports' | 'cleanup' | 'admin'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'application-catalog' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'tasks' | 'imports' | 'cleanup' | 'admin'
 type ImportKind = 'dependencies' | 'applications' | 'server-assessment' | 'application-mapping'
 const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   applications: 'application-mapping',
@@ -66,6 +67,22 @@ type PageDefinition = { page: AppPage; label: string; group: NavigationGroup; ic
 
 const emptyFilters: Filters = { server: '', ip: '', port: '' }
 const formatNumber = new Intl.NumberFormat('en-US')
+const importTemplates = {
+  applications: { filename: 'applications-import-template.csv', rows: [['APPLICATION', 'DESCRIPTION', 'FIRST_NAME', 'LAST_NAME', 'EMAIL_ADDRESS'], ['Contoso Billing', 'Processes customer invoices and payments', 'Ada', 'Lovelace', 'ada.lovelace@example.com']] },
+  'application-mapping': { filename: 'application-mapping-import-template.csv', rows: [['APPLICATION', 'SERVER_NAME', 'IP_ADDRESS', 'APPLICATION_DESCRIPTION'], ['Contoso Billing', 'billing-app-01', '10.20.30.40', 'Processes customer invoices and payments']] },
+} as const
+
+function downloadImportTemplate(kind: 'applications' | 'application-mapping') {
+  const template = importTemplates[kind]
+  const content = template.rows.map((row) => row.map((value) => `"${value.replace(/"/g, '""')}"`).join(',')).join('\r\n')
+  const url = URL.createObjectURL(new Blob([`\uFEFF${content}`], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = template.filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 const pageDefinitions: PageDefinition[] = [
   { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor discovery coverage and continue through the migration planning workflow.' },
   { page: 'imports', label: 'Imports', group: 'Discover & prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, and dependency exports.' },
@@ -78,6 +95,7 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'topology', label: 'Server Information', group: 'Assess workloads', icon: Route, access: 'all', eyebrow: 'Server information', title: 'Server configuration and dependencies', description: 'Review current infrastructure, proposed Azure sizing, and observed connections.' },
   { page: 'dependencies', label: 'Network Dependencies', group: 'Assess workloads', icon: TableProperties, access: 'all', eyebrow: 'Dependency inventory', title: 'Explore network dependencies', description: 'Filter observed traffic by server, application, and destination port.' },
   { page: 'application-map', label: 'Application Map', group: 'Assess workloads', icon: Boxes, access: 'all', eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application boundaries, core infrastructure, and cross-application traffic.' },
+  { page: 'application-catalog', label: 'Application Catalog', group: 'Assess workloads', icon: AppWindow, access: 'all', eyebrow: 'Application data', title: 'Maintain application catalog', description: 'Add, update, export, and remove application catalog records.' },
   { page: 'application-treatments', label: 'Application Treatments', group: 'Plan & deliver', icon: ClipboardCheck, access: 'all', eyebrow: 'Migration strategy', title: 'Define application treatment plans', description: 'Assign a migration treatment to every application in the catalog.' },
   { page: 'wave-planning', label: 'Wave Planning', group: 'Plan & deliver', icon: CalendarRange, access: 'modify', eyebrow: 'Migration wave planning', title: 'Sequence migration waves and sprints', description: 'Group ready workloads using application affinity, environments, dependencies, and data gravity.' },
   { page: 'visualize-sprints', label: 'Visualize Sprints', group: 'Plan & deliver', icon: Network, access: 'all', eyebrow: 'Sprint topology', title: 'Visualize sprint proximity', description: 'Explore application and server dependency proximity with KNN clusters and sprint boundaries.' },
@@ -418,6 +436,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'topology' && <ServerTopology refreshKey={refreshKey} />}
         {activePage === 'server-coverage' && <ServerCoverage />}
         {activePage === 'application-map' && <ApplicationMap refreshKey={refreshKey} />}
+        {activePage === 'application-catalog' && <ApplicationCatalog canModify={canPlanWaves} />}
         {activePage === 'core-infrastructure' && <CoreInfrastructureInput />}
         {activePage === 'target-landing-zone' && <TargetLandingZone />}
         {activePage === 'landing-zone-network' && <LandingZoneNetwork />}
@@ -480,18 +499,18 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'imports' && <div className="page imports-page"><section className="import-layout" aria-labelledby="import-heading">
           <div className="import-workspace"><div className="section-heading"><div><p className="eyebrow">Guided import</p><h2 id="import-heading">Upload discovery data in sequence</h2></div><span className="file-limit">CSV · XLSX</span></div>
             <div className="import-type" role="group" aria-label="Import sequence">
-              <button type="button" className={importKind === 'applications' ? 'active' : ''} onClick={() => changeImportKind('applications')}><span className="import-step">1</span><AppWindow size={17} /><span><strong>Applications</strong><small>Names and descriptions</small></span></button>
+              <button type="button" className={importKind === 'applications' ? 'active' : ''} onClick={() => changeImportKind('applications')}><span className="import-step">1</span><AppWindow size={17} /><span><strong>Applications</strong><small>Names, descriptions, and contacts</small></span></button>
               <button type="button" className={importKind === 'application-mapping' ? 'active' : ''} onClick={() => changeImportKind('application-mapping')}><span className="import-step">2</span><Boxes size={17} /><span><strong>Application Mapping</strong><small>Applications, servers, IPs</small></span></button>
               <button type="button" className={importKind === 'server-assessment' ? 'active' : ''} onClick={() => changeImportKind('server-assessment')}><span className="import-step">3</span><Server size={17} /><span><strong>Server Assessment</strong><small>Azure VM recommendations</small></span></button>
               <button type="button" className={importKind === 'dependencies' ? 'active' : ''} onClick={() => changeImportKind('dependencies')}><span className="import-step">4</span><Network size={17} /><span><strong>Dependency data</strong><small>Network dependency exports</small></span></button>
             </div>
-            <label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={dropFiles}><span className="upload-symbol"><Upload size={24} /></span><strong>Drop {importKind === 'dependencies' ? 'files' : 'a file'} to start an import</strong><span>{importKind === 'dependencies' ? 'Choose up to 8 CSV or Excel files, 1 GB each' : importKind === 'applications' ? 'Choose one catalog with application and optional description columns' : importKind === 'application-mapping' ? 'Choose one mapping file with application and server columns' : 'Choose one Server Assessment CSV or Excel file'}</span><span className="choose-button">Choose {importKind === 'dependencies' ? 'files' : 'file'}</span><input type="file" accept=".csv,.xlsx" multiple={importKind === 'dependencies'} onChange={(event) => event.target.files && void addFiles(event.target.files)} /></label>
+            <label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={dropFiles}><span className="upload-symbol"><Upload size={24} /></span><strong>Drop {importKind === 'dependencies' ? 'files' : 'a file'} to start an import</strong><span>{importKind === 'dependencies' ? 'Choose up to 8 CSV or Excel files, 1 GB each' : importKind === 'applications' ? 'Choose one catalog with Application, Description, First Name, Last Name, and Email Address columns' : importKind === 'application-mapping' ? 'Choose one mapping file with application and server columns' : 'Choose one Server Assessment CSV or Excel file'}</span><span className="choose-button">Choose {importKind === 'dependencies' ? 'files' : 'file'}</span><input type="file" accept=".csv,.xlsx" multiple={importKind === 'dependencies'} onChange={(event) => event.target.files && void addFiles(event.target.files)} /></label>
             {files.length > 0 && <div className="file-queue">{files.map((file) => <div key={`${file.name}-${file.size}`}><FileSpreadsheet size={18} /><span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(1)} MB</small></span><button type="button" title={`Remove ${file.name}`} onClick={() => setFiles((current) => current.filter((item) => item !== file))}><X size={16} /></button></div>)}</div>}
             {workbookSelected && <label className="sheet-picker">Worksheet<select value={selectedSheet} disabled={inspectingSheets} onChange={(event) => setSelectedSheet(event.target.value)}><option value="">{inspectingSheets ? 'Reading workbook...' : 'Select a worksheet'}</option>{assessmentSheets.map((sheet) => <option key={sheet} value={sheet}>{sheet}</option>)}</select><small>{assessmentSheets.length ? `${assessmentSheets.length} sheets found. Select the sheet containing ${importKind === 'application-mapping' ? 'application mapping' : importKind === 'applications' ? 'application catalog' : 'Server_to_AzureVM'} data.` : 'The workbook will be inspected before import.'}</small></label>}
             {uploadError && <div className="upload-message failed"><AlertCircle size={16} />{uploadError}</div>}
             {uploading && <ImportProgress fileNames={activeUploadFiles} items={imports} afterId={uploadBaselineId} />}
             {uploadResults.length > 0 && <UploadResults items={uploadResults} />}
-            <div className="import-actions"><span>{files.length ? `${files.length} file${files.length === 1 ? '' : 's'} ready` : 'No files selected'}</span><button className="upload-button" type="button" disabled={!canUpload} onClick={uploadFiles}><Upload size={17} />{uploading ? 'Importing...' : inspectingSheets ? 'Reading sheets...' : 'Start import'}</button></div>
+            <div className="import-actions"><span>{files.length ? `${files.length} file${files.length === 1 ? '' : 's'} ready` : 'No files selected'}</span><div>{(importKind === 'applications' || importKind === 'application-mapping') && <button className="secondary-command" type="button" onClick={() => downloadImportTemplate(importKind)}><Download size={15} />Download sample template</button>}<button className="upload-button" type="button" disabled={!canUpload} onClick={uploadFiles}><Upload size={17} />{uploading ? 'Importing...' : inspectingSheets ? 'Reading sheets...' : 'Start import'}</button></div></div>
           </div>
           <aside className="import-history"><div className="section-heading"><div><p className="eyebrow">History</p><h2>Recent imports</h2></div><span className="import-count">{completedImports} complete</span></div><ImportHistory items={imports} /></aside>
         </section></div>}
