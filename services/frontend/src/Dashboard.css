@@ -1076,9 +1076,16 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .sprint-landing-zone-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 14px; padding: 15px 18px; background: #fff; border: 1px solid #dce5ef; border-radius: 8px; }
 .sprint-landing-zone-controls label { min-width: 320px; color: #445a71; font-size: 10px; font-weight: 700; }
 .sprint-landing-zone-controls select, .sprint-landing-zone-table select { width: 100%; height: 34px; margin-top: 5px; padding: 0 8px; color: #2e4359; background: white; border: 1px solid #cbd6e3; border-radius: 4px; font: inherit; font-size: 10px; }
-.sprint-landing-zone-controls .sprint-landing-zone-filter { min-width: 220px; }
+.sprint-landing-zone-controls .sprint-landing-zone-filter { min-width: 320px; }
 .sprint-landing-zone-filter > span { display: flex; align-items: center; gap: 7px; height: 34px; margin-top: 5px; padding: 0 9px; color: #5c7186; background: #f7fafc; border: 1px solid #cbd6e3; border-radius: 4px; }
 .sprint-landing-zone-filter input { width: 100%; height: 100%; padding: 0; color: #2e4359; background: transparent; border: 0; outline: none; font: inherit; font-size: 10px; }
+.sprint-server-search-results { border: 1px solid #dce5ef; border-radius: 8px; overflow: hidden; background: white; }
+.sprint-server-search-results > header { padding: 15px 18px; border-bottom: 1px solid #dce5ef; }
+.sprint-server-search-results h2, .sprint-server-search-results p { margin: 0; }
+.sprint-server-search-results p { color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.sprint-server-search-results h2 { margin-top: 3px; color: #2b4057; font-size: 15px; }
+.sprint-server-search-results small { display: block; margin-top: 4px; color: #718194; font-size: 10px; }
+.sprint-server-search-results .secondary-command { min-height: 30px; }
 .sprint-landing-zone-table { border: 1px solid #dce5ef; border-radius: 8px; overflow: hidden; background: white; }
 .sprint-landing-zone-table > header { display: flex; align-items: end; justify-content: space-between; gap: 16px; padding: 15px 18px; border-bottom: 1px solid #dce5ef; }
 .sprint-server-filter { width: min(280px, 100%); display: flex; align-items: center; gap: 7px; padding: 0 9px; color: #5c7186; background: #f7fafc; border: 1px solid #cbd6e3; border-radius: 4px; }

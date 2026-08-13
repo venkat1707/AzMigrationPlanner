@@ -30,7 +30,6 @@ export default function SprintLandingZoneMapping() {
   const [resourceGroups, setResourceGroups] = useState<ResourceGroup[]>([])
   const [networks, setNetworks] = useState<LandingZoneNetwork[]>([])
   const [selectedSprint, setSelectedSprint] = useState('')
-  const [sprintFilter, setSprintFilter] = useState('')
   const [serverFilter, setServerFilter] = useState('')
   const [mappings, setMappings] = useState<EditableMapping[]>([])
   const [loading, setLoading] = useState(true)
@@ -61,7 +60,6 @@ export default function SprintLandingZoneMapping() {
 
   const selectSprint = (value: string) => {
     setSelectedSprint(value)
-    setServerFilter('')
     setError('')
     setNotice('')
     const nextSprint = sprints.find((item) => item.sequence === Number(value))
@@ -133,8 +131,10 @@ export default function SprintLandingZoneMapping() {
   if (loading) return <div className="page sprint-landing-zone-page"><div className="schedule-loading"><RefreshCw className="spin" size={18} /> Loading sprint landing zone inventory...</div></div>
 
   const subscriptionIds = unique(resourceGroups.map((group) => group.subscriptionId))
-  const visibleSprints = sprints.filter((item) => item.name.toLowerCase().includes(sprintFilter.trim().toLowerCase()))
   const visibleMappings = mappings.filter((mapping) => mapping.serverName.toLowerCase().includes(serverFilter.trim().toLowerCase()))
+  const matchingServers = sprints.flatMap((item) => item.servers
+    .filter(({ serverName }) => serverName.toLowerCase().includes(serverFilter.trim().toLowerCase()))
+    .map(({ serverName }) => ({ serverName, sprint: item })))
   const completedMappings = mappings.filter((mapping) => mapping.subscriptionId && mapping.resourceGroupId && mapping.networkResourceGroup && mapping.virtualNetwork && mapping.subnet).length
 
   return <div className="page sprint-landing-zone-page">
@@ -144,9 +144,8 @@ export default function SprintLandingZoneMapping() {
     </section>
 
     <section className="sprint-landing-zone-controls">
-      <label className="sprint-landing-zone-filter">Filter sprint name<span><Search size={14} /><input value={sprintFilter} onChange={(event) => setSprintFilter(event.target.value)} placeholder="Find a sprint" /></span></label>
-      <label>Migration sprint<select value={selectedSprint} onChange={(event) => selectSprint(event.target.value)}><option value="">Select a sprint</option>{visibleSprints.map((item) => <option key={item.sequence} value={item.sequence}>{item.name} · Wave {item.wave} · {item.environment} · {item.servers.length} servers</option>)}</select></label>
-      {sprints.length > 0 && visibleSprints.length === 0 && <small className="sprint-landing-zone-empty">No sprints match this filter.</small>}
+      <label>Filter sprint<select value={selectedSprint} onChange={(event) => selectSprint(event.target.value)}><option value="">All sprints</option>{sprints.map((item) => <option key={item.sequence} value={item.sequence}>{item.name} · Wave {item.wave} · {item.environment} · {item.servers.length} servers</option>)}</select></label>
+      <label className="sprint-landing-zone-filter">Filter server name<span><Search size={14} /><input value={serverFilter} onChange={(event) => setServerFilter(event.target.value)} placeholder="Find a server" /></span></label>
       {sprints.length === 0 && <small className="sprint-landing-zone-empty">Create and save a migration wave plan before mapping target landing zone resources.</small>}
       {resourceGroups.length === 0 || networks.length === 0 ? <small className="sprint-landing-zone-empty">Import landing zone resource groups and networks to enable all placement choices.</small> : null}
     </section>
@@ -154,7 +153,8 @@ export default function SprintLandingZoneMapping() {
     {error && <div className="core-input-feedback error"><AlertCircle size={15} />{error}</div>}
     {notice && <div className="core-input-feedback success"><CheckCircle2 size={15} />{notice}</div>}
 
-    {sprint && <section className="sprint-landing-zone-table"><header><div><p>Selected sprint</p><h2>{sprint.name}</h2><small>Wave {sprint.wave} · {sprint.environment} · {completedMappings} of {mappings.length} fully mapped</small></div><label className="sprint-server-filter"><Search size={14} /><input value={serverFilter} onChange={(event) => setServerFilter(event.target.value)} placeholder="Filter server name" aria-label="Filter server name" /></label></header><div className="table-wrap"><table><thead><tr><th>Server name</th><th>Subscription name</th><th>Resource group</th><th>Network resource group</th><th>Virtual network</th><th>Subnet</th><th>NSG</th></tr></thead><tbody>{visibleMappings.length === 0 ? <tr><td colSpan={7} className="empty-state">No servers match this filter.</td></tr> : visibleMappings.map((mapping) => {
+    {!sprint && serverFilter.trim() && <section className="sprint-server-search-results"><header><div><p>Server search</p><h2>Matching sprint servers</h2><small>Choose a result to open its sprint and map the server.</small></div></header><div className="table-wrap"><table><thead><tr><th>Server name</th><th>Sprint</th><th>Wave</th><th>Environment</th><th aria-label="Open sprint"></th></tr></thead><tbody>{matchingServers.length === 0 ? <tr><td colSpan={5} className="empty-state">No sprint servers match this filter.</td></tr> : matchingServers.map(({ serverName, sprint: matchingSprint }) => <tr key={`${matchingSprint.sequence}-${serverName}`}><td><strong>{serverName}</strong></td><td>{matchingSprint.name}</td><td>Wave {matchingSprint.wave}</td><td>{matchingSprint.environment}</td><td><button type="button" className="secondary-command" onClick={() => selectSprint(String(matchingSprint.sequence))}>Map server</button></td></tr>)}</tbody></table></div></section>}
+    {sprint && <section className="sprint-landing-zone-table"><header><div><p>Selected sprint</p><h2>{sprint.name}</h2><small>Wave {sprint.wave} · {sprint.environment} · {completedMappings} of {mappings.length} fully mapped</small></div></header><div className="table-wrap"><table><thead><tr><th>Server name</th><th>Subscription name</th><th>Resource group</th><th>Network resource group</th><th>Virtual network</th><th>Subnet</th><th>NSG</th></tr></thead><tbody>{visibleMappings.length === 0 ? <tr><td colSpan={7} className="empty-state">No servers match this filter.</td></tr> : visibleMappings.map((mapping) => {
       const groupsForSubscription = resourceGroups.filter((group) => group.subscriptionId === mapping.subscriptionId)
       const networksForSubscription = networks.filter((network) => network.subscriptionId === mapping.subscriptionId)
       const networkResourceGroups = unique(networksForSubscription.map((network) => network.networkResourceGroup))
