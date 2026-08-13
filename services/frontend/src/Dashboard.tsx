@@ -12,7 +12,6 @@ import AdminPage from './AdminPage'
 import TaskWorkspace from './TaskWorkspace'
 import SprintSchedule from './SprintSchedule'
 import SprintLandingZoneMapping from './SprintLandingZoneMapping'
-import FirewallRules from './FirewallRules'
 import ArtefactGeneration from './ArtefactGeneration'
 import ApplicationTreatmentPlanning from './ApplicationTreatmentPlanning'
 import ServerCoverage from './ServerCoverage'
@@ -79,8 +78,7 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'application-map', label: 'Application Map', group: 'Assess workloads', icon: Boxes, access: 'all', eyebrow: 'Application topology', title: 'Map applications by environment', description: 'Review application boundaries, core infrastructure, and cross-application traffic.' },
   { page: 'application-treatments', label: 'Application Treatments', group: 'Plan & deliver', icon: ClipboardCheck, access: 'all', eyebrow: 'Migration strategy', title: 'Define application treatment plans', description: 'Assign a migration treatment to every application in the catalog.' },
   { page: 'wave-planning', label: 'Wave Planning', group: 'Plan & deliver', icon: CalendarRange, access: 'modify', eyebrow: 'Migration wave planning', title: 'Sequence migration waves and sprints', description: 'Group ready workloads using application affinity, environments, dependencies, and data gravity.' },
-  { page: 'firewall-rules', label: 'Firewall Rules (Preview)', group: 'Plan & deliver', icon: Shield, access: 'modify', eyebrow: 'Network security', title: 'Generate NSG and firewall rules', description: 'Preview feature: produce Azure NSG, Azure Firewall, and on-premise firewall rules for each sprint from observed dependencies.' },
-  { page: 'artefact-generation', label: 'Generate artefacts', group: 'Generate artefacts', icon: WandSparkles, access: 'modify', eyebrow: 'Migration deliverables', title: 'Generate migration artefacts', description: 'Create Foundry-assisted design, migration plan, and runsheet documents, then export firewall rules as Excel, Terraform, or Bicep.' },
+  { page: 'artefact-generation', label: 'Generate artefacts (Preview)', group: 'Generate artefacts', icon: WandSparkles, access: 'modify', eyebrow: 'Migration deliverables', title: 'Generate migration artefacts', description: 'Preview feature: create Foundry-assisted design, migration plan, and runsheet documents, then review and export firewall rules as Excel, Terraform, or Bicep.' },
   { page: 'sprint-schedule', label: 'Sprint Schedule', group: 'Plan & deliver', icon: CalendarClock, access: 'modify', eyebrow: 'Migration timeline', title: 'Schedule waves and sprints', description: 'Set target migration dates and review delivery across environments and waves.' },
   { page: 'sprint-landing-zone-mapping', label: 'Sprint Landing Zone Mapping', group: 'Plan & deliver', icon: Network, access: 'modify', eyebrow: 'Target placement', title: 'Map sprint servers to landing zone resources', description: 'Assign each sprint server to a target subscription, resource group, virtual network, subnet, and NSG.' },
   { page: 'tasks', label: 'Finalize Sprints', group: 'Plan & deliver', icon: ClipboardList, access: 'all', eyebrow: 'Delivery workspace', title: 'Finalize Sprints', description: 'Track sprint and cross-dependency ownership, status, decisions, and comment history.' },
@@ -425,7 +423,6 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'application-treatments' && <ApplicationTreatmentPlanning canModify={canPlanWaves} />}
         {activePage === 'sprint-schedule' && canPlanWaves && <SprintSchedule />}
         {activePage === 'sprint-landing-zone-mapping' && canPlanWaves && <SprintLandingZoneMapping />}
-        {activePage === 'firewall-rules' && canPlanWaves && <FirewallRules />}
         {activePage === 'artefact-generation' && canPlanWaves && <ArtefactGeneration />}
         {activePage === 'tasks' && <TaskWorkspace canModify={canManageTasks} canReassign={canPlanWaves} currentUserId={auth.user?.id} />}
         {activePage === 'admin' && <AdminPage onAuthChanged={onAuthChanged} />}

@@ -68,7 +68,7 @@ const targetDisclaimers: Record<FirewallTarget, string> = {
 
 const formatNumber = new Intl.NumberFormat('en-US')
 
-export default function FirewallRules() {
+export default function FirewallRules({ embedded = false }: { embedded?: boolean }) {
   const [sprints, setSprints] = useState<SprintOption[]>([])
   const [scope, setScope] = useState<'all' | number>('all')
   const [target, setTarget] = useState<FirewallTarget | ''>('')
@@ -158,11 +158,11 @@ export default function FirewallRules() {
   }, [rules, directionFilter, search])
 
   if (loading && target !== '' && rules.length === 0 && !planMissing) {
-    return <div className="page firewall-rules-page"><div className="firewall-loading"><RefreshCw className="spin" size={18} /> Loading firewall rules...</div></div>
+    return <div className={embedded ? 'firewall-rules-page embedded' : 'page firewall-rules-page'}><div className="firewall-loading"><RefreshCw className="spin" size={18} /> Loading firewall rules...</div></div>
   }
 
   if (planMissing) {
-    return <div className="page firewall-rules-page">
+    return <div className={embedded ? 'firewall-rules-page embedded' : 'page firewall-rules-page'}>
       <section className="firewall-empty">
         <Shield size={26} />
         <strong>No saved migration wave plan</strong>
@@ -173,8 +173,8 @@ export default function FirewallRules() {
 
   const canExportInfrastructure = target !== 'on-prem'
 
-  return <div className="page firewall-rules-page">
-    <section className="firewall-preview-notice"><Info size={18} /><span><strong>Preview feature</strong><small>Review generated rules carefully before using them in a production firewall or network security group.</small></span></section>
+  return <div className={embedded ? 'firewall-rules-page embedded' : 'page firewall-rules-page'}>
+    {!embedded && <section className="firewall-preview-notice"><Info size={18} /><span><strong>Preview feature</strong><small>Review generated rules carefully before using them in a production firewall or network security group.</small></span></section>}
     <section className="firewall-controls" aria-labelledby="firewall-scope-heading">
       <div className="section-heading"><div><p className="eyebrow">Rule scope</p><h2 id="firewall-scope-heading">Choose a firewall target and sprint</h2></div><Shield size={19} /></div>
       <div className="firewall-filters">
