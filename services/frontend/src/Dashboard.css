@@ -1063,6 +1063,7 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .landing-zone-control small.success { color: #176847; }
 .landing-zone-control small.error { color: #a3392e; }
 .landing-zone-table-message { display: block; margin-top: 4px !important; color: #176847 !important; }
+.landing-zone-table-message.error { color: #a3392e !important; }
 .saved-report-actions .table-delete-all { color: #a3392e; background: #fff5f3; border-color: #e9c1bc; }
 .landing-zone-query pre { margin: 0; padding: 12px 14px; background: #0f2033; border-radius: 6px; overflow-x: auto; }
 .landing-zone-query pre code { color: #d9e6f4; font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; line-height: 1.6; white-space: pre; }

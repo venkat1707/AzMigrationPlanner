@@ -1550,6 +1550,11 @@ app.post('/api/landing-zone-networks/upload', workbookUpload.single('file'), asy
   }
 })
 
+app.delete('/api/landing-zone-networks', async (_request, response) => {
+  const deleted = await database('landing_zone_networks').delete()
+  response.json({ deleted })
+})
+
 app.delete('/api/landing-zone-networks/:id', async (request, response) => {
   const id = Number(request.params.id)
   if (!Number.isInteger(id) || id <= 0) {
