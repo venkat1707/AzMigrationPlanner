@@ -83,6 +83,19 @@ function downloadImportTemplate(kind: 'applications' | 'application-mapping') {
   URL.revokeObjectURL(url)
 }
 
+async function uploadResponsePayload(response: Response): Promise<{ result?: UploadResult; results?: UploadResult[]; error?: string }> {
+  const contentType = response.headers.get('content-type') ?? ''
+  if (contentType.toLowerCase().includes('application/json')) {
+    return response.json() as Promise<{ result?: UploadResult; results?: UploadResult[]; error?: string }>
+  }
+  const responseText = await response.text()
+  const detail = responseText.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+  const sizeHint = response.status === 404 || response.status === 413
+    ? ' The web server may have rejected the upload size.'
+    : ''
+  throw new Error(`Upload failed with HTTP ${response.status}.${sizeHint}${detail ? ` ${detail}` : ''}`)
+}
+
 const pageDefinitions: PageDefinition[] = [
   { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor discovery coverage and continue through the migration planning workflow.' },
   { page: 'imports', label: 'Imports', group: 'Discover & prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, and dependency exports.' },
@@ -328,7 +341,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             ? '/api/applications/import'
             : '/api/server-assessments/import'
       const response = await apiFetch(endpoint, { method: 'POST', body })
-      const payload = await response.json() as { result?: UploadResult; results?: UploadResult[]; error?: string }
+          const payload = await uploadResponsePayload(response)
       if (!response.ok && response.status !== 207) throw new Error(payload.error ?? 'Upload failed.')
       setUploadResults(payload.results ?? (payload.result ? [payload.result] : []))
       setFiles([])
