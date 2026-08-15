@@ -832,33 +832,32 @@ app.get('/api/imports', async (_request, response) => {
   response.json({ items: imports })
 })
 
+let dependencyImportQueue = Promise.resolve()
+
+async function processDependencyUploads(files: Express.Multer.File[]): Promise<void> {
+  for (const file of files) {
+    try {
+      await importDependencyFile(file.path, file.originalname)
+    } catch (error) {
+      console.error(`Queued dependency import failed for ${file.originalname}`, error)
+    } finally {
+      await unlink(file.path).catch(() => undefined)
+    }
+  }
+}
+
 app.post('/api/imports', dependencyUpload.array('files', 8), async (request, response) => {
   const files = request.files as Express.Multer.File[] | undefined
   if (!files?.length) {
     response.status(400).json({ error: 'Select at least one CSV or XLSX file.' })
     return
   }
-  const results: Array<{ fileName: string; status: 'Completed' | 'Failed'; rowsImported?: number; warnings?: string[]; error?: string }> = []
-  for (const file of files) {
-    try {
-      const result = await importDependencyFile(file.path, file.originalname)
-      results.push({
-        fileName: file.originalname,
-        status: 'Completed',
-        rowsImported: result.rowsImported,
-        warnings: result.warnings,
-      })
-    } catch (error) {
-      results.push({
-        fileName: file.originalname,
-        status: 'Failed',
-        error: safeImportError(error, 'Import failed. Review the server log using the import run identifier.'),
-      })
-    } finally {
-      await unlink(file.path).catch(() => undefined)
-    }
-  }
-  response.status(results.some((result) => result.status === 'Failed') ? 207 : 201).json({ results })
+  dependencyImportQueue = dependencyImportQueue
+    .then(() => processDependencyUploads(files))
+    .catch((error) => console.error('Dependency import queue failed.', error))
+  response.status(202).json({
+    results: files.map((file) => ({ fileName: file.originalname, status: 'Accepted' })),
+  })
 })
 
 app.post('/api/server-assessments/sheets', workbookUpload.single('file'), async (request, response) => {

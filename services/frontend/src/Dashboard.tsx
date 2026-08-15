@@ -44,7 +44,7 @@ type Filters = { server: string; ip: string; port: string }
 type ImportRun = { id: number; fileName: string; importType: 'Dependency' | 'ServerAssessment' | 'ApplicationMapping' | 'ApplicationCatalog'; sheetName: string | null; status: string; rowsImported: number; startedAt: string; completedAt: string | null; errorMessage: string | null }
 type UploadResult = {
   fileName: string
-  status: 'Completed' | 'Failed'
+  status: 'Accepted' | 'Completed' | 'Failed'
   rowsImported?: number
   inserted?: number
   updated?: number
@@ -230,6 +230,15 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   }, [uploading])
 
   useEffect(() => {
+    if (!uploading || activeUploadFiles.length === 0) return
+    const runs = activeUploadFiles.map((fileName) => imports.find((item) => item.id > uploadBaselineId && item.fileName === fileName))
+    if (!runs.every((run) => run && (run.status === 'Completed' || run.status === 'Failed'))) return
+    setUploading(false)
+    setActiveUploadFiles([])
+    setRefreshKey((value) => value + 1)
+  }, [activeUploadFiles, imports, uploadBaselineId, uploading])
+
+  useEffect(() => {
     const controller = new AbortController()
     const params = new URLSearchParams({ page: String(data.page), pageSize: String(data.pageSize) })
     Object.entries(query).forEach(([key, value]) => value && params.set(key, value))
@@ -326,12 +335,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
     setUploadBaselineId(Math.max(0, ...imports.map((item) => item.id)))
     setUploading(true)
     setUploadError('')
-    const body = new FormData()
-    if (importKind === 'dependencies') files.forEach((file) => body.append('files', file))
-    else {
-      body.append('file', files[0]!)
-      if (selectedSheet) body.append('sheetName', selectedSheet)
-    }
+    let acceptedForBackgroundProcessing = false
     try {
       const endpoint = importKind === 'dependencies'
         ? '/api/imports'
@@ -340,20 +344,44 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
           : importKind === 'applications'
             ? '/api/applications/import'
             : '/api/server-assessments/import'
-      const response = await apiFetch(endpoint, { method: 'POST', body })
-          const payload = await uploadResponsePayload(response)
-      if (!response.ok && response.status !== 207) throw new Error(payload.error ?? 'Upload failed.')
+        let payload: { result?: UploadResult; results?: UploadResult[]; error?: string }
+        let responseStatus: number
+        if (importKind === 'dependencies') {
+          const acceptedResults: UploadResult[] = []
+          for (const file of files) {
+            const body = new FormData()
+            body.append('files', file)
+            const response = await apiFetch(endpoint, { method: 'POST', body })
+            const filePayload = await uploadResponsePayload(response)
+            if (!response.ok) throw new Error(filePayload.error ?? `Upload failed for ${file.name}.`)
+            acceptedResults.push(...(filePayload.results ?? []))
+            setUploadResults([...acceptedResults])
+          }
+          payload = { results: acceptedResults }
+          responseStatus = 202
+        } else {
+          const body = new FormData()
+          body.append('file', files[0]!)
+          if (selectedSheet) body.append('sheetName', selectedSheet)
+          const response = await apiFetch(endpoint, { method: 'POST', body })
+          payload = await uploadResponsePayload(response)
+          responseStatus = response.status
+          if (!response.ok && response.status !== 207) throw new Error(payload.error ?? 'Upload failed.')
+        }
       setUploadResults(payload.results ?? (payload.result ? [payload.result] : []))
       setFiles([])
       setAssessmentSheets([])
       setSelectedSheet('')
       setRefreshKey((value) => value + 1)
-      if (response.ok && nextImportKind[importKind]) setImportKind(nextImportKind[importKind])
+      acceptedForBackgroundProcessing = importKind === 'dependencies' && responseStatus === 202
+      if (responseStatus >= 200 && responseStatus < 300 && nextImportKind[importKind]) setImportKind(nextImportKind[importKind])
     } catch (reason) {
       setUploadError(reason instanceof Error ? reason.message : 'Upload failed.')
     } finally {
-      setUploading(false)
-      setActiveUploadFiles([])
+      if (!acceptedForBackgroundProcessing) {
+        setUploading(false)
+        setActiveUploadFiles([])
+      }
     }
   }
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize))
@@ -563,7 +591,7 @@ function UploadResults({ items }: { items: UploadResult[] }) {
   return <div className="upload-results">{items.map((result) => {
     const isAssessmentResult = result.status === 'Completed' && result.inserted !== undefined
     if (!isAssessmentResult) {
-      return <div className={result.status.toLowerCase()} key={result.fileName}>{result.status === 'Completed' ? <CheckCircle2 size={17} /> : <AlertCircle size={17} />}<span><strong>{result.fileName}</strong><small>{result.status === 'Completed' ? `${formatNumber.format(result.rowsImported ?? 0)} rows imported${result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}` : result.error}</small></span></div>
+      return <div className={result.status.toLowerCase()} key={result.fileName}>{result.status === 'Completed' ? <CheckCircle2 size={17} /> : result.status === 'Failed' ? <AlertCircle size={17} /> : <RefreshCw className="spin" size={17} />}<span><strong>{result.fileName}</strong><small>{result.status === 'Completed' ? `${formatNumber.format(result.rowsImported ?? 0)} rows imported${result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}` : result.status === 'Accepted' ? 'Upload complete. Import queued for background processing.' : result.error}</small></span></div>
     }
     return <section className="assessment-result" key={result.fileName}>
       <header><CheckCircle2 size={19} /><span><strong>{result.fileName}</strong><small>Import complete · {formatNumber.format(result.rowsImported ?? 0)} records accepted{result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}</small></span></header>
