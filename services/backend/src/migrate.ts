@@ -5,6 +5,31 @@ import { seedDatabaseServerEvidence } from './database-server-evidence.js'
 import { refreshDependencyDirections } from './dependency-direction.js'
 import { refreshDependencySummary } from './dependency-summary.js'
 
+export const requiredDependencyIndexNames = [
+  'idx_dependencies_import_run',
+  'idx_dependencies_server_pair',
+  'idx_dependencies_port',
+  'idx_dependencies_inbound_map',
+  'idx_dependencies_outbound_map',
+  'idx_dependencies_inbound_fw',
+  'idx_dependencies_outbound_fw',
+] as const
+
+export const redundantDependencyIndexNames = [
+  'idx_dependencies_source_server',
+  'idx_dependencies_destination_server',
+  'idx_dependencies_inbound_topology',
+  'idx_dependencies_outbound_topology',
+  'idx_dependencies_destination_ip',
+  'idx_dependencies_observed_date',
+  'idx_dependencies_destination_process',
+  'idx_dependencies_server_port',
+  'idx_dependencies_server_process',
+  'idx_dependencies_ip_port',
+  'idx_dependencies_ip_process',
+  'idx_dependencies_direction',
+] as const
+
 export async function migrateSchema(): Promise<void> {
   if (!(await database.schema.hasTable('app_auth_settings'))) {
     await database.schema.createTable('app_auth_settings', (table) => {
@@ -122,12 +147,12 @@ export async function migrateSchema(): Promise<void> {
       table.index(['source_server_name', 'destination_server_name'], 'idx_dependencies_server_pair')
       table.index(['destination_port'], 'idx_dependencies_port')
       table.index(
-        ['destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip'],
-        'idx_dependencies_inbound_topology',
+        ['destination_server_name', 'source_server_name', 'destination_port'],
+        'idx_dependencies_inbound_map',
       )
       table.index(
-        ['source_server_name', 'destination_ip', 'destination_port', 'destination_server_name'],
-        'idx_dependencies_outbound_topology',
+        ['source_server_name', 'destination_server_name', 'destination_port'],
+        'idx_dependencies_outbound_map',
       )
       table.index(
         ['destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip', 'connection_count'],
@@ -166,19 +191,19 @@ export async function migrateSchema(): Promise<void> {
       table.index(['source_server_name', 'destination_server_name'], 'idx_dependencies_server_pair')
     })
   }
-  if (!dependencyIndexNames.has('idx_dependencies_inbound_topology')) {
+  if (!dependencyIndexNames.has('idx_dependencies_inbound_map')) {
     await database.schema.alterTable('dependency_records', (table) => {
       table.index(
-        ['destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip'],
-        'idx_dependencies_inbound_topology',
+        ['destination_server_name', 'source_server_name', 'destination_port'],
+        'idx_dependencies_inbound_map',
       )
     })
   }
-  if (!dependencyIndexNames.has('idx_dependencies_outbound_topology')) {
+  if (!dependencyIndexNames.has('idx_dependencies_outbound_map')) {
     await database.schema.alterTable('dependency_records', (table) => {
       table.index(
-        ['source_server_name', 'destination_ip', 'destination_port', 'destination_server_name'],
-        'idx_dependencies_outbound_topology',
+        ['source_server_name', 'destination_server_name', 'destination_port'],
+        'idx_dependencies_outbound_map',
       )
     })
   }
@@ -198,37 +223,6 @@ export async function migrateSchema(): Promise<void> {
       )
     })
   }
-  if (!dependencyIndexNames.has('idx_dependencies_destination_process')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_process'], 'idx_dependencies_destination_process')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_destination_ip')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_ip'], 'idx_dependencies_destination_ip')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_server_port')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_server_name', 'destination_port'], 'idx_dependencies_server_port')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_server_process')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_server_name', 'destination_process'], 'idx_dependencies_server_process')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_ip_port')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_ip', 'destination_port'], 'idx_dependencies_ip_port')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_ip_process')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_ip', 'destination_process'], 'idx_dependencies_ip_process')
-    })
-  }
-
   if (!(await database.schema.hasTable('database_server_evidence'))) {
     await database.schema.createTable('database_server_evidence', (table) => {
       table.string('evidence_type', 10).notNullable()
@@ -237,23 +231,10 @@ export async function migrateSchema(): Promise<void> {
     })
     await seedDatabaseServerEvidence()
   }
-  const redundantDependencyIndexes = [
-    'idx_dependencies_source_server',
-    'idx_dependencies_destination_server',
-    'idx_dependencies_destination_ip',
-    'idx_dependencies_observed_date',
-    'idx_dependencies_destination_process',
-    'idx_dependencies_server_port',
-    'idx_dependencies_server_process',
-    'idx_dependencies_ip_port',
-    'idx_dependencies_ip_process',
-    'idx_dependencies_direction',
-  ]
-  for (const indexName of redundantDependencyIndexes) {
-    if (!dependencyIndexNames.has(indexName)) continue
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.dropIndex([], indexName)
-    })
+  const existingRedundantIndexes = redundantDependencyIndexNames.filter((indexName) => dependencyIndexNames.has(indexName))
+  if (existingRedundantIndexes.length > 0) {
+    const clauses = existingRedundantIndexes.map(() => 'DROP INDEX ??').join(', ')
+    await database.raw(`ALTER TABLE dependency_records ${clauses}`, existingRedundantIndexes)
   }
 
   if (await database.schema.hasTable('application_inventory')) {

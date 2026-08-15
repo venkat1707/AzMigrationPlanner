@@ -235,6 +235,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
     if (!runs.every((run) => run && (run.status === 'Completed' || run.status === 'Failed'))) return
     setUploading(false)
     setActiveUploadFiles([])
+    setUploadResults([])
     setRefreshKey((value) => value + 1)
   }, [activeUploadFiles, imports, uploadBaselineId, uploading])
 
@@ -355,7 +356,6 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             const filePayload = await uploadResponsePayload(response)
             if (!response.ok) throw new Error(filePayload.error ?? `Upload failed for ${file.name}.`)
             acceptedResults.push(...(filePayload.results ?? []))
-            setUploadResults([...acceptedResults])
           }
           payload = { results: acceptedResults }
           responseStatus = 202
@@ -368,7 +368,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
           responseStatus = response.status
           if (!response.ok && response.status !== 207) throw new Error(payload.error ?? 'Upload failed.')
         }
-      setUploadResults(payload.results ?? (payload.result ? [payload.result] : []))
+      setUploadResults(importKind === 'dependencies' ? [] : payload.results ?? (payload.result ? [payload.result] : []))
       setFiles([])
       setAssessmentSheets([])
       setSelectedSheet('')
