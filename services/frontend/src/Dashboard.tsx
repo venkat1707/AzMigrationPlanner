@@ -589,9 +589,10 @@ function ImportProgress({ fileNames, items, afterId }: { fileNames: string[]; it
 
 function UploadResults({ items }: { items: UploadResult[] }) {
   return <div className="upload-results">{items.map((result) => {
-    const isAssessmentResult = result.status === 'Completed' && result.inserted !== undefined
+    const status = result.status === 'Completed' || result.status === 'Failed' || result.status === 'Accepted' ? result.status : 'Failed'
+    const isAssessmentResult = status === 'Completed' && result.inserted !== undefined
     if (!isAssessmentResult) {
-      return <div className={result.status.toLowerCase()} key={result.fileName}>{result.status === 'Completed' ? <CheckCircle2 size={17} /> : result.status === 'Failed' ? <AlertCircle size={17} /> : <RefreshCw className="spin" size={17} />}<span><strong>{result.fileName}</strong><small>{result.status === 'Completed' ? `${formatNumber.format(result.rowsImported ?? 0)} rows imported${result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}` : result.status === 'Accepted' ? 'Upload complete. Import queued for background processing.' : result.error}</small></span></div>
+      return <div className={status.toLowerCase()} key={result.fileName}>{status === 'Completed' ? <CheckCircle2 size={17} /> : status === 'Failed' ? <AlertCircle size={17} /> : <RefreshCw className="spin" size={17} />}<span><strong>{result.fileName}</strong><small>{status === 'Completed' ? `${formatNumber.format(result.rowsImported ?? 0)} rows imported${result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}` : status === 'Accepted' ? 'Upload complete. Import queued for background processing.' : result.error ?? 'The import response was incomplete. Refresh import history to confirm the result.'}</small></span></div>
     }
     return <section className="assessment-result" key={result.fileName}>
       <header><CheckCircle2 size={19} /><span><strong>{result.fileName}</strong><small>Import complete · {formatNumber.format(result.rowsImported ?? 0)} records accepted{result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}</small></span></header>

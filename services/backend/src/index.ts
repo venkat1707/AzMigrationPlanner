@@ -1211,7 +1211,7 @@ app.post('/api/application-server-mappings/import', workbookUpload.single('file'
       return
     }
     const result = await importApplicationServerMappingFile(file.path, file.originalname, sheetName)
-    response.status(201).json({ result })
+    response.status(201).json({ result: { ...result, status: 'Completed' } })
   } catch (error) {
     response.status(400).json({ error: safeImportError(error, 'Application to Server Mapping import failed.') })
   } finally {
