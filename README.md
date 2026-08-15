@@ -79,11 +79,15 @@ npm run generate:dataset
 The command streams its output to `data/generated/` and creates:
 
 - `ServerAssessment-Synthetic-624.csv`: an import-ready Server Assessment containing exactly 624 uniquely named and sized servers.
+- `ApplicationServerMapping-Synthetic.csv`: an import-ready application-to-server mapping with application, server, IP address, and description columns. Database servers used by multiple applications are assigned to `Shared DB`.
 - `DependencyExport-Synthetic-01.csv` through `DependencyExport-Synthetic-04.csv`: four import-ready files containing 500,000 dependency observations each.
-- `ApplicationCatalog-Synthetic-96.csv`: a reference catalog of 96 meaningful applications, environments, owners, and sensitivity classifications.
+- `ApplicationCatalog-Synthetic.csv`: an import-ready catalog of 96 meaningful applications plus the `Shared DB` application and owner details.
 - `SharedDatabaseInventory-Synthetic.csv`: every shared database host, its engine and environment, and the applications consuming it.
 - `CoreInfrastructure-Synthetic.csv`: 86 core infrastructure assignments plus eight private load-balancer IPs, ready for the Core Infrastructure upload.
-- `NetworkRanges-Synthetic.csv`: corporate and isolated CIDR ranges for Dev, Test, Pre-prod, and Prod, labeled as Office and VPN networks for entry in Core Infrastructure.
+- `LoadBalancers-Synthetic.csv`, `OfficeNetworks-Synthetic.csv`, and `VPNNetworks-Synthetic.csv`: separate network-edge inventories with correlated sample endpoints.
+- `NetworkRanges-Synthetic.csv`: Office and VPN CIDR ranges for Dev, Test, Pre-prod, and Prod, ready for entry in Core Infrastructure.
+- `LandingZoneResourceGroups-Synthetic.csv` and `LandingZoneNetworks-Synthetic.csv`: import-ready, correlated landing-zone resources spanning non-production, pre-production, and production subscriptions.
+- `Corelight-Logs-Synthetic.zip`: Corelight/Zeek newline-delimited JSON `conn.log` and `dns.log` records covering a complete calendar month. The unpacked logs are also available under `corelight/`.
 - `dataset-manifest.json`: generated counts and pass/fail assertions for server roles, database engines, environments, isolation, and dependency totals.
 
 The topology includes private load-balancer IP traffic to optional web tiers and dedicated application servers, then application/report traffic to database tiers. Applications also connect to Active Directory/DNS, proxy, print, file, backup, monitoring, management, and Configuration Manager services. Every one of the 352 application/environment deployments has its own application server. Database sharing is assigned deliberately between application cohorts within the same environment, and every shared host uses `Shared DB` as its Server Assessment application name. Web, application, report, and database servers are never shared across Dev, Test, Pre-prod, and Prod; generation fails if a tier server or tier dependency crosses an environment boundary. Twelve highly sensitive applications use isolated private address ranges and dedicated management servers. Pre-prod is generated for 64 applications with the same logical connection profile and sizing as Prod. Dev and Test use proportionally smaller compute, memory, and storage recommendations.
@@ -95,6 +99,14 @@ Upload `ServerAssessment-Synthetic-624.csv` as Server Assessment data, upload `C
 ```powershell
 npm run generate:dataset -- --output-dir=data/generated/sample --dependency-count=10000 --rows-per-file=5000
 ```
+
+Use `--start-date=YYYY-MM-01` to choose the month represented by the Corelight logs. For example:
+
+```powershell
+npm run generate:dataset -- --output-dir=data/generated/january-sample --dependency-count=10000 --rows-per-file=5000 --start-date=2026-01-01
+```
+
+`dependency-count` controls both the Azure Migrate dependency row count and the Corelight `conn.log` row count so the two observations are generated from the same repeating connection profiles. Corelight DNS transactions use the same `uid` as their corresponding port 53 connection. Office clients, VPN clients, and load balancers are represented in Azure Migrate dependencies and both Corelight logs. The generator streams CSV and Corelight output and creates the ZIP without loading the full dataset into memory.
 
 Imports are recorded in `import_runs`. Failed runs retain their imported-row count and error message. Re-running an export creates another import run; it does not replace previous data.
 

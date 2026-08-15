@@ -13,8 +13,11 @@
     "migrate": "npm run migrate --workspace backend",
     "import": "npm run import --workspace backend --",
     "generate:dataset": "node scripts/generate-synthetic-dataset.mjs",
+    "convert:corelight": "node scripts/convert-corelight-flow-logs.mjs",
+    "status:dependency-delete": "node scripts/check-dependency-delete-progress.mjs",
+    "status:dependency-insert": "node scripts/check-dependency-insert-progress.mjs",
     "start": "npm run start --workspace backend",
     "audit:check": "node scripts/audit-check.mjs"
   },
-  "devDependencies": { "concurrently": "^9.2.1" }
+  "devDependencies": { "archiver": "^7.0.1", "concurrently": "^9.2.1" }
 }

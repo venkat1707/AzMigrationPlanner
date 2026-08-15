@@ -27,6 +27,10 @@ export async function startDataCleanup(): Promise<CleanupStatus> {
   if (activeCleanup?.status === 'Running') throw new Error('A data cleanup is already running.')
   const runningImport = await database('import_runs').where({ status: 'Running' }).first('id')
   if (runningImport) throw new Error('Wait for active imports to finish before cleaning up data.')
+  const rollingBack = await database('information_schema.innodb_trx')
+    .where({ trx_state: 'ROLLING BACK' })
+    .first('trx_mysql_thread_id')
+  if (rollingBack) throw new Error('Wait for the previous database cleanup rollback to finish before starting another cleanup.')
 
   const protectedResult = await database('windows_services_ports').count({ count: 'id' }).first()
   activeCleanup = {
@@ -64,13 +68,17 @@ async function runCleanup(cleanup: CleanupStatus): Promise<void> {
     await runStep(cleanup, 3, async () => database('sprint_server_landing_zone_mappings').delete())
     await runStep(cleanup, 4, async () => database('server_assessments').delete())
     await runStep(cleanup, 5, async () => database('applications').delete())
-    await runStep(cleanup, 6, async () => database.transaction(async (transaction) => {
-      const recordsDeleted = await transaction('dependency_records').delete()
-      await transaction('database_server_evidence').delete()
-      await transaction('dependency_source_servers').delete()
-      await transaction('dependency_destination_servers').delete()
+    await runStep(cleanup, 6, async () => {
+      const result = await database('dependency_records').count({ count: 'id' }).first()
+      const recordsDeleted = Number(result?.count ?? 0)
+      await database.raw('TRUNCATE TABLE dependency_records')
+      await database.transaction(async (transaction) => {
+        await transaction('database_server_evidence').delete()
+        await transaction('dependency_source_servers').delete()
+        await transaction('dependency_destination_servers').delete()
+      })
       return recordsDeleted
-    }))
+    })
     await runStep(cleanup, 7, async () => database('import_runs').delete())
     await runStep(cleanup, 8, async () => {
       const current = await database('dependency_summary').where({ id: 1 }).first()
