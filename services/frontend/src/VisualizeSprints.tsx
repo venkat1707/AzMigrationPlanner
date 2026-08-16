@@ -82,6 +82,7 @@ function layoutNodes(input: Omit<Node, 'x' | 'y'>[], edges: Edge[], focused: boo
 
 export default function VisualizeSprints() {
   const [plan, setPlan] = useState<Plan | null>(null)
+  const [loading, setLoading] = useState(true)
   const [environment, setEnvironment] = useState('All')
   const [mode, setMode] = useState<'applications' | 'servers'>('applications')
   const [selectedSprint, setSelectedSprint] = useState<number | null>(null)
@@ -93,7 +94,20 @@ export default function VisualizeSprints() {
   const pointerStart = useRef<{ x: number; y: number; panX: number; panY: number; sprint: number | null } | null>(null)
   const dragged = useRef(false)
 
-  useEffect(() => { apiFetch('/api/migration-wave-plan').then(async (response) => { const data = await response.json() as { plan: Plan | null; error?: string }; if (!response.ok) throw new Error(data.error ?? 'Unable to load the saved wave plan.'); setPlan(data.plan) }).catch((reason: Error) => setError(reason.message)) }, [])
+  useEffect(() => {
+    const controller = new AbortController()
+    apiFetch('/api/migration-wave-plan?planOnly=true', { signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json() as { plan: Plan | null; error?: string }
+        if (!response.ok) throw new Error(data.error ?? 'Unable to load the saved wave plan.')
+        setPlan(data.plan)
+      })
+      .catch((reason: unknown) => {
+        if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'Unable to load the saved wave plan.')
+      })
+      .finally(() => setLoading(false))
+    return () => controller.abort()
+  }, [])
   const environments = useMemo(() => [...new Set(plan?.waves.map((wave) => wave.environment) ?? [])], [plan])
   const sprintOptions = useMemo(() => plan?.waves.filter((wave) => environment === 'All' || wave.environment === environment).flatMap((wave) => wave.sprints).sort((left, right) => left.sequence - right.sequence) ?? [], [plan, environment])
   const view = useMemo(() => plan ? buildView(plan, environment, mode, selectedSprint) : null, [plan, environment, mode, selectedSprint])
@@ -108,7 +122,8 @@ export default function VisualizeSprints() {
   }) : [], [view])
 
   if (error) return <div className="page sprint-visualization-page"><div className="visualization-empty"><Network size={28} /><strong>Visualization unavailable</strong><span>{error}</span></div></div>
-  if (!plan) return <div className="page sprint-visualization-page"><div className="visualization-empty"><RefreshCw className="spin" size={20} /> Loading saved wave plan...</div></div>
+  if (loading) return <div className="page sprint-visualization-page"><div className="visualization-empty"><RefreshCw className="spin" size={20} /> Loading saved wave plan...</div></div>
+  if (!plan) return <div className="page sprint-visualization-page"><div className="visualization-empty"><CircleDotDashed size={28} /><strong>No saved migration wave plan</strong><span>Generate and save a migration wave plan, then return to explore sprint proximity.</span></div></div>
   if (!view?.nodes.length) return <div className="page sprint-visualization-page"><div className="visualization-empty"><CircleDotDashed size={28} /><strong>No planned workloads for this environment</strong><span>Generate and save a migration wave plan, then return to explore sprint proximity.</span></div></div>
   const point = (id: string) => view.nodes.find((node) => node.id === id)!
   const focused = selectedSprint !== null

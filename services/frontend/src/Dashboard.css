@@ -608,6 +608,16 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .application-graph-toolbar button:hover:not(:disabled) { color: var(--accent); background: #f1f6ff; }
 .application-graph-toolbar button:disabled { cursor: not-allowed; opacity: .4; }
 .application-graph-toolbar > div:last-child > span { min-width: 46px; color: #526176; font-family: var(--mono); font-size: 9px; text-align: center; }
+.application-connection-groups { padding: 9px 12px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; background: #fbfcfe; border-bottom: 1px solid var(--line); }
+.application-connection-groups section { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; }
+.application-connection-groups section > strong { min-width: 72px; padding-top: 4px; color: #526176; font-size: 8px; text-transform: uppercase; }
+.application-connection-groups section.inbound > strong { color: #94641f; }
+.application-connection-groups section.bidirectional > strong { color: #237354; }
+.application-connection-groups section.outbound > strong { color: #315f8c; }
+.application-connection-groups section > div { min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; }
+.application-connection-groups section span { padding: 3px 5px; display: inline-flex; align-items: center; gap: 5px; color: #485c72; background: white; border: 1px solid #d4deea; border-radius: 3px; font-size: 8px; white-space: nowrap; }
+.application-connection-groups section b { min-width: 15px; padding: 1px 4px; color: #294f75; background: #e8f0f8; border-radius: 8px; font-size: 8px; text-align: center; }
+.application-connection-groups section em { padding-top: 4px; color: #8995a4; font-size: 8px; font-style: normal; }
 .application-graph-focus-detail { min-height: 58px; padding: 9px 12px; display: flex; align-items: center; color: #68798a; background: #f8fafc; border-bottom: 1px solid var(--line); font-size: 10px; }
 .application-graph-focus-detail.active { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(180px, 1.4fr) minmax(90px, .65fr) minmax(100px, .7fr) minmax(90px, .6fr); gap: 12px; overflow-x: auto; color: #26394f; background: #edf5fc; }
 .application-graph-focus-detail > div { min-width: 0; padding-left: 9px; border-left: 2px solid #88a7c5; }
@@ -640,6 +650,11 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .application-graph-edge.focused .application-graph-edge-label text:not(.detail) { font-size: 10px; }
 .application-graph-edge.focused .application-graph-edge-label text.detail { font-size: 9px; font-weight: 800; }
 .application-graph-node { position: absolute; z-index: 2; width: 180px; height: 58px; padding: 7px 9px; display: flex; align-items: center; gap: 8px; background: white; border: 1px solid; border-radius: 4px; box-shadow: 0 2px 7px rgb(29 48 68 / 10%); cursor: pointer; outline: none; transform-origin: center; transition: transform 140ms ease, opacity 140ms ease, box-shadow 140ms ease, border-width 140ms ease; }
+.application-graph-node::before { content: attr(data-connection-group); position: absolute; top: -15px; left: 4px; max-width: 172px; overflow: hidden; color: #617286; font-size: 7px; font-weight: 800; line-height: 12px; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.application-graph-node[data-connection-group^="Inbound"]::before { color: #94641f; }
+.application-graph-node[data-connection-group^="Bidirectional"]::before { color: #237354; }
+.application-graph-node[data-connection-group^="Outbound"]::before { color: #315f8c; }
+.application-graph-node[data-connection-group^="Local"]::before { color: #6b4b78; }
 .application-graph-node > span { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; color: white; border-radius: 4px; }
 .application-graph-node.server { border-color: #8aa9c8; }
 .application-graph-node.server > span { background: #294f75; }

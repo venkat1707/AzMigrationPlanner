@@ -2091,7 +2091,15 @@ function migrationPlanTasksAreValid(plan: Record<string, unknown>): boolean {
   return true
 }
 
-app.get('/api/migration-wave-plan', async (_request, response) => {
+app.get('/api/migration-wave-plan', async (request, response) => {
+  if (request.query.planOnly === 'true') {
+    const saved = await database('migration_wave_plans').where({ id: 1 }).first({ planJson: 'plan_json', savedAt: 'saved_at' }) as SavedMigrationWavePlanRow | undefined
+    response.json(saved ? {
+      plan: typeof saved.planJson === 'string' ? JSON.parse(saved.planJson) : saved.planJson,
+      savedAt: saved.savedAt,
+    } : { plan: null, savedAt: null })
+    return
+  }
   const [saved, savedFilters, environments] = await Promise.all([
     database('migration_wave_plans').where({ id: 1 }).first({ planJson: 'plan_json', savedAt: 'saved_at' }) as Promise<SavedMigrationWavePlanRow | undefined>,
     database('migration_wave_plan_filters').where({ id: 1 }).first({ filterJson: 'filter_json', consideredServersJson: 'considered_servers_json' }) as Promise<SavedPlanFiltersRow | undefined>,

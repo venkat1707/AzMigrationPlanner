@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, type FormEvent } from 'react'
-import { AppWindow, ArrowLeftRight, Boxes, Database, Download, Network, RefreshCw, RotateCcw, Router, Server, ShieldCheck, ZoomIn, ZoomOut } from 'lucide-react'
+import { AppWindow, ArrowLeftRight, Boxes, Database, Download, Network, RefreshCw, RotateCcw, Router, Server, ShieldCheck, Tags, ZoomIn, ZoomOut } from 'lucide-react'
 import { apiFetch } from './auth-client'
 
 type Direction = 'Inbound' | 'Outbound' | 'Bidirectional'
@@ -24,7 +24,7 @@ type CoreInfrastructureItem = { serverName: string; category: string }
 
 const formatNumber = new Intl.NumberFormat('en-US')
 
-type PositionedNode = MapNode & { x: number; y: number; subtitle: string }
+type PositionedNode = MapNode & { x: number; y: number; subtitle: string; groupLabel: string }
 type GraphEdge = {
   sourceId: string
   targetId: string
@@ -34,6 +34,8 @@ type GraphEdge = {
   connectionCount: number
 }
 type GraphFocus = { type: 'node' | 'edge'; id: string } | null
+type ConnectionCategory = 'VPN Network' | 'Office Network' | 'Application' | 'Infrastructure server' | 'Shared DB' | 'Load balancer'
+type ConnectionGroup = { direction: Direction; category: ConnectionCategory; entities: number }
 
 export default function ApplicationMap({ refreshKey }: { refreshKey: number }) {
   const [inventory, setInventory] = useState<InventoryItem[]>([])
@@ -161,6 +163,7 @@ function ApplicationGraph({ map, coreCategories, zoom, setZoom, onOpenApplicatio
 }) {
   const markerId = useId().replaceAll(':', '')
   const [focus, setFocus] = useState<GraphFocus>(null)
+  const [showConnectionGroups, setShowConnectionGroups] = useState(true)
   const layout = createGraphLayout(map, coreCategories)
   const nodeWidth = 180
   const nodeHeight = 58
@@ -177,12 +180,14 @@ function ApplicationGraph({ map, coreCategories, zoom, setZoom, onOpenApplicatio
       <div><strong>Connection graph</strong><small>Hover a server or connection to focus its process, port, and traffic direction.</small></div>
       <div aria-label="Graph zoom controls">
         <button type="button" title="Export topology as SVG" aria-label="Export topology as SVG" onClick={exportSvg}><Download size={15} /></button>
+        <button type="button" title={showConnectionGroups ? 'Hide connection group labels' : 'Show connection group labels'} aria-label={showConnectionGroups ? 'Hide connection group labels' : 'Show connection group labels'} aria-pressed={showConnectionGroups} onClick={() => setShowConnectionGroups((value) => !value)}><Tags size={15} /></button>
         <button type="button" title="Zoom out" onClick={() => setZoom(Math.max(.7, zoom - .1))} disabled={zoom <= .7}><ZoomOut size={15} /></button>
         <span>{Math.round(zoom * 100)}%</span>
         <button type="button" title="Zoom in" onClick={() => setZoom(Math.min(1.3, zoom + .1))} disabled={zoom >= 1.3}><ZoomIn size={15} /></button>
         <button type="button" title="Reset zoom" onClick={() => setZoom(.8)}><RotateCcw size={14} /></button>
       </div>
     </header>
+    {showConnectionGroups && <ConnectionGroupSummary groups={createConnectionGroups(layout.edges, layout.nodes)} />}
     <GraphFocusDetail node={focusedNode} edge={focusedEdge} nodeEdges={focusedNodeEdges} nodes={layout.nodes} />
     <div className="application-graph-viewport">
       <div className="application-graph-stage" style={{ width: layout.width * zoom, height: layout.height * zoom }}>
@@ -232,6 +237,7 @@ function ApplicationGraph({ map, coreCategories, zoom, setZoom, onOpenApplicatio
             focused={focus?.type === 'node' && focus.id === node.id}
             connected={Boolean(focus && activeNodeIds.has(node.id))}
             dimmed={Boolean(focus && !activeNodeIds.has(node.id))}
+            showConnectionGroup={showConnectionGroups}
             onFocusChange={(active) => setFocus(active ? { type: 'node', id: node.id } : null)}
             onOpenApplication={onOpenApplication}
           />)}
@@ -241,11 +247,12 @@ function ApplicationGraph({ map, coreCategories, zoom, setZoom, onOpenApplicatio
   </section>
 }
 
-function GraphNode({ node, focused, connected, dimmed, onFocusChange, onOpenApplication }: {
+function GraphNode({ node, focused, connected, dimmed, showConnectionGroup, onFocusChange, onOpenApplication }: {
   node: PositionedNode
   focused: boolean
   connected: boolean
   dimmed: boolean
+  showConnectionGroup: boolean
   onFocusChange: (active: boolean) => void
   onOpenApplication: (application: string) => void
 }) {
@@ -253,6 +260,7 @@ function GraphNode({ node, focused, connected, dimmed, onFocusChange, onOpenAppl
   return <div
     className={`application-graph-node ${node.type}${navigable ? ' navigable' : ''}${focused ? ' focused' : ''}${connected ? ' connected' : ''}${dimmed ? ' dimmed' : ''}`}
     style={{ left: node.x, top: node.y }}
+    data-connection-group={showConnectionGroup ? node.groupLabel : undefined}
     title={`${node.label} · ${node.subtitle}`}
     role="button"
     tabIndex={0}
@@ -316,6 +324,65 @@ function nodeTypeLabel(type: MapNodeType) {
   return 'Application'
 }
 
+function connectionCategory(node: MapNode): ConnectionCategory {
+  const label = node.label.toLowerCase()
+  if (label.includes('vpn network')) return 'VPN Network'
+  if (label.includes('office network')) return 'Office Network'
+  if (label.includes('load balancer')) return 'Load balancer'
+  if (label === 'shared db' || label.includes('shared database')) return 'Shared DB'
+  if (node.type === 'network') return node.label.toLowerCase().includes('vpn') ? 'VPN Network' : 'Office Network'
+  if (node.type === 'core') return 'Infrastructure server'
+  if (node.type === 'shared-database') return 'Shared DB'
+  if (node.type === 'load-balancer') return 'Load balancer'
+  return 'Application'
+}
+
+function nodeConnectionGroup(node: MapNode, edges: MapEdge[]): string {
+  const category = connectionCategory(node)
+  if (node.local) return `Local · ${category}`
+  const directions = new Set(edges.filter((edge) => edge.sourceId === node.id || edge.targetId === node.id).map(({ direction }) => direction))
+  const direction = directions.has('Bidirectional') || (directions.has('Inbound') && directions.has('Outbound'))
+    ? 'Bidirectional'
+    : directions.has('Inbound') ? 'Inbound' : 'Outbound'
+  return `${direction} · ${category}`
+}
+
+function createConnectionGroups(edges: GraphEdge[], nodes: Map<string, PositionedNode>): ConnectionGroup[] {
+  const groupedEntityIds = new Map<string, Set<string>>()
+  for (const edge of edges) {
+    const source = nodes.get(edge.sourceId)
+    const target = nodes.get(edge.targetId)
+    if (!source || !target) continue
+    const peer = edge.direction === 'Inbound' ? source : edge.direction === 'Outbound' ? target : source.local && !target.local ? target : source
+    const category = connectionCategory(peer)
+    const key = `${edge.direction}:${category}`
+    const entityIds = groupedEntityIds.get(key) ?? new Set<string>()
+    entityIds.add(peer.id)
+    groupedEntityIds.set(key, entityIds)
+  }
+  const directionRank: Record<Direction, number> = { Inbound: 0, Bidirectional: 1, Outbound: 2 }
+  const categoryRank: Record<ConnectionCategory, number> = {
+    'VPN Network': 0, 'Office Network': 1, Application: 2, 'Infrastructure server': 3, 'Shared DB': 4, 'Load balancer': 5,
+  }
+  return [...groupedEntityIds.entries()].map(([key, entityIds]) => {
+    const [direction, category] = key.split(':') as [Direction, ConnectionCategory]
+    return { direction, category, entities: entityIds.size }
+  }).sort((left, right) => directionRank[left.direction] - directionRank[right.direction]
+    || categoryRank[left.category] - categoryRank[right.category])
+}
+
+function ConnectionGroupSummary({ groups }: { groups: ConnectionGroup[] }) {
+  return <div className="application-connection-groups" aria-label="Connections grouped by direction and entity type">
+    {(['Inbound', 'Bidirectional', 'Outbound'] as Direction[]).map((direction) => {
+      const directionGroups = groups.filter((group) => group.direction === direction)
+      return <section className={direction.toLowerCase()} key={direction}>
+        <strong>{direction}</strong>
+        <div>{directionGroups.length > 0 ? directionGroups.map((group) => <span key={group.category}>{group.category}<b>{group.entities}</b></span>) : <em>None</em>}</div>
+      </section>
+    })}
+  </div>
+}
+
 function createGraphLayout(map: ApplicationMapData, coreCategories: Map<string, string[]>) {
   const localIds = new Set(map.nodes.filter((node) => node.local).map((node) => node.id))
   const inboundPeerIds = new Set(map.edges.filter((edge) => !localIds.has(edge.sourceId) && localIds.has(edge.targetId)).map((edge) => edge.sourceId))
@@ -332,6 +399,7 @@ function createGraphLayout(map: ApplicationMapData, coreCategories: Map<string, 
       ...node,
       x,
       y: 82 + index * 82,
+      groupLabel: nodeConnectionGroup(node, map.edges),
       subtitle: node.type === 'core'
         ? coreCategories.get(node.label)?.join(' · ') || 'Core infrastructure'
         : node.type === 'server' || node.type === 'shared-database' ? node.ipAddress ?? 'IP unavailable'
