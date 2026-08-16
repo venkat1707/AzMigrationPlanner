@@ -37,15 +37,28 @@ type DependencyRecord = {
 }
 
 export type ImportResult = { importRunId: number; fileName: string; rowsImported: number; warnings: string[] }
+export type DependencyImportOptions = { signal?: AbortSignal; onImportRunCreated?: (importRunId: number) => void }
+
+export class DependencyImportCancelledError extends Error {
+  constructor() {
+    super('Dependency import cancelled.')
+    this.name = 'DependencyImportCancelledError'
+  }
+}
 
 const writeBatchSize = 10_000
 const insertChunkSize = 2_500
 
 type NativeConnection = {
+  threadId?: number
   query: (
     options: { sql: string; values: unknown[]; infileStreamFactory: (requestedPath: string) => NodeJS.ReadableStream },
     callback: (error: Error | null, result: { affectedRows: number; warningStatus: number }) => void,
   ) => void
+}
+
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DependencyImportCancelledError()
 }
 
 const dependencyHeaderContract = {
@@ -192,20 +205,23 @@ export async function validateDependencyFile(filePath: string): Promise<number> 
   return (await inspectDependencyFile(filePath)).rowCount
 }
 
-export async function inspectDependencyFile(filePath: string): Promise<{ rowCount: number; warnings: string[] }> {
+export async function inspectDependencyFile(filePath: string, signal?: AbortSignal): Promise<{ rowCount: number; warnings: string[] }> {
   let rowCount = 0
   const validation: DependencyValidation = { warnings: new Set(), canonicalOrder: true }
   for await (const row of rowsForFile(filePath, validation)) {
+    throwIfCancelled(signal)
     toDependencyRecord(row, 0, rowCount + 2)
     rowCount++
   }
   return { rowCount, warnings: [...validation.warnings] }
 }
 
-export async function importDependencyFile(filePath: string, fileName: string): Promise<ImportResult> {
-  const preflight = await inspectDependencyFile(filePath)
+export async function importDependencyFile(filePath: string, fileName: string, options: DependencyImportOptions = {}): Promise<ImportResult> {
+  const preflight = await inspectDependencyFile(filePath, options.signal)
+  throwIfCancelled(options.signal)
   const [importRunId] = await database('import_runs').insert({ file_name: fileName, status: 'Running' })
   if (importRunId === undefined) throw new Error('MySQL did not return an import run ID.')
+  options.onImportRunCreated?.(importRunId)
   let rowsImported = 0
   let connectionsImported = 0
   const sourceServers = new Set<string>()
@@ -230,17 +246,19 @@ export async function importDependencyFile(filePath: string, fileName: string): 
     if (extname(filePath).toLowerCase() === '.csv') {
       let rowsValidated = 0
       for await (const row of rowsForFile(filePath, validation)) {
+        throwIfCancelled(options.signal)
         const record = toDependencyRecord(row, importRunId, rowsValidated + 2)
         trackRecord(record)
         rowsValidated++
       }
       if (validation.canonicalOrder) {
-        await loadDependencyCsv(filePath, importRunId, rowsValidated)
+        await loadDependencyCsv(filePath, importRunId, rowsValidated, options.signal)
         rowsImported = rowsValidated
         await database('import_runs').where({ id: importRunId }).update({ rows_imported: rowsImported })
       } else {
         const mappedValidation: DependencyValidation = { warnings: new Set(), canonicalOrder: true }
         for await (const row of rowsForFile(filePath, mappedValidation)) {
+          throwIfCancelled(options.signal)
           batch.push(toDependencyRecord(row, importRunId, rowsImported + batch.length + 2))
           if (batch.length >= writeBatchSize) {
             await database.batchInsert('dependency_records', batch, insertChunkSize)
@@ -256,6 +274,7 @@ export async function importDependencyFile(filePath: string, fileName: string): 
       }
     } else {
       for await (const row of rowsForFile(filePath, validation)) {
+        throwIfCancelled(options.signal)
         const record = toDependencyRecord(row, importRunId, rowsImported + batch.length + 2)
         batch.push(record)
         trackRecord(record)
@@ -272,30 +291,48 @@ export async function importDependencyFile(filePath: string, fileName: string): 
         await database('import_runs').where({ id: importRunId }).update({ rows_imported: rowsImported })
       }
     }
+    throwIfCancelled(options.signal)
     await refreshDependencyDirections(importRunId)
+    throwIfCancelled(options.signal)
     await addToDependencySummary({ rowsImported, connectionsImported, sourceServers, destinationServers })
+    throwIfCancelled(options.signal)
     await recordDatabaseServerEvidence([...evidenceCandidates.values()])
     await database('import_runs').where({ id: importRunId }).update({
       status: 'Completed', rows_imported: rowsImported, completed_at: database.fn.now(),
     })
     return { importRunId, fileName, rowsImported, warnings: [...validation.warnings] }
   } catch (error) {
+    const cancelled = options.signal?.aborted || error instanceof DependencyImportCancelledError
     console.error(`Dependency import ${importRunId} failed`, error)
+    if (cancelled) {
+      await database('import_runs').where({ id: importRunId }).update({
+        status: 'Cancelling', error_message: 'Cancelling import operation and rolling back database transactions.',
+      }).catch(() => undefined)
+    }
     await database('dependency_records').where({ import_run_id: importRunId }).delete().catch(() => undefined)
     await refreshDependencySummary().catch(() => undefined)
     await refreshDatabaseServerEvidence().catch(() => undefined)
     await database('import_runs').where({ id: importRunId }).update({
-      status: 'Failed', rows_imported: rowsImported, completed_at: database.fn.now(), error_message: `Import ${importRunId} failed. Review the server log for details.`,
+      status: cancelled ? 'Cancelled' : 'Failed', rows_imported: cancelled ? 0 : rowsImported, completed_at: database.fn.now(),
+      error_message: cancelled ? 'Import cancelled. Database rollback completed.' : `Import ${importRunId} failed. Review the server log for details.`,
     })
+    if (cancelled) throw new DependencyImportCancelledError()
     throw error
   }
 }
 
-async function loadDependencyCsv(filePath: string, importRunId: number, expectedRows: number): Promise<void> {
+async function loadDependencyCsv(filePath: string, importRunId: number, expectedRows: number, signal?: AbortSignal): Promise<void> {
   const absolutePath = resolve(filePath)
   const connection = await database.client.acquireConnection() as NativeConnection
+  let abortHandler: (() => void) | undefined
   try {
+    throwIfCancelled(signal)
     await new Promise<void>((resolveQuery, rejectQuery) => {
+      abortHandler = () => {
+        const threadId = Number(connection.threadId)
+        if (Number.isInteger(threadId) && threadId > 0) void database.raw(`KILL QUERY ${threadId}`).catch(() => undefined)
+      }
+      signal?.addEventListener('abort', abortHandler, { once: true })
       connection.query({
         sql: `
           LOAD DATA LOCAL INFILE ?
@@ -338,13 +375,15 @@ async function loadDependencyCsv(filePath: string, importRunId: number, expected
           return createReadStream(absolutePath)
         },
       }, (error, result) => {
-        if (error) rejectQuery(error)
+        if (signal?.aborted) rejectQuery(new DependencyImportCancelledError())
+        else if (error) rejectQuery(error)
         else if (result.affectedRows !== expectedRows || result.warningStatus > 0) {
           rejectQuery(new Error(`MySQL loaded ${result.affectedRows} of ${expectedRows} rows with ${result.warningStatus} warnings.`))
         } else resolveQuery()
       })
     })
   } finally {
+    if (abortHandler) signal?.removeEventListener('abort', abortHandler)
     await database.client.releaseConnection(connection)
   }
 }

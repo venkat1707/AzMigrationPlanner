@@ -1,5 +1,5 @@
-import { useEffect, useState, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, ScanSearch, Search, Server, ServerOff, Settings2, Shield, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, X, type LucideIcon } from 'lucide-react'
+import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react'
+import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, ScanSearch, Search, Server, ServerOff, Settings2, Shield, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
@@ -166,6 +166,8 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   const [activeUploadFiles, setActiveUploadFiles] = useState<string[]>([])
   const [uploadBaselineId, setUploadBaselineId] = useState(0)
   const [uploadError, setUploadError] = useState('')
+  const [uploadNotice, setUploadNotice] = useState('')
+  const [cancellingImport, setCancellingImport] = useState(false)
   const [uploadResults, setUploadResults] = useState<UploadResult[]>([])
   const [imports, setImports] = useState<ImportRun[]>([])
   const [importKind, setImportKind] = useState<ImportKind>('applications')
@@ -174,6 +176,8 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   const [inspectingSheets, setInspectingSheets] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [databaseStatus, setDatabaseStatus] = useState<'checking' | 'online' | 'offline'>('checking')
+  const uploadAbortController = useRef<AbortController | null>(null)
+  const cancellationRequested = useRef(false)
 
   useEffect(() => {
     const selectPage = () => {
@@ -232,7 +236,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   useEffect(() => {
     if (!uploading || activeUploadFiles.length === 0) return
     const runs = activeUploadFiles.map((fileName) => imports.find((item) => item.id > uploadBaselineId && item.fileName === fileName))
-    if (!runs.every((run) => run && (run.status === 'Completed' || run.status === 'Failed'))) return
+    if (!runs.every((run) => run && (run.status === 'Completed' || run.status === 'Failed' || run.status === 'Cancelled'))) return
     setUploading(false)
     setActiveUploadFiles([])
     setUploadResults([])
@@ -278,6 +282,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   const addFiles = async (incoming: FileList | File[]) => {
     const accepted = Array.from(incoming).filter((file) => /\.(csv|xlsx)$/i.test(file.name))
     setUploadError(accepted.length === incoming.length ? '' : 'Only CSV and XLSX files can be uploaded.')
+    setUploadNotice('')
     const nextFiles = importKind !== 'dependencies' ? accepted.slice(0, 1) : (() => {
       const current = files
       const additions = accepted.filter((file) => !current.some((item) => item.name === file.name && item.size === file.size))
@@ -326,6 +331,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
     setFiles([])
     setUploadResults([])
     setUploadError('')
+    setUploadNotice('')
     setAssessmentSheets([])
     setSelectedSheet('')
   }
@@ -336,6 +342,10 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
     setUploadBaselineId(Math.max(0, ...imports.map((item) => item.id)))
     setUploading(true)
     setUploadError('')
+    setUploadNotice('')
+    cancellationRequested.current = false
+    const uploadController = new AbortController()
+    uploadAbortController.current = uploadController
     let acceptedForBackgroundProcessing = false
     try {
       const endpoint = importKind === 'dependencies'
@@ -352,7 +362,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
           for (const file of files) {
             const body = new FormData()
             body.append('files', file)
-            const response = await apiFetch(endpoint, { method: 'POST', body })
+            const response = await apiFetch(endpoint, { method: 'POST', body, signal: uploadController.signal })
             const filePayload = await uploadResponsePayload(response)
             if (!response.ok) throw new Error(filePayload.error ?? `Upload failed for ${file.name}.`)
             acceptedResults.push(...(filePayload.results ?? []))
@@ -363,7 +373,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
           const body = new FormData()
           body.append('file', files[0]!)
           if (selectedSheet) body.append('sheetName', selectedSheet)
-          const response = await apiFetch(endpoint, { method: 'POST', body })
+          const response = await apiFetch(endpoint, { method: 'POST', body, signal: uploadController.signal })
           payload = await uploadResponsePayload(response)
           responseStatus = response.status
           if (!response.ok && response.status !== 207) throw new Error(payload.error ?? 'Upload failed.')
@@ -376,16 +386,41 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
       acceptedForBackgroundProcessing = importKind === 'dependencies' && responseStatus === 202
       if (responseStatus >= 200 && responseStatus < 300 && nextImportKind[importKind]) setImportKind(nextImportKind[importKind])
     } catch (reason) {
-      setUploadError(reason instanceof Error ? reason.message : 'Upload failed.')
+      if (!cancellationRequested.current) setUploadError(reason instanceof Error ? reason.message : 'Upload failed.')
     } finally {
+      if (uploadAbortController.current === uploadController) uploadAbortController.current = null
       if (!acceptedForBackgroundProcessing) {
         setUploading(false)
         setActiveUploadFiles([])
       }
     }
   }
+
+  const cancelDependencyImport = async () => {
+    if (!dependencyImportActive || importKind !== 'dependencies') return
+    setCancellingImport(true)
+    setUploadError('')
+    cancellationRequested.current = true
+    uploadAbortController.current?.abort()
+    try {
+      const response = await apiFetch('/api/imports/cancel', { method: 'POST' })
+      const payload = await response.json() as { message?: string; error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Unable to cancel the dependency import.')
+      setUploadNotice(payload.message ?? 'Cancelling import operation and rolling back database transactions.')
+      setUploading(false)
+      setActiveUploadFiles([])
+      setFiles([])
+      setUploadResults([])
+      setRefreshKey((value) => value + 1)
+    } catch (reason) {
+      setUploadError(reason instanceof Error ? reason.message : 'Unable to cancel the dependency import.')
+    } finally {
+      setCancellingImport(false)
+    }
+  }
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize))
   const completedImports = imports.filter((item) => item.status === 'Completed').length
+  const dependencyImportActive = uploading || imports.some((item) => item.importType === 'Dependency' && (item.status === 'Running' || item.status === 'Cancelling'))
   const workbookSelected = importKind !== 'dependencies' && /\.xlsx$/i.test(files[0]?.name ?? '')
   const canUpload = files.length > 0 && !uploading && !inspectingSheets && (!workbookSelected || Boolean(selectedSheet))
   const pageTitle = pageDefinitions.find(({ page }) => page === activePage)!
@@ -549,9 +584,10 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             {files.length > 0 && <div className="file-queue">{files.map((file) => <div key={`${file.name}-${file.size}`}><FileSpreadsheet size={18} /><span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(1)} MB</small></span><button type="button" title={`Remove ${file.name}`} onClick={() => setFiles((current) => current.filter((item) => item !== file))}><X size={16} /></button></div>)}</div>}
             {workbookSelected && <label className="sheet-picker">Worksheet<select value={selectedSheet} disabled={inspectingSheets} onChange={(event) => setSelectedSheet(event.target.value)}><option value="">{inspectingSheets ? 'Reading workbook...' : 'Select a worksheet'}</option>{assessmentSheets.map((sheet) => <option key={sheet} value={sheet}>{sheet}</option>)}</select><small>{assessmentSheets.length ? `${assessmentSheets.length} sheets found. Select the sheet containing ${importKind === 'application-mapping' ? 'application mapping' : importKind === 'applications' ? 'application catalog' : 'Server_to_AzureVM'} data.` : 'The workbook will be inspected before import.'}</small></label>}
             {uploadError && <div className="upload-message failed"><AlertCircle size={16} />{uploadError}</div>}
+            {uploadNotice && <div className="upload-message notice" role="status"><CircleStop size={16} />{uploadNotice}</div>}
             {uploading && <ImportProgress fileNames={activeUploadFiles} items={imports} afterId={uploadBaselineId} />}
             {uploadResults.length > 0 && <UploadResults items={uploadResults} />}
-            <div className="import-actions"><span>{files.length ? `${files.length} file${files.length === 1 ? '' : 's'} ready` : 'No files selected'}</span><div>{(importKind === 'applications' || importKind === 'application-mapping') && <button className="secondary-command" type="button" onClick={() => downloadImportTemplate(importKind)}><Download size={15} />Download sample template</button>}<button className="upload-button" type="button" disabled={!canUpload} onClick={uploadFiles}><Upload size={17} />{uploading ? 'Importing...' : inspectingSheets ? 'Reading sheets...' : 'Start import'}</button></div></div>
+            <div className="import-actions"><span>{files.length ? `${files.length} file${files.length === 1 ? '' : 's'} ready` : 'No files selected'}</span><div>{(importKind === 'applications' || importKind === 'application-mapping') && <button className="secondary-command" type="button" onClick={() => downloadImportTemplate(importKind)}><Download size={15} />Download sample template</button>}{importKind === 'dependencies' && dependencyImportActive && <button className="cancel-import-button" type="button" disabled={cancellingImport} onClick={() => void cancelDependencyImport()}><CircleStop size={16} />{cancellingImport ? 'Cancelling...' : 'Cancel import'}</button>}<button className="upload-button" type="button" disabled={!canUpload} onClick={uploadFiles}><Upload size={17} />{uploading ? 'Importing...' : inspectingSheets ? 'Reading sheets...' : 'Start import'}</button></div></div>
           </div>
           <aside className="import-history"><div className="section-heading"><div><p className="eyebrow">History</p><h2>Recent imports</h2></div><span className="import-count">{completedImports} complete</span></div><ImportHistory items={imports} /></aside>
         </section></div>}
@@ -561,7 +597,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
 }
 
 function ImportHistory({ items }: { items: ImportRun[] }) {
-  return <div className="history-list">{items.length === 0 ? <div className="history-empty"><FileSpreadsheet size={22} /><strong>No imports yet</strong><span>Uploaded files will appear here.</span></div> : items.map((item) => <div key={item.id}><span className={`run-status ${item.status.toLowerCase()}`}>{item.status === 'Completed' ? <CheckCircle2 size={16} /> : item.status === 'Failed' ? <AlertCircle size={16} /> : <RefreshCw size={16} />}</span><span><strong>{item.fileName}</strong><small>{item.importType === 'ServerAssessment' ? 'Server Assessment' : item.importType === 'ApplicationMapping' ? 'Application Mapping' : ''}{item.importType !== 'Dependency' ? `${item.sheetName ? ` · ${item.sheetName}` : ''} · ` : ''}{formatNumber.format(item.rowsImported)} rows · {new Date(item.startedAt).toLocaleString()}</small></span><em>{item.status}</em></div>)}</div>
+  return <div className="history-list">{items.length === 0 ? <div className="history-empty"><FileSpreadsheet size={22} /><strong>No imports yet</strong><span>Uploaded files will appear here.</span></div> : items.map((item) => <div key={item.id}><span className={`run-status ${item.status.toLowerCase()}`}>{item.status === 'Completed' ? <CheckCircle2 size={16} /> : item.status === 'Failed' ? <AlertCircle size={16} /> : item.status === 'Cancelled' ? <CircleStop size={16} /> : <RefreshCw size={16} />}</span><span><strong>{item.fileName}</strong><small>{item.importType === 'ServerAssessment' ? 'Server Assessment' : item.importType === 'ApplicationMapping' ? 'Application Mapping' : ''}{item.importType !== 'Dependency' ? `${item.sheetName ? ` · ${item.sheetName}` : ''} · ` : ''}{formatNumber.format(item.rowsImported)} rows · {new Date(item.startedAt).toLocaleString()}</small></span><em>{item.status}</em></div>)}</div>
 }
 
 function ImportProgress({ fileNames, items, afterId }: { fileNames: string[]; items: ImportRun[]; afterId: number }) {
@@ -577,6 +613,8 @@ function ImportProgress({ fileNames, items, afterId }: { fileNames: string[]; it
           ? `${formatNumber.format(run?.rowsImported ?? 0)} records imported`
           : status === 'Failed'
             ? run?.errorMessage ?? 'Import failed.'
+            : status === 'Cancelled'
+              ? run?.errorMessage ?? 'Import cancelled.'
             : 'Uploading file and preparing the import'
       return <article className={statusClass} key={fileName}>
         <span className="progress-status">{status === 'Completed' ? <CheckCircle2 size={16} /> : status === 'Failed' ? <AlertCircle size={16} /> : <RefreshCw className="spin" size={16} />}</span>

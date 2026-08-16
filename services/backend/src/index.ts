@@ -12,7 +12,7 @@ import multer from 'multer'
 import { port } from './config.js'
 import { database } from './db.js'
 import { migrateSchema } from './migrate.js'
-import { importDependencyFile } from './dependency-import.js'
+import { DependencyImportCancelledError, importDependencyFile } from './dependency-import.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
@@ -31,6 +31,7 @@ import { deriveResourceGroup, parseResourceGroupFile, type LandingZoneResourceGr
 import { deriveNetwork, networkKey, parseNetworkFile, type LandingZoneNetworkInput, type DerivedLandingZoneNetwork } from './landing-zone-network.js'
 import { identifyServerEnvironments, validateEnvironmentRules, type AssessmentIdentity, type EnvironmentRuleInput } from './environment-identification.js'
 import { registerAuthentication, requireAdmin } from './auth.js'
+import { saveApplicationTreatmentPlans } from './application-treatment-plans.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -833,18 +834,59 @@ app.get('/api/imports', async (_request, response) => {
 })
 
 let dependencyImportQueue = Promise.resolve()
+let dependencyImportGeneration = 0
+let pendingDependencyImportFiles = 0
+let activeDependencyImportController: AbortController | null = null
+let activeDependencyImportRunId: number | null = null
 
-async function processDependencyUploads(files: Express.Multer.File[]): Promise<void> {
-  for (const file of files) {
-    try {
-      await importDependencyFile(file.path, file.originalname)
-    } catch (error) {
-      console.error(`Queued dependency import failed for ${file.originalname}`, error)
-    } finally {
-      await unlink(file.path).catch(() => undefined)
+async function processDependencyUploads(files: Express.Multer.File[], generation: number): Promise<void> {
+  if (generation !== dependencyImportGeneration) {
+    await Promise.all(files.map((file) => unlink(file.path).catch(() => undefined)))
+    pendingDependencyImportFiles -= files.length
+    return
+  }
+  const controller = new AbortController()
+  activeDependencyImportController = controller
+  let processed = 0
+  try {
+    for (const file of files) {
+      if (generation !== dependencyImportGeneration || controller.signal.aborted) break
+      try {
+        await importDependencyFile(file.path, file.originalname, {
+          signal: controller.signal,
+          onImportRunCreated: (importRunId) => { activeDependencyImportRunId = importRunId },
+        })
+      } catch (error) {
+        if (!(error instanceof DependencyImportCancelledError)) console.error(`Queued dependency import failed for ${file.originalname}`, error)
+      } finally {
+        activeDependencyImportRunId = null
+        await unlink(file.path).catch(() => undefined)
+        pendingDependencyImportFiles -= 1
+        processed += 1
+      }
     }
+  } finally {
+    const skippedFiles = files.slice(processed)
+    await Promise.all(skippedFiles.map((file) => unlink(file.path).catch(() => undefined)))
+    pendingDependencyImportFiles -= skippedFiles.length
+    if (activeDependencyImportController === controller) activeDependencyImportController = null
   }
 }
+
+app.post('/api/imports/cancel', async (_request, response) => {
+  dependencyImportGeneration += 1
+  activeDependencyImportController?.abort()
+  if (activeDependencyImportRunId !== null) {
+    await database('import_runs').where({ id: activeDependencyImportRunId, status: 'Running' }).update({
+      status: 'Cancelling', error_message: 'Cancelling import operation and rolling back database transactions.',
+    }).catch(() => undefined)
+  }
+  response.status(202).json({
+    message: pendingDependencyImportFiles > 0
+      ? 'Cancelling import operation and rolling back database transactions.'
+      : 'No dependency import operation is currently running.',
+  })
+})
 
 app.post('/api/imports', dependencyUpload.array('files', 8), async (request, response) => {
   const files = request.files as Express.Multer.File[] | undefined
@@ -852,8 +894,10 @@ app.post('/api/imports', dependencyUpload.array('files', 8), async (request, res
     response.status(400).json({ error: 'Select at least one CSV or XLSX file.' })
     return
   }
+  const generation = dependencyImportGeneration
+  pendingDependencyImportFiles += files.length
   dependencyImportQueue = dependencyImportQueue
-    .then(() => processDependencyUploads(files))
+    .then(() => processDependencyUploads(files, generation))
     .catch((error) => console.error('Dependency import queue failed.', error))
   response.status(202).json({
     results: files.map((file) => ({ fileName: file.originalname, status: 'Accepted' })),
@@ -946,6 +990,33 @@ app.post('/api/applications', async (request, response) => {
   }
 })
 
+app.put('/api/applications/treatment-plans', async (request, response) => {
+  const requestedItems = Array.isArray(request.body?.items) ? request.body.items : []
+  if (requestedItems.length > 10_000) {
+    response.status(400).json({ error: 'No more than 10,000 application treatment plans can be saved at once.' })
+    return
+  }
+  const seen = new Set<string>()
+  const items: Array<{ name: string; treatmentPlan: string }> = []
+  for (const requestedItem of requestedItems) {
+    const value = requestedItem && typeof requestedItem === 'object' ? requestedItem as Record<string, unknown> : {}
+    const name = String(value.name ?? '').trim()
+    const treatmentPlan = String(value.treatmentPlan ?? '').trim()
+    const normalizedName = name.toLowerCase()
+    if (!name || name.length > 500 || seen.has(normalizedName) || !applicationTreatmentPlans.has(treatmentPlan)) {
+      response.status(400).json({ error: 'Each application must have a unique valid name and treatment plan.' })
+      return
+    }
+    seen.add(normalizedName)
+    items.push({ name, treatmentPlan })
+  }
+  try {
+    response.json({ updated: await saveApplicationTreatmentPlans(database, items) })
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to save application treatment plans.' })
+  }
+})
+
 app.put('/api/applications/:name', async (request, response) => {
   try {
     const item = applicationCatalogInput(request.body)
@@ -987,40 +1058,6 @@ app.delete('/api/applications', async (_request, response) => {
     await transaction('applications').delete()
   })
   response.json({ deleted })
-})
-
-app.put('/api/applications/treatment-plans', async (request, response) => {
-  const requestedItems = Array.isArray(request.body?.items) ? request.body.items : []
-  if (requestedItems.length > 10_000) {
-    response.status(400).json({ error: 'No more than 10,000 application treatment plans can be saved at once.' })
-    return
-  }
-  const seen = new Set<string>()
-  const items: Array<{ name: string; treatmentPlan: string }> = []
-  for (const requestedItem of requestedItems) {
-    const value = requestedItem && typeof requestedItem === 'object' ? requestedItem as Record<string, unknown> : {}
-    const name = String(value.name ?? '').trim()
-    const treatmentPlan = String(value.treatmentPlan ?? '').trim()
-    const normalizedName = name.toLowerCase()
-    if (!name || name.length > 500 || seen.has(normalizedName) || !applicationTreatmentPlans.has(treatmentPlan)) {
-      response.status(400).json({ error: 'Each application must have a unique valid name and treatment plan.' })
-      return
-    }
-    seen.add(normalizedName)
-    items.push({ name, treatmentPlan })
-  }
-  try {
-    await database.transaction(async (transaction) => {
-      const existingNames = new Set((await transaction('applications').whereIn('name', items.map(({ name }) => name)).pluck('name')) as string[])
-      if (existingNames.size !== items.length) throw new Error('One or more applications no longer exist.')
-      for (const item of items) {
-        await transaction('applications').where({ name: item.name }).update({ treatment_plan: item.treatmentPlan, updated_at: database.fn.now() })
-      }
-    })
-    response.json({ updated: items.length })
-  } catch (error) {
-    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to save application treatment plans.' })
-  }
 })
 
 app.get('/api/server-coverage', async (_request, response) => {
