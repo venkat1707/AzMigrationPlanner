@@ -179,6 +179,45 @@ function summarizeMap(map: NonNullable<Awaited<ReturnType<typeof buildApplicatio
   return { servers: localIds.size, inbound, internal, outbound }
 }
 
+async function loadHldContext(
+  connection: Knex | Knex.Transaction,
+  application: string,
+  environment: string,
+  map: NonNullable<Awaited<ReturnType<typeof buildApplicationMap>>>,
+) {
+  const assessmentQuery = connection('server_assessments').where({ application }).select('server_name')
+  if (environment === 'Unspecified') assessmentQuery.where((builder) => builder.whereNull('environment_type').orWhere('environment_type', ''))
+  else assessmentQuery.where('environment_type', environment)
+
+  const [platformLandingZone, applicationTreatment, applicationServers] = await Promise.all([
+    connection('landing_zone_platform').where({ id: 1 }).select({
+      networkConnectivity: 'network_connectivity', networkTopology: 'network_topology', firewall: 'firewall', dns: 'dns',
+      primaryRegion: 'primary_region', secondaryRegion: 'secondary_region', availabilityStrategy: 'availability_strategy',
+      identityDomainController: 'identity_domain_controller', monitoringSolution: 'monitoring_solution', backupSolution: 'backup_solution',
+      endpointProtectionSolution: 'endpoint_protection_solution', siemSolution: 'siem_solution', patchManagement: 'patch_management', notes: 'notes',
+    }).first() as Promise<Record<string, unknown> | undefined>,
+    connection('applications').where({ name: application }).select({ application: 'name', treatmentPlan: 'treatment_plan' }).first() as Promise<{ application: string; treatmentPlan: string | null } | undefined>,
+    assessmentQuery as Promise<Array<{ server_name: string }>>,
+  ])
+  const serverNames = applicationServers.map((row) => row.server_name)
+  const sprintToLandingZoneMappings = serverNames.length
+    ? await connection('sprint_server_landing_zone_mappings').whereIn('server_name', serverNames).select({
+        serverName: 'server_name', sprintSequence: 'sprint_sequence', subscriptionId: 'subscription_id', subscriptionName: 'subscription_name',
+        resourceGroupId: 'resource_group_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet',
+        networkSecurityGroup: 'network_security_group',
+      }).orderBy(['sprint_sequence', 'server_name'])
+    : []
+
+  return {
+    application,
+    environment,
+    platformLandingZone: platformLandingZone ?? null,
+    applicationMap: { application: map.application, environment: map.environment, summary: summarizeMap(map), nodes: map.nodes, edges: map.edges },
+    applicationTreatment: { application, environment, treatmentPlan: applicationTreatment?.treatmentPlan ?? null, servers: serverNames },
+    sprintToLandingZoneMappings,
+  }
+}
+
 function normalizeQuestions(raw: unknown): DesignQuestion[] {
   if (!Array.isArray(raw)) return []
   const questions: DesignQuestion[] = []
@@ -220,7 +259,7 @@ const inputMessage = (role: string, text: string): InputMessage => ({ type: 'mes
 
 const responseContract = [
   'You are generating a High-Level Design (HLD) document for hosting an application on Microsoft Azure.',
-  'Base the design strictly on the supplied application map.',
+  'Base the design strictly on the supplied HLD context: platform landing zone, application map, application treatment, and sprint-to-landing-zone mappings.',
   'Reply with a SINGLE JSON object and nothing else — no markdown code fences, no commentary.',
   'If you need clarification before you can produce the document, reply exactly with:',
   '{"status":"needs-input","message":"<short reason>","questions":[{"id":"q1","prompt":"<question>","kind":"single-choice|multi-choice|boolean|multiline|text","options":["..."],"required":true}]}',
@@ -230,6 +269,10 @@ const responseContract = [
   'Executive Summary, Current State, Target Azure Architecture, Networking, Security & Identity, Data & Storage, Availability & Resiliency, Migration Approach, Risks & Considerations.',
   'Under each section use short paragraphs, bullet lists ("- "), numbered steps ("1. ") and GitHub-style Markdown tables where they aid clarity. Keep the JSON valid and do not wrap it in code fences.',
 ].join('\n')
+
+export function formatHldContextMessage(context: Record<string, unknown>): string {
+  return ['Task: Produce a design document.', 'HLD context (JSON):', JSON.stringify(context)].join('\n')
+}
 
 function extractAssistantText(data: Record<string, unknown>): string {
   const parts: string[] = []
@@ -412,6 +455,9 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
     ? await buildApplicationMap(connection, input.application, input.environment)
     : null
   if (input.artifactType === 'design-document' && !map) throw new DesignDocumentError('No servers match that application and environment, so a design document cannot be produced.', 404)
+  const hldContext = map && input.application && input.environment
+    ? await loadHldContext(connection, input.application, input.environment, map)
+    : null
   const savedPlan = input.artifactType === 'design-document' ? null : await connection('migration_wave_plans').where({ id: 1 }).first('plan_json') as { plan_json?: string } | undefined
   const plan = savedPlan?.plan_json ? JSON.parse(savedPlan.plan_json) as { waves?: Array<{ sprints?: Array<{ sequence?: number }> }> } : null
   const selectedSprint = input.sprintSequence
@@ -435,10 +481,9 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
         : 'Use sections: Objective and Scope, Preconditions, Roles and Contacts, Migration Steps, Validation, Rollback, and Completion Criteria.',
     ].join('\n')
     messages.push(inputMessage('system', artifactInstructions))
-    messages.push(inputMessage('user', [
-      `Task: Produce a ${input.artifactType.replace('-', ' ')}.`,
-      ...(map ? [`Application: ${input.application}`, `Environment: ${input.environment}`, 'Application map (JSON):', JSON.stringify({ application: map.application, environment: map.environment, summary: summarizeMap(map), nodes: map.nodes, edges: map.edges })] : ['Migration plan data (JSON):', JSON.stringify(input.artifactType === 'migration-runsheet' ? selectedSprint : plan)]),
-    ].join('\n')))
+    messages.push(inputMessage('user', hldContext
+      ? formatHldContextMessage(hldContext)
+      : [`Task: Produce a ${input.artifactType.replace('-', ' ')}.`, 'Migration plan data (JSON):', JSON.stringify(input.artifactType === 'migration-runsheet' ? selectedSprint : plan)].join('\n')))
   } else {
     const answersText = input.answers.length
       ? input.answers.map((answer) => `- ${answer.id}: ${answer.response}`).join('\n')
