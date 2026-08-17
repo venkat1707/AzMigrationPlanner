@@ -33,7 +33,8 @@ test('Foundry request uses the stable published endpoint without pinning an agen
 })
 
 test('HLD Word document uses a restrained title and embeds the architecture diagram', async () => {
-  const bytes = Buffer.from(await buildDocx('Billing High-Level Design', '## Executive Summary\nDesign summary.', context, { author: 'Alex Architect', reviewers: ['Cloud Review Board'], version: '0.3' }), 'base64')
+  const markdown = '## Executive Summary\nDesign summary.\n## Target Azure Architecture\n```mermaid\nflowchart LR\n  VM --> DB\n```\nArchitecture narrative.'
+  const bytes = Buffer.from(await buildDocx('Billing High-Level Design', markdown, context, { author: 'Alex Architect', reviewers: ['Cloud Review Board'], version: '0.3' }), 'base64')
   assert.equal(bytes.subarray(0, 2).toString(), 'PK')
   const zip = await JSZip.loadAsync(bytes)
   const styles = await zip.file('word/styles.xml')!.async('string')
@@ -49,15 +50,17 @@ test('HLD Word document uses a restrained title and embeds the architecture diag
 
   assert.match(styles, /w:style w:type="paragraph" w:styleId="HldTitle"[\s\S]*?<w:sz w:val="40"\/>/)
   assert.match(document, /Document title[\s\S]*Alex Architect[\s\S]*Cloud Review Board[\s\S]*0\.3/)
-  assert.match(document, /TOC \\h \\o &quot;1-3&quot;/)
+  assert.match(document, /Table of Contents[\s\S]*Architecture Overview[\s\S]*Executive Summary[\s\S]*Target Azure Architecture/)
   assert.match(document, /w:pStyle w:val="Heading1"\/><\/w:pPr><w:r><w:t xml:space="preserve">Executive Summary/)
+  assert.doesNotMatch(document, /mermaid|flowchart LR|VM --&gt; DB|w:fldChar|w:instrText/i)
   assert.match(document, /<w:drawing>/)
   assert.match(relationships, new RegExp(`relationships/image[^>]+media/${imageFile.split('/').pop()!.replace('.', '\\.')}`))
   assert.match(relationships, /relationships\/footer/)
-  assert.match(settings, /<w:updateFields\/>/)
-  assert.match(footer, /Version 0\.3 · Page [\s\S]*>PAGE<[\s\S]*>NUMPAGES</)
+  assert.doesNotMatch(settings, /updateFields/)
+  assert.match(footer, /High-Level Design · Version 0\.3/)
+  assert.doesNotMatch(footer, /w:fldChar|w:instrText|PAGE|NUMPAGES/)
   assert.match(core, /<dc:creator>Alex Architect<\/dc:creator>/)
-  assert.equal(metadata.width, 1200)
-  assert.equal(metadata.height, 675)
+  assert.equal(metadata.width, 1000)
+  assert.equal(metadata.height, 1050)
   assert.ok(image.byteLength > 10_000)
 })

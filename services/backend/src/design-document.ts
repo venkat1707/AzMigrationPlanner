@@ -2,7 +2,7 @@ import type { Knex } from 'knex'
 import { ManagedIdentityCredential } from '@azure/identity'
 import JSZip from 'jszip'
 import sharp from 'sharp'
-import { AlignmentType, BorderStyle, Document as WordDocument, Footer, HeadingLevel, ImageRun, Packer, PageBreak, PageNumber, Paragraph, ShadingType, Table, TableCell, TableOfContents, TableRow, TextRun, WidthType } from 'docx'
+import { AlignmentType, BorderStyle, Document as WordDocument, Footer, HeadingLevel, ImageRun, Packer, PageBreak, Paragraph, ShadingType, Table, TableCell, TableRow, TextRun, WidthType } from 'docx'
 import { buildApplicationMap } from './application-map.js'
 
 const defaultApiVersion = 'v1'
@@ -275,6 +275,7 @@ const responseContract = [
   'Write an architecture decision document, not a generic assessment report. Use "## " for each major section and "### " for sub-sections, in this order:',
   'Executive Summary, Purpose and Scope, Requirements and Assumptions, Current-State Architecture, Architecture Principles and Decisions, Target Azure Architecture, Component Design, Networking, Security and Identity, Data and Storage, Availability and Resiliency, Monitoring and Operations, Migration Approach, Risks and Mitigations, Open Decisions, and Appendices.',
   'In Target Azure Architecture, include an Architecture Overview that explains every component, trust boundary, connectivity flow, treatment, and landing-zone placement represented by the architecture diagram embedded by the document renderer.',
+  'Do not include Mermaid, PlantUML, ASCII diagrams, fenced diagram source, or image-generation instructions. The application renders the architecture diagram separately from the supplied context.',
   'For each design area, distinguish supplied facts from assumptions, state the selected design, explain the rationale, and identify unresolved decisions. Do not fabricate Azure services, regions, controls, owners, recovery objectives, or compliance requirements.',
   'Under each section use short paragraphs, bullet lists ("- "), numbered steps ("1. ") and GitHub-style Markdown tables where they aid clarity. Keep the JSON valid and do not wrap it in code fences.',
 ].join('\n')
@@ -474,17 +475,24 @@ async function buildArchitecturePng(context: Record<string, unknown>): Promise<B
   const environment = svgText(context.environment, 24)
   const map = asRecord(context.applicationMap)
   const nodes = Array.isArray(map.nodes) ? map.nodes.map(asRecord) : []
-  const localNodes = nodes.filter((node) => node.local === true).slice(0, 6)
+  const edges = Array.isArray(map.edges) ? map.edges.map(asRecord) : []
+  const localNodes = nodes.filter((node) => node.local === true).slice(0, 5)
   const peerNodes = nodes.filter((node) => node.local !== true).slice(0, 5)
-  const mappings = Array.isArray(context.sprintToLandingZoneMappings) ? context.sprintToLandingZoneMappings.map(asRecord).slice(0, 6) : []
+  const mappings = Array.isArray(context.sprintToLandingZoneMappings) ? context.sprintToLandingZoneMappings.map(asRecord).slice(0, 5) : []
   const platform = asRecord(context.platformLandingZone)
   const treatment = asRecord(context.applicationTreatment)
-  const list = (items: Record<string, unknown>[], x: number, startY: number, label: (item: Record<string, unknown>) => string, fill: string) => items.map((item, index) => {
-    const y = startY + index * 55
-    return `<rect x="${x}" y="${y}" width="270" height="42" rx="5" fill="${fill}" stroke="#9fb3c8"/><text x="${x + 14}" y="${y + 26}" class="item">${svgText(label(item), 38)}</text>`
+  const list = (items: Record<string, unknown>[], x: number, startY: number, label: (item: Record<string, unknown>) => string, fill: string, maxLabelLength = 48) => items.map((item, index) => {
+    const itemX = x + (index % 2) * 450
+    const y = startY + Math.floor(index / 2) * 58
+    return `<rect x="${itemX}" y="${y}" width="400" height="44" rx="5" fill="${fill}" stroke="#91a9bd"/><text x="${itemX + 16}" y="${y + 28}" class="item">${svgText(label(item), maxLabelLength)}</text>`
   }).join('')
+  const peerLabel = (node: Record<string, unknown>) => {
+    const nodeId = String(node.id ?? '')
+    const ports = [...new Set(edges.filter((edge) => edge.sourceId === nodeId || edge.targetId === nodeId).map((edge) => Number(edge.port)).filter((port) => Number.isInteger(port) && port > 0))].slice(0, 4)
+    return `${String(node.label ?? node.id ?? 'Connected service')}${ports.length ? ` · TCP ${ports.join(', ')}` : ''}`
+  }
   const platformLine = [platform.primaryRegion, platform.networkTopology, platform.firewall].filter(Boolean).map(String).join(' · ') || 'Platform landing-zone controls not specified'
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675"><style>text{font-family:Arial,sans-serif;fill:#24384d}.title{font-size:25px;font-weight:700}.subtitle{font-size:14px;fill:#587086}.heading{font-size:15px;font-weight:700}.item{font-size:13px}.small{font-size:12px;fill:#587086}</style><rect width="1200" height="675" fill="#f8fafc"/><rect x="30" y="25" width="1140" height="76" rx="7" fill="#e8f1f8" stroke="#9fb8cc"/><text x="55" y="58" class="title">${application} · ${environment} high-level architecture</text><text x="55" y="84" class="subtitle">${svgText(platformLine, 120)}</text><text x="55" y="135" class="heading">Connected systems</text><text x="465" y="135" class="heading">Application workload</text><text x="875" y="135" class="heading">Azure landing-zone targets</text><rect x="430" y="112" width="340" height="500" rx="8" fill="#eef5fb" stroke="#8daeca"/><path d="M340 355 H420" stroke="#3979a8" stroke-width="3" marker-end="url(#arrow)"/><path d="M780 355 H860" stroke="#3979a8" stroke-width="3" marker-end="url(#arrow)"/><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#3979a8"/></marker></defs>${list(peerNodes, 55, 165, (node) => String(node.label ?? node.id ?? 'Connected service'), '#ffffff')}${list(localNodes, 465, 165, (node) => String(node.label ?? node.id ?? 'Application server'), '#dcecf8')}${list(mappings, 875, 165, (mapping) => `${mapping.serverName ?? 'Server'} → ${mapping.subscriptionName ?? 'Unmapped'} / ${mapping.subnet ?? 'No subnet'}`, '#e5f2e9')}<rect x="430" y="625" width="340" height="30" rx="4" fill="#d9ece4"/><text x="600" y="645" text-anchor="middle" class="small">Treatment: ${svgText(treatment.treatmentPlan || 'Not specified', 32)}</text><text x="55" y="640" class="small">${peerNodes.length}${nodes.length > peerNodes.length + localNodes.length ? '+' : ''} connected nodes shown</text><text x="875" y="640" class="small">${mappings.length} mapped target${mappings.length === 1 ? '' : 's'} shown</text></svg>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1050" viewBox="0 0 1000 1050"><style>text{font-family:Arial,sans-serif;fill:#24384d}.title{font-size:27px;font-weight:700}.subtitle{font-size:17px;fill:#526b80}.heading{font-size:19px;font-weight:700}.item{font-size:17px}.small{font-size:15px;fill:#526b80}</style><rect width="1000" height="1050" fill="#f8fafc"/><rect x="35" y="25" width="930" height="88" rx="7" fill="#e8f1f8" stroke="#93aec4"/><text x="60" y="62" class="title">${application} · ${environment} high-level architecture</text><text x="60" y="91" class="subtitle">${svgText(platformLine, 100)}</text><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#3979a8"/></marker></defs><rect x="35" y="140" width="930" height="240" rx="8" fill="#ffffff" stroke="#a8b9c8"/><text x="60" y="174" class="heading">1 · Connected systems and infrastructure</text>${list(peerNodes, 75, 195, peerLabel, '#f5f8fa')}<path d="M500 380 V420" stroke="#3979a8" stroke-width="4" marker-end="url(#arrow)"/><rect x="35" y="425" width="930" height="240" rx="8" fill="#eaf3fa" stroke="#7fa5c3"/><text x="60" y="460" class="heading">2 · Application workload · Treatment: ${svgText(treatment.treatmentPlan || 'Not specified', 32)}</text>${list(localNodes, 75, 483, (node) => String(node.label ?? node.id ?? 'Application server'), '#d7eaf7')}<path d="M500 665 V705" stroke="#3979a8" stroke-width="4" marker-end="url(#arrow)"/><rect x="35" y="710" width="930" height="260" rx="8" fill="#edf7f0" stroke="#83ad91"/><text x="60" y="745" class="heading">3 · Azure landing-zone placement</text>${list(mappings, 75, 768, (mapping) => `${mapping.serverName ?? 'Server'} → ${mapping.subscriptionName ?? 'Unmapped'} / ${mapping.subnet ?? 'No subnet'}`, '#dff0e4', 40)}<text x="500" y="1025" text-anchor="middle" class="small">Arrows show the high-level flow from dependencies through the workload to its Azure target.</text></svg>`
   return sharp(Buffer.from(svg)).png().toBuffer()
 }
 
@@ -517,6 +525,11 @@ function markdownToWordChildren(markdown: string): Array<Paragraph | Table> {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!.replace(/\s+$/, '')
     const trimmed = line.trim()
+    if (/^```\s*mermaid\s*$/i.test(trimmed)) {
+      while (index + 1 < lines.length && !/^```\s*$/.test(lines[index + 1]!.trim())) index += 1
+      if (index + 1 < lines.length) index += 1
+      continue
+    }
     if (!trimmed || /^([-*_])(\s*\1){2,}$/.test(trimmed)) continue
     if (trimmed.startsWith('|') && index + 1 < lines.length && isTableSeparator(lines[index + 1]!)) {
       const rows = [parseTableRow(trimmed)]
@@ -548,6 +561,19 @@ function markdownToWordChildren(markdown: string): Array<Paragraph | Table> {
   return children
 }
 
+function staticTableOfContents(markdown: string, includeArchitecture: boolean): Paragraph[] {
+  const entries = markdown.replace(/\r\n/g, '\n').split('\n').flatMap((line) => {
+    const match = /^(#{2,4})\s+(.*)$/.exec(line.trim())
+    if (!match) return []
+    return [{ level: match[1]!.length - 1, title: match[2]!.replace(/[*_`]/g, '').trim() }]
+  })
+  const allEntries = includeArchitecture ? [{ level: 1, title: 'Architecture Overview' }, ...entries] : entries
+  return allEntries.map(({ level, title }) => new Paragraph({
+    spacing: { after: 80 }, indent: { left: (level - 1) * 360 },
+    children: [new TextRun({ text: `${level === 1 ? '' : '• '}${title}`, bold: level === 1, color: level === 1 ? '24384D' : '526B80' })],
+  }))
+}
+
 export async function buildDocx(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata = { author: 'To be confirmed', reviewers: ['Architecture Review Board (TBC)'], version: '0.1' }): Promise<string> {
   const application = firstString(hldContext?.application) ?? 'Application'
   const environment = firstString(hldContext?.environment) ?? 'Environment not specified'
@@ -559,7 +585,7 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
     new TableCell({ shading: { type: ShadingType.CLEAR, fill: 'E8F1F8' }, width: { size: 24, type: WidthType.PERCENTAGE }, children: [new Paragraph({ children: [new TextRun({ text: label!, bold: true })] })] }),
     new TableCell({ width: { size: 76, type: WidthType.PERCENTAGE }, children: [new Paragraph(value!)] }),
   ] }))
-  const children: Array<Paragraph | Table | TableOfContents> = [
+  const children: Array<Paragraph | Table> = [
     new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 900, after: 160 }, children: [new TextRun({ text: 'HIGH-LEVEL DESIGN', bold: true, color: '2F6F91', size: 24 })] }),
     new Paragraph({ alignment: AlignmentType.CENTER, style: 'HldTitle', children: [new TextRun(title)] }),
     new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 650 }, children: [new TextRun({ text: `${application} · ${environment}`, color: '587086', size: 24 })] }),
@@ -567,13 +593,13 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
     new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 520 }, children: [new TextRun({ text: 'Draft for architecture review. Validate assumptions and open decisions before approval.', italics: true, color: '6A7C8D' })] }),
     new Paragraph({ children: [new PageBreak()] }),
     new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Table of Contents' }),
-    new TableOfContents('Table of Contents', { hyperlink: true, headingStyleRange: '1-3' }),
+    ...staticTableOfContents(markdown, Boolean(hldContext)),
     new Paragraph({ children: [new PageBreak()] }),
   ]
   if (hldContext) {
     children.push(
       new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Architecture Overview' }),
-      new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ type: 'png', data: await buildArchitecturePng(hldContext), transformation: { width: 630, height: 354 }, altText: { title: 'High-level architecture diagram', description: 'Application workload, connected systems, and Azure landing-zone placement', name: 'architecture.png' } })] }),
+      new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ type: 'png', data: await buildArchitecturePng(hldContext), transformation: { width: 590, height: 620 }, altText: { title: 'High-level architecture diagram', description: 'Application workload, connected systems, and Azure landing-zone placement', name: 'architecture.png' } })] }),
       new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'Figure 1. Application workload, connected systems, and Azure landing-zone placement.', italics: true, color: '587086' })] }),
       new Paragraph({ children: [new PageBreak()] }),
     )
@@ -581,11 +607,11 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
   children.push(...markdownToWordChildren(markdown))
   const document = new WordDocument({
     title, creator: metadata.author, lastModifiedBy: 'Cloud Accelerate Factory', revision: Number.parseInt(metadata.version, 10) || 1,
-    description: `${application} ${environment} High-Level Design`, features: { updateFields: true },
+    description: `${application} ${environment} High-Level Design`,
     styles: { paragraphStyles: [{ id: 'HldTitle', name: 'HLD Title', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { bold: true, color: '1F3864', size: 40 }, paragraph: { spacing: { before: 120, after: 120 } } }] },
     sections: [{
       properties: { page: { margin: { top: 1440, right: 1440, bottom: 1440, left: 1440, footer: 720 } } },
-      footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `High-Level Design · Version ${metadata.version} · Page `, color: '6A7C8D', size: 18 }), new TextRun({ children: [PageNumber.CURRENT] }), new TextRun(' of '), new TextRun({ children: [PageNumber.TOTAL_PAGES] })] })] }) },
+      footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `High-Level Design · Version ${metadata.version}`, color: '6A7C8D', size: 18 })] })] }) },
       children,
     }],
   })
