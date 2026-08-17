@@ -543,6 +543,61 @@ function buildArchitectureSvg(zones: DiagramZone[], subtitle: string): { svg: st
   return { svg, width, height }
 }
 
+function buildApplicationMapSvg(context: Record<string, unknown>): { svg: string; width: number; height: number } | null {
+  const map = asRecord(context.applicationMap)
+  const nodes = Array.isArray(map.nodes) ? map.nodes.map(asRecord) : []
+  const edges = Array.isArray(map.edges) ? map.edges.map(asRecord) : []
+  if (!nodes.length) return null
+  const labelOf = new Map(nodes.map((node) => [String(node.id ?? ''), String(node.label ?? node.id ?? 'Node')]))
+  const leftNodes = nodes.filter((node) => node.local === true && node.type !== 'shared-database').slice(0, 7)
+  const leftIds = new Set(leftNodes.map((node) => String(node.id ?? '')))
+  const rightNodes = nodes.filter((node) => !leftIds.has(String(node.id ?? ''))).slice(0, 9)
+  const width = 1000
+  const boxW = 300
+  const boxH = 40
+  const vGap = 16
+  const topY = 118
+  const leftX = 40
+  const rightX = width - 40 - boxW
+  const posLeft = new Map(leftNodes.map((node, index) => [String(node.id ?? ''), { x: leftX, y: topY + index * (boxH + vGap) }]))
+  const posRight = new Map(rightNodes.map((node, index) => [String(node.id ?? ''), { x: rightX, y: topY + index * (boxH + vGap) }]))
+  const rows = Math.max(leftNodes.length, rightNodes.length, 1)
+  const height = topY + rows * (boxH + vGap) + 30
+  const parts: string[] = []
+  const seen = new Set<string>()
+  for (const edge of edges) {
+    const source = String(edge.sourceId ?? '')
+    const target = String(edge.targetId ?? '')
+    let a: { x: number; y: number } | undefined
+    let b: { x: number; y: number } | undefined
+    if (posLeft.has(source) && posRight.has(target)) { a = posLeft.get(source); b = posRight.get(target) }
+    else if (posLeft.has(target) && posRight.has(source)) { a = posLeft.get(target); b = posRight.get(source) }
+    if (!a || !b) continue
+    const key = `${a.y}-${b.y}-${edge.port ?? ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const x1 = a.x + boxW
+    const y1 = a.y + boxH / 2
+    const x2 = b.x
+    const y2 = b.y + boxH / 2
+    const midX = (x1 + x2) / 2
+    parts.push(`<path d="M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}" fill="none" stroke="#A9BED2" stroke-width="1.5"/>`)
+    const port = Number.isInteger(Number(edge.port)) && Number(edge.port) > 0 ? `TCP ${Number(edge.port)}` : ''
+    if (port) {
+      const my = (y1 + y2) / 2
+      parts.push(`<rect x="${midX - 32}" y="${my - 11}" width="64" height="18" rx="4" fill="#EAF2FB"/><text x="${midX}" y="${my + 2}" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="11" fill="#2E6FBE">${svgEscape(port)}</text>`)
+    }
+  }
+  const drawBox = (node: Record<string, unknown>, pos: { x: number; y: number }, fill: string) => {
+    parts.push(`<rect x="${pos.x}" y="${pos.y}" width="${boxW}" height="${boxH}" rx="7" fill="${fill}" stroke="#7FA5C3"/><text x="${pos.x + 14}" y="${pos.y + 25}" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#22384A">${svgEscape(architectureTruncate(labelOf.get(String(node.id ?? '')), 34))}</text>`)
+  }
+  leftNodes.forEach((node) => drawBox(node, posLeft.get(String(node.id ?? ''))!, '#DCEAF9'))
+  rightNodes.forEach((node) => drawBox(node, posRight.get(String(node.id ?? ''))!, '#FFFFFF'))
+  const header = `<text x="${leftX}" y="46" font-family="Segoe UI, Arial, sans-serif" font-size="26" font-weight="700" fill="#123F52">Application dependency map</text><text x="${leftX}" y="74" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#5A7183">Application servers on the left connect to the systems and data on the right.</text><text x="${leftX}" y="104" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#1F5FA6">Application servers</text><text x="${rightX}" y="104" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#1F5FA6">Connected systems and data</text>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="#FFFFFF"/>${header}${parts.join('')}</svg>`
+  return { svg, width, height }
+}
+
 type DiagramZone = { name: string; components: string[] }
 type DiagramFlow = { from: string; to: string; detail?: string }
 export type ArchitectureDiagram = { zones: DiagramZone[]; flows: DiagramFlow[] }
@@ -621,7 +676,15 @@ async function renderArchitectureDiagram(diagram: ArchitectureDiagram, context: 
     const connected = nodes.filter((node) => node.local !== true).length
     const connections = Array.isArray(map.edges) ? map.edges.length : 0
     blocks.push(new Paragraph({ spacing: { before: 200, after: 90 }, children: [new TextRun({ text: 'Application map', bold: true, color: '14315C', size: 23 })] }))
-    blocks.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: `The application map for ${application} in ${environment} includes ${servers} application server${servers === 1 ? '' : 's'}, ${connected} connected system${connected === 1 ? '' : 's'}, and ${connections} recorded connection${connections === 1 ? '' : 's'}. The diagram above groups these into the platform hub, the application spoke, and the Azure landing-zone targets.`, color: '3A5261', size: 20 })] }))
+    blocks.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: `The application map for ${application} in ${environment} includes ${servers} application server${servers === 1 ? '' : 's'}, ${connected} connected system${connected === 1 ? '' : 's'}, and ${connections} recorded connection${connections === 1 ? '' : 's'}. The diagram below shows each application server and the systems and data it connects to.`, color: '3A5261', size: 20 })] }))
+    const mapVisual = buildApplicationMapSvg(context!)
+    if (mapVisual) {
+      const mapFallback = await sharp(Buffer.from(mapVisual.svg)).png().toBuffer()
+      const mapWidth = 620
+      const mapHeight = Math.round((mapWidth * mapVisual.height) / mapVisual.width)
+      blocks.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [new ImageRun({ type: 'svg', data: Buffer.from(mapVisual.svg), transformation: { width: mapWidth, height: mapHeight }, fallback: { type: 'png', data: mapFallback } })] }))
+      blocks.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 160 }, children: [new TextRun({ text: 'Figure 2. Application dependency map \u2014 application servers and the systems they connect to.', italics: true, color: '607985', size: 18 })] }))
+    }
   }
   return blocks
 }
