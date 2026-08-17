@@ -2,7 +2,7 @@ import type { Knex } from 'knex'
 import { ManagedIdentityCredential } from '@azure/identity'
 import JSZip from 'jszip'
 import sharp from 'sharp'
-import { AlignmentType, BorderStyle, Document as WordDocument, Footer, HeadingLevel, LeaderType, Packer, PageBreak, Paragraph, ShadingType, Tab, TabStopType, Table, TableCell, TableRow, TextRun, WidthType } from 'docx'
+import { AlignmentType, BorderStyle, Document as WordDocument, Footer, HeadingLevel, ImageRun, LeaderType, Packer, PageBreak, Paragraph, ShadingType, Tab, TabStopType, Table, TableCell, TableRow, TextRun, WidthType } from 'docx'
 import { buildApplicationMap } from './application-map.js'
 
 const defaultApiVersion = 'v1'
@@ -498,19 +498,50 @@ async function buildArchitecturePng(context: Record<string, unknown>): Promise<B
   return sharp(Buffer.from(svg)).flatten({ background: '#f8fafc' }).png().toBuffer()
 }
 
-function architectureChip(text: string | undefined, fill: string): TableCell {
-  return new TableCell({ width: { size: 50, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill }, children: [new Paragraph({ spacing: { before: 40, after: 40 }, children: text ? [new TextRun({ text, color: '243E4A', size: 19 })] : [] })] })
-}
+const architectureTruncate = (value: unknown, max: number) => { const text = String(value ?? '').trim(); return text.length > max ? `${text.slice(0, max - 1)}\u2026` : text }
+const svgEscape = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-function architectureLayer(heading: string, items: string[], headerFill: string, chipFill: string): Table {
-  const rows: TableRow[] = [new TableRow({ children: [new TableCell({ columnSpan: 2, shading: { type: ShadingType.CLEAR, fill: headerFill }, children: [new Paragraph({ spacing: { before: 50, after: 50 }, children: [new TextRun({ text: heading, bold: true, color: 'FFFFFF', size: 21 })] })] })] })]
-  const safe = items.length ? items : ['None identified']
-  for (let index = 0; index < safe.length; index += 2) rows.push(new TableRow({ children: [architectureChip(safe[index]!, chipFill), architectureChip(safe[index + 1], chipFill)] }))
-  const divider = { style: BorderStyle.SINGLE, size: 2, color: 'FFFFFF' }
-  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE }, insideHorizontal: divider, insideVertical: divider }, rows })
+function buildArchitectureSvg(zones: DiagramZone[], subtitle: string): { svg: string; width: number; height: number } {
+  const width = 1000
+  const pad = 30
+  const headerH = 42
+  const pillH = 40
+  const rowH = pillH + 10
+  const colGap = 24
+  const arrowH = 34
+  const pillW = (width - pad * 2 - colGap) / 2
+  const fills = ['#1F5FA6', '#14315C', '#2E6FBE', '#1F5FA6']
+  const parts: string[] = []
+  let y = 96
+  zones.forEach((zone, zoneIndex) => {
+    const items = zone.components.length ? zone.components : ['None identified']
+    const rows = Math.ceil(items.length / 2)
+    const panelH = headerH + rows * rowH + 8
+    const fill = fills[zoneIndex % fills.length]
+    parts.push(`<rect x="${pad}" y="${y}" width="${width - pad * 2}" height="${panelH}" rx="10" fill="#F5F8FC" stroke="#CBD9E8"/>`)
+    parts.push(`<path d="M ${pad + 10} ${y} H ${width - pad - 10} A 10 10 0 0 1 ${width - pad} ${y + 10} V ${y + headerH} H ${pad} V ${y + 10} A 10 10 0 0 1 ${pad + 10} ${y} Z" fill="${fill}"/>`)
+    parts.push(`<text x="${pad + 18}" y="${y + 27}" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="700" fill="#FFFFFF">${svgEscape(zone.name)}</text>`)
+    items.forEach((component, componentIndex) => {
+      const col = componentIndex % 2
+      const row = Math.floor(componentIndex / 2)
+      const px = pad + 14 + col * (pillW + colGap)
+      const py = y + headerH + 8 + row * rowH
+      parts.push(`<rect x="${px}" y="${py}" width="${pillW - 12}" height="${pillH}" rx="7" fill="#FFFFFF" stroke="#9FB6CC"/>`)
+      parts.push(`<text x="${px + 14}" y="${py + 26}" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#22384A">${svgEscape(architectureTruncate(component, 46))}</text>`)
+    })
+    y += panelH
+    if (zoneIndex < zones.length - 1) {
+      const ax = width / 2
+      parts.push(`<path d="M ${ax} ${y + 3} V ${y + arrowH - 12}" stroke="#2E6FBE" stroke-width="4"/>`)
+      parts.push(`<path d="M ${ax - 9} ${y + arrowH - 14} L ${ax + 9} ${y + arrowH - 14} L ${ax} ${y + arrowH - 2} Z" fill="#2E6FBE"/>`)
+      y += arrowH
+    }
+  })
+  const height = y + pad
+  const title = `<text x="${pad}" y="46" font-family="Segoe UI, Arial, sans-serif" font-size="26" font-weight="700" fill="#123F52">Target Azure architecture</text><text x="${pad}" y="74" font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#5A7183">${svgEscape(subtitle)}</text>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="#FFFFFF"/>${title}${parts.join('')}</svg>`
+  return { svg, width, height }
 }
-
-const architectureArrow = () => new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 40, after: 40 }, children: [new TextRun({ text: '▼', color: '2E6FBE', size: 30, bold: true })] })
 
 type DiagramZone = { name: string; components: string[] }
 type DiagramFlow = { from: string; to: string; detail?: string }
@@ -566,19 +597,32 @@ function flowsTable(flows: DiagramFlow[]): Table {
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders: { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border }, rows })
 }
 
-function renderArchitectureDiagram(diagram: ArchitectureDiagram): Array<Paragraph | Table> {
-  const headerFills = ['1F5FA6', '14315C', '2E6FBE']
-  const chipFills = ['F4F8FD', 'EAF2FB', 'EFF5FC']
-  const blocks: Array<Paragraph | Table> = [new Paragraph({ spacing: { after: 140 }, children: [new TextRun({ text: 'Read the layers from top to bottom. Each blue bar is a group of components, and the arrows show how they connect.', color: '607985', size: 19 })] })]
-  diagram.zones.forEach((zone, index) => {
-    blocks.push(architectureLayer(zone.name, zone.components, headerFills[index % headerFills.length]!, chipFills[index % chipFills.length]!))
-    if (index < diagram.zones.length - 1) blocks.push(architectureArrow())
-  })
-  if (diagram.flows.length) {
-    blocks.push(new Paragraph({ spacing: { before: 220, after: 90 }, children: [new TextRun({ text: 'Key connections', bold: true, color: '14315C', size: 23 })] }))
-    blocks.push(flowsTable(diagram.flows))
+async function renderArchitectureDiagram(diagram: ArchitectureDiagram, context: Record<string, unknown> | null): Promise<Array<Paragraph | Table>> {
+  const application = firstString(context?.application) ?? 'the application'
+  const environment = firstString(context?.environment) ?? 'the selected environment'
+  const platform = asRecord(context?.platformLandingZone)
+  const subtitle = [platform.primaryRegion, platform.networkTopology, platform.firewall].map((value) => String(value ?? '').trim()).filter(Boolean).join('  \u00b7  ') || `${application} \u00b7 ${environment}`
+  const { svg, width, height } = buildArchitectureSvg(diagram.zones, subtitle)
+  const displayWidth = 620
+  const displayHeight = Math.round((displayWidth * height) / width)
+  const fallback = await sharp(Buffer.from(svg)).png().toBuffer()
+  const ports = [...new Set(diagram.flows.map((flow) => flow.detail).filter((detail): detail is string => Boolean(detail)))]
+  const blocks: Array<Paragraph | Table> = []
+  blocks.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: `This diagram shows the target design for ${application} on Microsoft Azure in ${environment}. Read it from the top down. The platform hub provides shared network and security services. The application runs inside its own spoke virtual network and subnet. The lower layer shows where it lands in Azure. The blue arrows show the direction of traffic between the layers.`, color: '3A5261', size: 20 })] }))
+  blocks.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [new ImageRun({ type: 'svg', data: Buffer.from(svg), transformation: { width: displayWidth, height: displayHeight }, fallback: { type: 'png', data: fallback } })] }))
+  blocks.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 200 }, children: [new TextRun({ text: 'Figure 1. Target Azure architecture \u2014 platform hub, application spoke, and Azure landing-zone placement.', italics: true, color: '607985', size: 18 })] }))
+  blocks.push(new Paragraph({ spacing: { before: 120, after: 90 }, children: [new TextRun({ text: 'Key connections', bold: true, color: '14315C', size: 23 })] }))
+  blocks.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: diagram.flows.length ? `There ${diagram.flows.length === 1 ? 'is' : 'are'} ${diagram.flows.length} key connection${diagram.flows.length === 1 ? '' : 's'} in scope${ports.length ? `, using ${ports.slice(0, 6).join(', ')}` : ''}. The table below lists each source, destination, and port.` : 'No dependency connections were recorded for this application in the supplied data.', color: '3A5261', size: 20 })] }))
+  if (diagram.flows.length) blocks.push(flowsTable(diagram.flows))
+  const map = asRecord(context?.applicationMap)
+  const nodes = Array.isArray(map.nodes) ? map.nodes.map(asRecord) : []
+  if (nodes.length) {
+    const servers = nodes.filter((node) => node.local === true).length
+    const connected = nodes.filter((node) => node.local !== true).length
+    const connections = Array.isArray(map.edges) ? map.edges.length : 0
+    blocks.push(new Paragraph({ spacing: { before: 200, after: 90 }, children: [new TextRun({ text: 'Application map', bold: true, color: '14315C', size: 23 })] }))
+    blocks.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: `The application map for ${application} in ${environment} includes ${servers} application server${servers === 1 ? '' : 's'}, ${connected} connected system${connected === 1 ? '' : 's'}, and ${connections} recorded connection${connections === 1 ? '' : 's'}. The diagram above groups these into the platform hub, the application spoke, and the Azure landing-zone targets.`, color: '3A5261', size: 20 })] }))
   }
-  blocks.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 160 }, children: [new TextRun({ text: 'Figure 1. Flow from connected systems through the application workload to its Azure landing-zone placement.', italics: true, color: '607985', size: 18 })] }))
   return blocks
 }
 
@@ -707,11 +751,9 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
     new Paragraph({ children: [new PageBreak()] }),
   ]
   if (architecture) {
-    children.push(
-      new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Architecture Overview' }),
-      ...renderArchitectureDiagram(architecture),
-      new Paragraph({ children: [new PageBreak()] }),
-    )
+    children.push(new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Architecture Overview' }))
+    children.push(...(await renderArchitectureDiagram(architecture, hldContext)))
+    children.push(new Paragraph({ children: [new PageBreak()] }))
   }
   children.push(...body)
   const document = new WordDocument({
