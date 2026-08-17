@@ -46,9 +46,11 @@ test('HLD Word document renders a modern themed native architecture diagram', as
   assert.match(styles, /w:rFonts w:ascii="Aptos"[^>]+w:hAnsi="Aptos"/)
   assert.match(styles, /w:style w:type="paragraph" w:styleId="HldTitle"[\s\S]*?w:ascii="Aptos Display"[\s\S]*?<w:sz w:val="42"\/>/)
   assert.match(document, /DOCUMENT TITLE[\s\S]*Alex Architect[\s\S]*Cloud Review Board[\s\S]*0\.3/)
-  assert.match(document, /Contents[\s\S]*Document structure and design topics[\s\S]*Architecture Overview[\s\S]*Executive Summary[\s\S]*Target Azure Architecture/)
-  assert.match(document, /<w:t xml:space="preserve">01<\/w:t>/)
-  assert.match(document, /w:pStyle w:val="Heading1"\/><\/w:pPr><w:r><w:t xml:space="preserve">Executive Summary/)
+  assert.match(document, /Microsoft Azure target-state architecture/)
+  // Book-style contents: numbered entries, dot leaders, page numbers
+  assert.match(document, /Contents[\s\S]*Billing — Microsoft Azure high-level design/)
+  assert.match(document, /w:leader="dot"/)
+  assert.match(document, /Architecture Overview[\s\S]*Executive Summary[\s\S]*Target Azure Architecture/)
   assert.doesNotMatch(document, /mermaid|flowchart LR|VM --&gt; DB|w:fldChar|w:instrText/i)
   // Native architecture diagram content and flow
   assert.match(document, /Connected systems and infrastructure/)

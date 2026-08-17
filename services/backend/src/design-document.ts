@@ -2,7 +2,7 @@ import type { Knex } from 'knex'
 import { ManagedIdentityCredential } from '@azure/identity'
 import JSZip from 'jszip'
 import sharp from 'sharp'
-import { AlignmentType, BorderStyle, Document as WordDocument, Footer, HeadingLevel, Packer, PageBreak, Paragraph, ShadingType, Table, TableCell, TableRow, TextRun, WidthType } from 'docx'
+import { AlignmentType, BorderStyle, Document as WordDocument, Footer, HeadingLevel, LeaderType, Packer, PageBreak, Paragraph, ShadingType, Tab, TabStopType, Table, TableCell, TableRow, TextRun, WidthType } from 'docx'
 import { buildApplicationMap } from './application-map.js'
 
 const defaultApiVersion = 'v1'
@@ -562,9 +562,15 @@ function wordTable(rows: string[][]): Table {
   })
 }
 
-function markdownToWordChildren(markdown: string): Array<Paragraph | Table> {
+type TocEntry = { number: string | null; title: string; level: number; page: number }
+
+function buildBodyAndToc(markdown: string): { body: Array<Paragraph | Table>; toc: TocEntry[] } {
   const lines = markdown.replace(/\r\n/g, '\n').split('\n')
-  const children: Array<Paragraph | Table> = []
+  const body: Array<Paragraph | Table> = []
+  const toc: TocEntry[] = []
+  let major = 0
+  let minor = 0
+  let page = 3
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!.replace(/\s+$/, '')
     const trimmed = line.trim()
@@ -579,55 +585,62 @@ function markdownToWordChildren(markdown: string): Array<Paragraph | Table> {
       index += 2
       while (index < lines.length && lines[index]!.trim().startsWith('|')) { rows.push(parseTableRow(lines[index]!)); index += 1 }
       index -= 1
-      children.push(wordTable(rows))
+      body.push(wordTable(rows))
       continue
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed)
     if (heading) {
-      const level = Math.min(Math.max(heading[1]!.length - 1, 1), 3)
-      const headingLevel = level === 1 ? HeadingLevel.HEADING_1 : level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3
-      children.push(new Paragraph({ heading: headingLevel, children: wordInlineRuns(heading[2]!) }))
+      const depth = heading[1]!.length
+      const text = heading[2]!.replace(/[*_`]/g, '').trim()
+      if (depth <= 2) {
+        major += 1; minor = 0; page += 1
+        toc.push({ number: String(major), title: text, level: 1, page })
+        body.push(new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: `${major}\u2003`, color: '1F5FA6' }), ...wordInlineRuns(text)] }))
+      } else if (depth === 3) {
+        minor += 1
+        toc.push({ number: `${major}.${minor}`, title: text, level: 2, page })
+        body.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: `${major}.${minor}\u2003`, color: '1F5FA6' }), ...wordInlineRuns(text)] }))
+      } else {
+        body.push(new Paragraph({ heading: HeadingLevel.HEADING_3, children: wordInlineRuns(text) }))
+      }
       continue
     }
     const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line)
     if (bullet) {
-      children.push(new Paragraph({ bullet: { level: Math.min(Math.floor(bullet[1]!.replace(/\t/g, '  ').length / 2), 2) }, children: wordInlineRuns(bullet[2]!) }))
+      body.push(new Paragraph({ bullet: { level: Math.min(Math.floor(bullet[1]!.replace(/\t/g, '  ').length / 2), 2) }, children: wordInlineRuns(bullet[2]!) }))
       continue
     }
     const numbered = /^(\d+)[.)]\s+(.*)$/.exec(trimmed)
     if (numbered) {
-      children.push(new Paragraph({ children: [new TextRun({ text: `${numbered[1]}. `, bold: true }), ...wordInlineRuns(numbered[2]!)] }))
+      body.push(new Paragraph({ children: [new TextRun({ text: `${numbered[1]}. `, bold: true }), ...wordInlineRuns(numbered[2]!)] }))
       continue
     }
-    children.push(new Paragraph({ children: wordInlineRuns(line), spacing: { after: 160 } }))
+    body.push(new Paragraph({ children: wordInlineRuns(line), spacing: { after: 160 } }))
   }
-  return children
+  return { body, toc }
 }
 
-function staticTableOfContents(markdown: string, includeArchitecture: boolean): Table {
-  const entries = markdown.replace(/\r\n/g, '\n').split('\n').flatMap((line) => {
-    const match = /^(#{2,4})\s+(.*)$/.exec(line.trim())
-    if (!match) return []
-    return [{ level: match[1]!.length - 1, title: match[2]!.replace(/[*_`]/g, '').trim() }]
+function contentsBlock(toc: TocEntry[], includeArchitecture: boolean): Paragraph[] {
+  const entry = (number: string | null, title: string, page: number | null, level: number) => new Paragraph({
+    tabStops: page !== null ? [{ type: TabStopType.RIGHT, position: 9020, leader: LeaderType.DOT }] : undefined,
+    spacing: { before: level === 1 ? 150 : 20, after: 20 },
+    indent: { left: level === 1 ? 0 : 420 },
+    children: [
+      ...(number ? [new TextRun({ text: `${number}\u2003`, bold: level === 1, color: '1F5FA6', size: level === 1 ? 22 : 20 })] : []),
+      new TextRun({ text: title, bold: level === 1, color: level === 1 ? '14315C' : '46606E', size: level === 1 ? 22 : 20 }),
+      ...(page !== null ? [new TextRun({ children: [new Tab()] }), new TextRun({ text: String(page), color: level === 1 ? '14315C' : '46606E', size: level === 1 ? 22 : 20 })] : []),
+    ],
   })
-  const allEntries = includeArchitecture ? [{ level: 1, title: 'Architecture Overview' }, ...entries] : entries
-  let section = 0
-  return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE }, insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'DCE5EA' }, insideVertical: { style: BorderStyle.NONE } },
-    rows: allEntries.map(({ level, title }) => {
-      if (level === 1) section += 1
-      return new TableRow({ children: [
-        new TableCell({ width: { size: 11, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill: level === 1 ? '1F5FA6' : 'EAF2FB' }, children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: level === 1 ? String(section).padStart(2, '0') : '—', bold: true, color: level === 1 ? 'FFFFFF' : '6B7F88', size: level === 1 ? 21 : 18 })] })] }),
-        new TableCell({ width: { size: 89, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill: level === 1 ? 'F4F8FD' : 'FFFFFF' }, children: [new Paragraph({ indent: { left: (level - 1) * 280 }, spacing: { before: 70, after: 70 }, children: [new TextRun({ text: title, bold: level === 1, color: level === 1 ? '173B4D' : '536A75', size: level === 1 ? 22 : 19 })] })] }),
-      ] })
-    }),
-  })
+  const rows: Paragraph[] = []
+  if (includeArchitecture) rows.push(entry(null, 'Architecture Overview', 3, 1))
+  for (const item of toc) rows.push(entry(item.number, item.title, item.page, item.level))
+  return rows
 }
 
 export async function buildDocx(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata = { author: 'To be confirmed', reviewers: ['Architecture Review Board (TBC)'], version: '0.1' }): Promise<string> {
   const application = firstString(hldContext?.application) ?? 'Application'
   const environment = firstString(hldContext?.environment) ?? 'Environment not specified'
+  const { body, toc } = buildBodyAndToc(markdown)
   const border = { style: BorderStyle.SINGLE, size: 1, color: 'D6E1E6' }
   const controlRows = [
     ['Document title', title], ['Application', application], ['Environment', environment], ['Author', metadata.author],
@@ -639,13 +652,14 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
   const children: Array<Paragraph | Table> = [
     new Paragraph({ spacing: { before: 760, after: 140 }, children: [new TextRun({ text: 'CLOUD ARCHITECTURE  /  HIGH-LEVEL DESIGN', bold: true, color: '1F5FA6', size: 18, characterSpacing: 28 })] }),
     new Paragraph({ style: 'HldTitle', children: [new TextRun(title)] }),
-    new Paragraph({ spacing: { after: 560 }, children: [new TextRun({ text: `${application}  ·  ${environment}`, color: '607985', size: 23 })] }),
+    new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: `${application}  ·  ${environment}`, color: '607985', size: 23 })] }),
+    new Paragraph({ spacing: { after: 560 }, children: [new TextRun({ text: 'Microsoft Azure target-state architecture', color: '8494A0', size: 20 })] }),
     new Table({ rows: controlRows, width: { size: 100, type: WidthType.PERCENTAGE }, borders: { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border } }),
     new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 520 }, children: [new TextRun({ text: 'Draft for architecture review. Validate assumptions and open decisions before approval.', italics: true, color: '6A7C8D' })] }),
     new Paragraph({ children: [new PageBreak()] }),
     new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Contents' }),
-    new Paragraph({ spacing: { after: 260 }, children: [new TextRun({ text: 'Document structure and design topics', color: '6B7F88', size: 19 })] }),
-    staticTableOfContents(markdown, Boolean(hldContext)),
+    new Paragraph({ spacing: { after: 300 }, children: [new TextRun({ text: `${application} — Microsoft Azure high-level design`, color: '6B7F88', size: 19 })] }),
+    ...contentsBlock(toc, Boolean(hldContext)),
     new Paragraph({ children: [new PageBreak()] }),
   ]
   if (hldContext) {
@@ -655,7 +669,7 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
       new Paragraph({ children: [new PageBreak()] }),
     )
   }
-  children.push(...markdownToWordChildren(markdown))
+  children.push(...body)
   const document = new WordDocument({
     title, creator: metadata.author, lastModifiedBy: 'Cloud Accelerate Factory', revision: Number.parseInt(metadata.version, 10) || 1,
     description: `${application} ${environment} High-Level Design`,
