@@ -2,7 +2,7 @@ import type { Knex } from 'knex'
 import { ManagedIdentityCredential } from '@azure/identity'
 import JSZip from 'jszip'
 import sharp from 'sharp'
-import { AlignmentType, BorderStyle, Document as WordDocument, Footer, HeadingLevel, ImageRun, Packer, PageBreak, Paragraph, ShadingType, Table, TableCell, TableRow, TextRun, WidthType } from 'docx'
+import { AlignmentType, BorderStyle, Document as WordDocument, Footer, HeadingLevel, Packer, PageBreak, Paragraph, ShadingType, Table, TableCell, TableRow, TextRun, WidthType } from 'docx'
 import { buildApplicationMap } from './application-map.js'
 
 const defaultApiVersion = 'v1'
@@ -497,6 +497,48 @@ async function buildArchitecturePng(context: Record<string, unknown>): Promise<B
   return sharp(Buffer.from(svg)).flatten({ background: '#f8fafc' }).png().toBuffer()
 }
 
+function architectureChip(text: string | undefined, fill: string): TableCell {
+  return new TableCell({ width: { size: 50, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill }, children: [new Paragraph({ spacing: { before: 40, after: 40 }, children: text ? [new TextRun({ text, color: '243E4A', size: 19 })] : [] })] })
+}
+
+function architectureLayer(heading: string, items: string[], headerFill: string, chipFill: string): Table {
+  const rows: TableRow[] = [new TableRow({ children: [new TableCell({ columnSpan: 2, shading: { type: ShadingType.CLEAR, fill: headerFill }, children: [new Paragraph({ spacing: { before: 50, after: 50 }, children: [new TextRun({ text: heading, bold: true, color: 'FFFFFF', size: 21 })] })] })] })]
+  const safe = items.length ? items : ['None identified']
+  for (let index = 0; index < safe.length; index += 2) rows.push(new TableRow({ children: [architectureChip(safe[index]!, chipFill), architectureChip(safe[index + 1], chipFill)] }))
+  const divider = { style: BorderStyle.SINGLE, size: 2, color: 'FFFFFF' }
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE }, insideHorizontal: divider, insideVertical: divider }, rows })
+}
+
+const architectureArrow = () => new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 40, after: 40 }, children: [new TextRun({ text: '▼', color: '2E6FBE', size: 30, bold: true })] })
+
+function buildArchitectureDiagram(context: Record<string, unknown>): Array<Paragraph | Table> {
+  const map = asRecord(context.applicationMap)
+  const nodes = Array.isArray(map.nodes) ? map.nodes.map(asRecord) : []
+  const edges = Array.isArray(map.edges) ? map.edges.map(asRecord) : []
+  const localNodes = nodes.filter((node) => node.local === true).slice(0, 6)
+  const peerNodes = nodes.filter((node) => node.local !== true).slice(0, 6)
+  const mappings = Array.isArray(context.sprintToLandingZoneMappings) ? context.sprintToLandingZoneMappings.map(asRecord).slice(0, 6) : []
+  const platform = asRecord(context.platformLandingZone)
+  const treatment = asRecord(context.applicationTreatment)
+  const truncate = (value: unknown, max: number) => { const text = String(value ?? '').trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text }
+  const peerLabel = (node: Record<string, unknown>) => {
+    const nodeId = String(node.id ?? '')
+    const ports = [...new Set(edges.filter((edge) => edge.sourceId === nodeId || edge.targetId === nodeId).map((edge) => Number(edge.port)).filter((port) => Number.isInteger(port) && port > 0))].slice(0, 4)
+    return `${truncate(node.label ?? node.id ?? 'Connected service', 42)}${ports.length ? ` · TCP ${ports.join(', ')}` : ''}`
+  }
+  const platformLine = [platform.primaryRegion, platform.networkTopology, platform.firewall].filter(Boolean).map(String).join(' · ') || 'Platform landing-zone controls not specified'
+  const treatmentPlan = truncate(treatment.treatmentPlan || 'Not specified', 40)
+  return [
+    new Paragraph({ spacing: { after: 160 }, children: [new TextRun({ text: platformLine, color: '607985', size: 19 })] }),
+    architectureLayer('1 · Connected systems and infrastructure', peerNodes.map(peerLabel), '1F5FA6', 'F4F8FD'),
+    architectureArrow(),
+    architectureLayer(`2 · Application workload · Treatment: ${treatmentPlan}`, localNodes.map((node) => truncate(node.label ?? node.id ?? 'Application server', 46)), '14315C', 'EAF2FB'),
+    architectureArrow(),
+    architectureLayer('3 · Azure landing-zone placement', mappings.map((mapping) => `${truncate(mapping.serverName ?? 'Server', 22)} → ${truncate(mapping.subscriptionName ?? 'Unmapped', 18)} / ${truncate(mapping.subnet ?? 'No subnet', 18)}`), '2E6FBE', 'EFF5FC'),
+    new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 160 }, children: [new TextRun({ text: 'Figure 1. Flow from connected systems through the application workload to its Azure landing-zone placement.', italics: true, color: '607985', size: 18 })] }),
+  ]
+}
+
 function wordInlineRuns(text: string): TextRun[] {
   const tokens = text.split(/(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*]+\*|_[^_]+_)/g).filter(Boolean)
   return (tokens.length ? tokens : ['']).map((token) => {
@@ -576,8 +618,8 @@ function staticTableOfContents(markdown: string, includeArchitecture: boolean): 
     rows: allEntries.map(({ level, title }) => {
       if (level === 1) section += 1
       return new TableRow({ children: [
-        new TableCell({ width: { size: 11, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill: level === 1 ? '0F6B78' : 'EDF3F5' }, children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: level === 1 ? String(section).padStart(2, '0') : '—', bold: true, color: level === 1 ? 'FFFFFF' : '6B7F88', size: level === 1 ? 21 : 18 })] })] }),
-        new TableCell({ width: { size: 89, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill: level === 1 ? 'F5F9FA' : 'FFFFFF' }, children: [new Paragraph({ indent: { left: (level - 1) * 280 }, spacing: { before: 70, after: 70 }, children: [new TextRun({ text: title, bold: level === 1, color: level === 1 ? '173B4D' : '536A75', size: level === 1 ? 22 : 19 })] })] }),
+        new TableCell({ width: { size: 11, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill: level === 1 ? '1F5FA6' : 'EAF2FB' }, children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: level === 1 ? String(section).padStart(2, '0') : '—', bold: true, color: level === 1 ? 'FFFFFF' : '6B7F88', size: level === 1 ? 21 : 18 })] })] }),
+        new TableCell({ width: { size: 89, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill: level === 1 ? 'F4F8FD' : 'FFFFFF' }, children: [new Paragraph({ indent: { left: (level - 1) * 280 }, spacing: { before: 70, after: 70 }, children: [new TextRun({ text: title, bold: level === 1, color: level === 1 ? '173B4D' : '536A75', size: level === 1 ? 22 : 19 })] })] }),
       ] })
     }),
   })
@@ -591,11 +633,11 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
     ['Document title', title], ['Application', application], ['Environment', environment], ['Author', metadata.author],
     ['Reviewers', metadata.reviewers.join('; ')], ['Version', metadata.version], ['Status', 'Draft'], ['Generated', new Date().toISOString().slice(0, 10)],
   ].map(([label, value]) => new TableRow({ children: [
-    new TableCell({ shading: { type: ShadingType.CLEAR, fill: 'EDF5F5' }, width: { size: 24, type: WidthType.PERCENTAGE }, children: [new Paragraph({ spacing: { before: 55, after: 55 }, children: [new TextRun({ text: label!.toUpperCase(), bold: true, color: '0F6B78', size: 17 })] })] }),
+    new TableCell({ shading: { type: ShadingType.CLEAR, fill: 'EAF2FB' }, width: { size: 24, type: WidthType.PERCENTAGE }, children: [new Paragraph({ spacing: { before: 55, after: 55 }, children: [new TextRun({ text: label!.toUpperCase(), bold: true, color: '1F5FA6', size: 17 })] })] }),
     new TableCell({ width: { size: 76, type: WidthType.PERCENTAGE }, children: [new Paragraph({ spacing: { before: 55, after: 55 }, children: [new TextRun({ text: value!, color: '243E4A', size: 20 })] })] }),
   ] }))
   const children: Array<Paragraph | Table> = [
-    new Paragraph({ spacing: { before: 760, after: 140 }, children: [new TextRun({ text: 'CLOUD ARCHITECTURE  /  HIGH-LEVEL DESIGN', bold: true, color: '0F7885', size: 18, characterSpacing: 28 })] }),
+    new Paragraph({ spacing: { before: 760, after: 140 }, children: [new TextRun({ text: 'CLOUD ARCHITECTURE  /  HIGH-LEVEL DESIGN', bold: true, color: '1F5FA6', size: 18, characterSpacing: 28 })] }),
     new Paragraph({ style: 'HldTitle', children: [new TextRun(title)] }),
     new Paragraph({ spacing: { after: 560 }, children: [new TextRun({ text: `${application}  ·  ${environment}`, color: '607985', size: 23 })] }),
     new Table({ rows: controlRows, width: { size: 100, type: WidthType.PERCENTAGE }, borders: { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border } }),
@@ -609,8 +651,7 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
   if (hldContext) {
     children.push(
       new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Architecture Overview' }),
-      new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ type: 'png', data: await buildArchitecturePng(hldContext), transformation: { width: 590, height: 620 }, altText: { title: 'High-level architecture diagram', description: 'Application workload, connected systems, and Azure landing-zone placement', name: 'architecture.png' } })] }),
-      new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'Figure 1. Application workload, connected systems, and Azure landing-zone placement.', italics: true, color: '587086' })] }),
+      ...buildArchitectureDiagram(hldContext),
       new Paragraph({ children: [new PageBreak()] }),
     )
   }
@@ -621,12 +662,12 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
     styles: {
       default: {
         document: { run: { font: 'Aptos', size: 21, color: '263D48' }, paragraph: { spacing: { after: 150, line: 276 } } },
-        heading1: { run: { font: 'Aptos Display', size: 31, bold: true, color: '123F52' }, paragraph: { spacing: { before: 340, after: 150 }, keepNext: true } },
-        heading2: { run: { font: 'Aptos Display', size: 26, bold: true, color: '0F6B78' }, paragraph: { spacing: { before: 250, after: 110 }, keepNext: true } },
+        heading1: { run: { font: 'Aptos Display', size: 31, bold: true, color: '14315C' }, paragraph: { spacing: { before: 340, after: 150 }, keepNext: true } },
+        heading2: { run: { font: 'Aptos Display', size: 26, bold: true, color: '1F5FA6' }, paragraph: { spacing: { before: 250, after: 110 }, keepNext: true } },
         heading3: { run: { font: 'Aptos', size: 22, bold: true, color: '3E5965' }, paragraph: { spacing: { before: 190, after: 90 }, keepNext: true } },
         listParagraph: { run: { font: 'Aptos', size: 21 }, paragraph: { spacing: { after: 80 } } },
       },
-      paragraphStyles: [{ id: 'HldTitle', name: 'HLD Title', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { font: 'Aptos Display', bold: true, color: '123F52', size: 42 }, paragraph: { spacing: { before: 100, after: 130 }, keepNext: true } }],
+      paragraphStyles: [{ id: 'HldTitle', name: 'HLD Title', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { font: 'Aptos Display', bold: true, color: '14315C', size: 42 }, paragraph: { spacing: { before: 100, after: 130 }, keepNext: true } }],
     },
     sections: [{
       properties: { page: { margin: { top: 1440, right: 1440, bottom: 1440, left: 1440, footer: 720 } } },
