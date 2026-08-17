@@ -13,6 +13,7 @@ import { port } from './config.js'
 import { database } from './db.js'
 import { migrateSchema } from './migrate.js'
 import { DependencyImportCancelledError, importDependencyFile } from './dependency-import.js'
+import { convertConnLogToCsv, hostnameMapFromDns, parseDnsRecords, saveDnsRecords } from './corelight-import.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
@@ -70,6 +71,21 @@ const workbookUpload = multer({
   }),
   fileFilter: uploadFileFilter,
   limits: { files: 1, fileSize: 100 * 1024 * 1024 },
+})
+
+const corelightUpload = multer({
+  storage: multer.diskStorage({
+    destination: tmpdir(),
+    filename: (_request, file, callback) => {
+      const extension = extname(file.originalname).toLowerCase()
+      callback(null, `${crypto.randomUUID()}${extension === '.gz' ? '.log.gz' : extension || '.log'}`)
+    },
+  }),
+  fileFilter: (_request, file, callback) => {
+    const extension = extname(file.originalname).toLowerCase()
+    callback(null, ['.log', '.json', '.txt', '.gz', '.ndjson'].includes(extension))
+  },
+  limits: { files: 2, fileSize: 1024 * 1024 * 1024 },
 })
 
 function safeImportError(error: unknown, fallback: string): string {
@@ -903,6 +919,52 @@ app.post('/api/imports', dependencyUpload.array('files', 8), async (request, res
   response.status(202).json({
     results: files.map((file) => ({ fileName: file.originalname, status: 'Accepted' })),
   })
+})
+
+app.post('/api/imports/corelight', corelightUpload.fields([{ name: 'conn', maxCount: 1 }, { name: 'dns', maxCount: 1 }]), async (request, response) => {
+  const files = request.files as Record<string, Express.Multer.File[]> | undefined
+  const connFile = files?.conn?.[0]
+  const dnsFile = files?.dns?.[0]
+  if (!connFile) {
+    if (dnsFile) await unlink(dnsFile.path).catch(() => undefined)
+    response.status(400).json({ error: 'Select a Corelight or Zeek conn.log file (.log, .json, .ndjson, or .gz).' })
+    return
+  }
+  const appliance = String(request.body?.appliance ?? '').trim() || 'Corelight'
+  const allowIpFallback = String(request.body?.allowIpFallback ?? 'true') !== 'false'
+  const canonicalPath = resolve(tmpdir(), `${crypto.randomUUID()}.csv`)
+  try {
+    let dnsRecordsStored = 0
+    const dnsRecords = dnsFile ? await parseDnsRecords(dnsFile.path) : []
+    if (dnsRecords.length) dnsRecordsStored = await saveDnsRecords(database, dnsRecords)
+    const hostnameByIp = hostnameMapFromDns(dnsRecords)
+    const conversion = await convertConnLogToCsv(connFile.path, canonicalPath, hostnameByIp, { appliance, allowIpFallback })
+    if (conversion.dependencyRows === 0) {
+      await unlink(canonicalPath).catch(() => undefined)
+      response.status(400).json({ error: 'No connection records could be read from the conn.log file. Confirm it is a Zeek/Corelight conn.log in JSON or TSV format.' })
+      return
+    }
+    const canonicalFile = { path: canonicalPath, originalname: `Corelight-${connFile.originalname.replace(/\.(gz|log|json|ndjson|txt)$/i, '')}.csv` } as Express.Multer.File
+    const generation = dependencyImportGeneration
+    pendingDependencyImportFiles += 1
+    dependencyImportQueue = dependencyImportQueue
+      .then(() => processDependencyUploads([canonicalFile], generation))
+      .catch((error) => console.error('Corelight dependency import queue failed.', error))
+    response.status(202).json({
+      status: 'Accepted',
+      fileName: canonicalFile.originalname,
+      connRecordsRead: conversion.recordsRead,
+      dependencyRows: conversion.dependencyRows,
+      unresolvedHosts: conversion.unresolvedHosts,
+      dnsRecordsStored,
+    })
+  } catch (error) {
+    await unlink(canonicalPath).catch(() => undefined)
+    response.status(400).json({ error: safeImportError(error, 'Unable to import Corelight logs.') })
+  } finally {
+    await unlink(connFile.path).catch(() => undefined)
+    if (dnsFile) await unlink(dnsFile.path).catch(() => undefined)
+  }
 })
 
 app.post('/api/server-assessments/sheets', workbookUpload.single('file'), async (request, response) => {

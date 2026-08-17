@@ -16,6 +16,7 @@ import FirewallRules from './FirewallRules'
 import ArtefactGeneration from './ArtefactGeneration'
 import VisualizeSprints from './VisualizeSprints'
 import ApplicationTreatmentPlanning from './ApplicationTreatmentPlanning'
+import CorelightImport from './CorelightImport'
 import ApplicationCatalog from './ApplicationCatalog'
 import ServerCoverage from './ServerCoverage'
 import EnvironmentIdentification from './EnvironmentIdentification'
@@ -98,7 +99,7 @@ async function uploadResponsePayload(response: Response): Promise<{ result?: Upl
 
 const pageDefinitions: PageDefinition[] = [
   { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor discovery coverage and continue through the migration planning workflow.' },
-  { page: 'imports', label: 'Imports', group: 'Discover & prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, and dependency exports.' },
+  { page: 'imports', label: 'Imports', group: 'Discover & prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, dependency exports, and Corelight/Zeek flow logs.' },
   { page: 'core-infrastructure', label: 'Core Infrastructure', group: 'Discover & prepare', icon: Settings2, access: 'all', eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
   { page: 'environment-identification', label: 'Environment Identification', group: 'Discover & prepare', icon: ScanSearch, access: 'modify', eyebrow: 'Assessment enrichment', title: 'Identify server environments', description: 'Prioritize assessment rules to identify each server environment.' },
   { page: 'landing-zone-platform', label: 'Landing Zone Platform', group: 'Target landing zone', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Landing zone platform design decisions', description: 'Record platform-level choices: connectivity, firewall, DNS, regions, resiliency, identity, monitoring, backup, endpoint protection, SIEM, and patching.' },
@@ -218,6 +219,13 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         .then(({ items }) => setImports(items))
         .catch(() => undefined)
       }, [refreshKey])
+
+  const loadImports = () => {
+    apiFetch('/api/imports')
+      .then((response) => response.ok ? response.json() as Promise<{ items: ImportRun[] }> : Promise.reject())
+      .then(({ items }) => setImports(items))
+      .catch(() => undefined)
+  }
 
   useEffect(() => {
     if (!uploading) return
@@ -590,7 +598,9 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             <div className="import-actions"><span>{files.length ? `${files.length} file${files.length === 1 ? '' : 's'} ready` : 'No files selected'}</span><div>{(importKind === 'applications' || importKind === 'application-mapping') && <button className="secondary-command" type="button" onClick={() => downloadImportTemplate(importKind)}><Download size={15} />Download sample template</button>}{importKind === 'dependencies' && dependencyImportActive && <button className="cancel-import-button" type="button" disabled={cancellingImport} onClick={() => void cancelDependencyImport()}><CircleStop size={16} />{cancellingImport ? 'Cancelling...' : 'Cancel import'}</button>}<button className="upload-button" type="button" disabled={!canUpload} onClick={uploadFiles}><Upload size={17} />{uploading ? 'Importing...' : inspectingSheets ? 'Reading sheets...' : 'Start import'}</button></div></div>
           </div>
           <aside className="import-history"><div className="section-heading"><div><p className="eyebrow">History</p><h2>Recent imports</h2></div><span className="import-count">{completedImports} complete</span></div><ImportHistory items={imports} /></aside>
-        </section></div>}
+        </section>
+        <CorelightImport onQueued={loadImports} />
+        </div>}
       </main>
     </div>
   )

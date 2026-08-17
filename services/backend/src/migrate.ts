@@ -176,6 +176,19 @@ export async function migrateSchema(): Promise<void> {
     throw new Error('dependency_records is missing source_ip')
   }
 
+  if (!(await database.schema.hasTable('dns_records'))) {
+    await database.schema.createTable('dns_records', (table) => {
+      table.bigIncrements('id').primary()
+      table.string('query', 300).notNullable()
+      table.string('ip_address', 64).notNullable()
+      table.date('observed_date').nullable()
+      table.string('source', 30).notNullable().defaultTo('Corelight')
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+      table.unique(['query', 'ip_address'], 'uq_dns_records_query_ip')
+      table.index(['ip_address'], 'idx_dns_records_ip')
+    })
+  }
+
   const dependencyIndexes = await database('information_schema.statistics')
     .whereRaw('table_schema = DATABASE()')
     .where('table_name', 'dependency_records')
