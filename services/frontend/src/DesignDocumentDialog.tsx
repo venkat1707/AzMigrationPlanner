@@ -19,17 +19,21 @@ type Phase = 'working' | 'questions' | 'ready' | 'saving' | 'done' | 'error'
 type SaveFilePicker = (options?: {
   suggestedName?: string
   types?: Array<{ description?: string; accept: Record<string, string[]> }>
-}) => Promise<{ createWritable: () => Promise<{ write: (data: BufferSource | Blob) => Promise<void>; close: () => Promise<void> }> }>
+}) => Promise<{ createWritable: () => Promise<{ write: (data: BufferSource | Blob) => Promise<void>; truncate: (size: number) => Promise<void>; close: () => Promise<void> }> }>
 
-function base64ToBlob(base64: string, contentType: string): Blob {
+function decodeDocument(base64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length))
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-  return new Blob([bytes], { type: contentType })
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
+    throw new Error('The generated file is not a valid modern Word document. Generate it again before saving.')
+  }
+  return bytes
 }
 
 async function saveDocument(file: Completed): Promise<'saved' | 'downloaded'> {
-  const blob = base64ToBlob(file.contentBase64, file.contentType || 'application/octet-stream')
+  const bytes = decodeDocument(file.contentBase64)
+  const blob = new Blob([bytes], { type: file.contentType || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
   const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker
   if (picker) {
     const handle = await picker({
@@ -37,7 +41,9 @@ async function saveDocument(file: Completed): Promise<'saved' | 'downloaded'> {
       types: [{ description: 'Word document', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }],
     })
     const writable = await handle.createWritable()
-    await writable.write(blob)
+    await writable.truncate(0)
+    await writable.write(bytes)
+    await writable.truncate(bytes.byteLength)
     await writable.close()
     return 'saved'
   }

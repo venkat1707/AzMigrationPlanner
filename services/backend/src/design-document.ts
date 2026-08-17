@@ -562,39 +562,48 @@ function markdownToWordChildren(markdown: string): Array<Paragraph | Table> {
   return children
 }
 
-function staticTableOfContents(markdown: string, includeArchitecture: boolean): Paragraph[] {
+function staticTableOfContents(markdown: string, includeArchitecture: boolean): Table {
   const entries = markdown.replace(/\r\n/g, '\n').split('\n').flatMap((line) => {
     const match = /^(#{2,4})\s+(.*)$/.exec(line.trim())
     if (!match) return []
     return [{ level: match[1]!.length - 1, title: match[2]!.replace(/[*_`]/g, '').trim() }]
   })
   const allEntries = includeArchitecture ? [{ level: 1, title: 'Architecture Overview' }, ...entries] : entries
-  return allEntries.map(({ level, title }) => new Paragraph({
-    spacing: { after: 80 }, indent: { left: (level - 1) * 360 },
-    children: [new TextRun({ text: `${level === 1 ? '' : '• '}${title}`, bold: level === 1, color: level === 1 ? '24384D' : '526B80' })],
-  }))
+  let section = 0
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE }, insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'DCE5EA' }, insideVertical: { style: BorderStyle.NONE } },
+    rows: allEntries.map(({ level, title }) => {
+      if (level === 1) section += 1
+      return new TableRow({ children: [
+        new TableCell({ width: { size: 11, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill: level === 1 ? '0F6B78' : 'EDF3F5' }, children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: level === 1 ? String(section).padStart(2, '0') : '—', bold: true, color: level === 1 ? 'FFFFFF' : '6B7F88', size: level === 1 ? 21 : 18 })] })] }),
+        new TableCell({ width: { size: 89, type: WidthType.PERCENTAGE }, shading: { type: ShadingType.CLEAR, fill: level === 1 ? 'F5F9FA' : 'FFFFFF' }, children: [new Paragraph({ indent: { left: (level - 1) * 280 }, spacing: { before: 70, after: 70 }, children: [new TextRun({ text: title, bold: level === 1, color: level === 1 ? '173B4D' : '536A75', size: level === 1 ? 22 : 19 })] })] }),
+      ] })
+    }),
+  })
 }
 
 export async function buildDocx(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata = { author: 'To be confirmed', reviewers: ['Architecture Review Board (TBC)'], version: '0.1' }): Promise<string> {
   const application = firstString(hldContext?.application) ?? 'Application'
   const environment = firstString(hldContext?.environment) ?? 'Environment not specified'
-  const border = { style: BorderStyle.SINGLE, size: 1, color: 'A9BBCB' }
+  const border = { style: BorderStyle.SINGLE, size: 1, color: 'D6E1E6' }
   const controlRows = [
     ['Document title', title], ['Application', application], ['Environment', environment], ['Author', metadata.author],
     ['Reviewers', metadata.reviewers.join('; ')], ['Version', metadata.version], ['Status', 'Draft'], ['Generated', new Date().toISOString().slice(0, 10)],
   ].map(([label, value]) => new TableRow({ children: [
-    new TableCell({ shading: { type: ShadingType.CLEAR, fill: 'E8F1F8' }, width: { size: 24, type: WidthType.PERCENTAGE }, children: [new Paragraph({ children: [new TextRun({ text: label!, bold: true })] })] }),
-    new TableCell({ width: { size: 76, type: WidthType.PERCENTAGE }, children: [new Paragraph(value!)] }),
+    new TableCell({ shading: { type: ShadingType.CLEAR, fill: 'EDF5F5' }, width: { size: 24, type: WidthType.PERCENTAGE }, children: [new Paragraph({ spacing: { before: 55, after: 55 }, children: [new TextRun({ text: label!.toUpperCase(), bold: true, color: '0F6B78', size: 17 })] })] }),
+    new TableCell({ width: { size: 76, type: WidthType.PERCENTAGE }, children: [new Paragraph({ spacing: { before: 55, after: 55 }, children: [new TextRun({ text: value!, color: '243E4A', size: 20 })] })] }),
   ] }))
   const children: Array<Paragraph | Table> = [
-    new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 900, after: 160 }, children: [new TextRun({ text: 'HIGH-LEVEL DESIGN', bold: true, color: '2F6F91', size: 24 })] }),
-    new Paragraph({ alignment: AlignmentType.CENTER, style: 'HldTitle', children: [new TextRun(title)] }),
-    new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 650 }, children: [new TextRun({ text: `${application} · ${environment}`, color: '587086', size: 24 })] }),
+    new Paragraph({ spacing: { before: 760, after: 140 }, children: [new TextRun({ text: 'CLOUD ARCHITECTURE  /  HIGH-LEVEL DESIGN', bold: true, color: '0F7885', size: 18, characterSpacing: 28 })] }),
+    new Paragraph({ style: 'HldTitle', children: [new TextRun(title)] }),
+    new Paragraph({ spacing: { after: 560 }, children: [new TextRun({ text: `${application}  ·  ${environment}`, color: '607985', size: 23 })] }),
     new Table({ rows: controlRows, width: { size: 100, type: WidthType.PERCENTAGE }, borders: { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border } }),
     new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 520 }, children: [new TextRun({ text: 'Draft for architecture review. Validate assumptions and open decisions before approval.', italics: true, color: '6A7C8D' })] }),
     new Paragraph({ children: [new PageBreak()] }),
-    new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Table of Contents' }),
-    ...staticTableOfContents(markdown, Boolean(hldContext)),
+    new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Contents' }),
+    new Paragraph({ spacing: { after: 260 }, children: [new TextRun({ text: 'Document structure and design topics', color: '6B7F88', size: 19 })] }),
+    staticTableOfContents(markdown, Boolean(hldContext)),
     new Paragraph({ children: [new PageBreak()] }),
   ]
   if (hldContext) {
@@ -609,10 +618,19 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
   const document = new WordDocument({
     title, creator: metadata.author, lastModifiedBy: 'Cloud Accelerate Factory', revision: Number.parseInt(metadata.version, 10) || 1,
     description: `${application} ${environment} High-Level Design`,
-    styles: { paragraphStyles: [{ id: 'HldTitle', name: 'HLD Title', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { bold: true, color: '1F3864', size: 40 }, paragraph: { spacing: { before: 120, after: 120 } } }] },
+    styles: {
+      default: {
+        document: { run: { font: 'Aptos', size: 21, color: '263D48' }, paragraph: { spacing: { after: 150, line: 276 } } },
+        heading1: { run: { font: 'Aptos Display', size: 31, bold: true, color: '123F52' }, paragraph: { spacing: { before: 340, after: 150 }, keepNext: true } },
+        heading2: { run: { font: 'Aptos Display', size: 26, bold: true, color: '0F6B78' }, paragraph: { spacing: { before: 250, after: 110 }, keepNext: true } },
+        heading3: { run: { font: 'Aptos', size: 22, bold: true, color: '3E5965' }, paragraph: { spacing: { before: 190, after: 90 }, keepNext: true } },
+        listParagraph: { run: { font: 'Aptos', size: 21 }, paragraph: { spacing: { after: 80 } } },
+      },
+      paragraphStyles: [{ id: 'HldTitle', name: 'HLD Title', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { font: 'Aptos Display', bold: true, color: '123F52', size: 42 }, paragraph: { spacing: { before: 100, after: 130 }, keepNext: true } }],
+    },
     sections: [{
       properties: { page: { margin: { top: 1440, right: 1440, bottom: 1440, left: 1440, footer: 720 } } },
-      footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `High-Level Design · Version ${metadata.version}`, color: '6A7C8D', size: 18 })] })] }) },
+      footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `CLOUD ACCELERATE FACTORY   ·   HLD ${metadata.version}`, font: 'Aptos', color: '748892', size: 16, characterSpacing: 18 })] })] }) },
       children,
     }],
   })
@@ -622,6 +640,7 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
 }
 
 const sanitizeFileName = (value: string): string => value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'application'
+const fileTimestamp = (): string => new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z').replace('T', '-')
 
 export async function requestDesignDocument(connection: Knex, input: RequestInput): Promise<DesignDocumentResult> {
   const agent = await findDesignAgent(connection, input.artifactType)
@@ -725,7 +744,7 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
     throw new DesignDocumentError('The agent reported completion but returned no readable document content.', 502)
   }
   const title = firstString(documentRecord.title, documentRecord.name) ?? (input.artifactType === 'design-document' ? `${input.application} — High-Level Design (${input.environment})` : input.artifactType === 'migration-plan' ? 'Azure Migration Plan' : `Migration Runsheet — Sprint ${input.sprintSequence}`)
-  const fileName = `${sanitizeFileName(input.artifactType === 'design-document' ? `${input.application}-${input.environment}-high-level-design` : input.artifactType === 'migration-plan' ? 'azure-migration-plan' : `migration-runsheet-sprint-${input.sprintSequence}`)}.docx`
+  const fileName = `${sanitizeFileName(input.artifactType === 'design-document' ? `${input.application}-${input.environment}-high-level-design` : input.artifactType === 'migration-plan' ? 'azure-migration-plan' : `migration-runsheet-sprint-${input.sprintSequence}`)}-${fileTimestamp()}.docx`
   const owner = asRecord(asRecord(hldContext?.applicationTreatment).applicationOwner)
   const ownerName = [firstString(owner.firstName), firstString(owner.lastName)].filter(Boolean).join(' ')
   const rawReviewers = documentRecord.reviewers
