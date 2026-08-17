@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { AlertCircle, CheckCircle2, Network, RefreshCw, Save, Search } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { AlertCircle, CheckCircle2, Download, Network, RefreshCw, Save, Search, Upload } from 'lucide-react'
 import { apiFetch } from './auth-client'
 
 type ResourceGroup = { subscriptionId: string; subscriptionName: string; resourceGroupId: string; resourceGroupName: string }
@@ -34,8 +34,10 @@ export default function SprintLandingZoneMapping() {
   const [mappings, setMappings] = useState<EditableMapping[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [transferring, setTransferring] = useState<'export' | 'import' | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const importInput = useRef<HTMLInputElement | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -128,6 +130,64 @@ export default function SprintLandingZoneMapping() {
     }
   }
 
+  const exportWorkbook = async () => {
+    if (!sprint || visibleMappings.length === 0) return
+    setTransferring('export')
+    setError('')
+    setNotice('')
+    try {
+      const response = await apiFetch('/api/sprint-landing-zone-mappings/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sprintSequence: sprint.sequence, mappings: visibleMappings }),
+      })
+      if (!response.ok) {
+        const payload = await response.json() as { error?: string }
+        throw new Error(payload.error ?? 'Unable to export sprint landing-zone mappings.')
+      }
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `sprint-${sprint.sequence}-landing-zone-mappings.xlsx`
+      link.click()
+      URL.revokeObjectURL(url)
+      setNotice(`Exported ${visibleMappings.length} filtered server mapping${visibleMappings.length === 1 ? '' : 's'} to Excel.`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to export sprint landing-zone mappings.')
+    } finally {
+      setTransferring(null)
+    }
+  }
+
+  const importWorkbook = async (file: File) => {
+    setTransferring('import')
+    setError('')
+    setNotice('')
+    try {
+      const body = new FormData()
+      body.append('file', file)
+      const response = await apiFetch('/api/sprint-landing-zone-mappings/import', { method: 'POST', body })
+      const payload = await response.json() as { saved?: number; sprintSequence?: number; error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Unable to import sprint landing-zone mappings.')
+      const refreshed = await apiFetch('/api/sprint-landing-zone-mappings')
+      const data = await refreshed.json() as MappingResponse & { error?: string }
+      if (!refreshed.ok) throw new Error(data.error ?? 'Mappings were imported but the refreshed inventory could not be loaded.')
+      setSprints(data.sprints ?? [])
+      setResourceGroups(data.resourceGroups ?? [])
+      setNetworks(data.networks ?? [])
+      const sequence = payload.sprintSequence ?? Number(selectedSprint)
+      const importedSprint = data.sprints.find((item) => item.sequence === sequence)
+      setSelectedSprint(String(sequence))
+      setMappings(importedSprint?.servers.map(({ serverName, mapping }) => mapping ? { serverName, subscriptionId: mapping.subscriptionId, subscriptionName: mapping.subscriptionName, resourceGroupId: mapping.resourceGroupId, networkResourceGroup: mapping.networkResourceGroup, virtualNetwork: mapping.virtualNetwork, subnet: mapping.subnet, networkSecurityGroup: mapping.networkSecurityGroup } : emptyMapping(serverName)) ?? [])
+      setNotice(`Imported and saved ${payload.saved ?? 0} server mapping${payload.saved === 1 ? '' : 's'} from Excel.`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to import sprint landing-zone mappings.')
+    } finally {
+      setTransferring(null)
+      if (importInput.current) importInput.current.value = ''
+    }
+  }
+
   if (loading) return <div className="page sprint-landing-zone-page"><div className="schedule-loading"><RefreshCw className="spin" size={18} /> Loading sprint landing zone inventory...</div></div>
 
   const subscriptionIds = unique(resourceGroups.map((group) => group.subscriptionId))
@@ -140,7 +200,7 @@ export default function SprintLandingZoneMapping() {
   return <div className="page sprint-landing-zone-page">
     <section className="sprint-landing-zone-intro">
       <span><Network size={21} /></span><div><p>Target placement</p><h2>Map sprint servers to the landing zone</h2><small>Choose a sprint, then assign each server to its target subscription, workload resource group, and subnet.</small></div>
-      <button type="button" className="secondary-command" onClick={() => void load()}><RefreshCw size={15} />Refresh inventory</button>
+      <div className="sprint-mapping-transfer-actions"><button type="button" className="secondary-command" disabled={!sprint || visibleMappings.length === 0 || transferring !== null} onClick={() => void exportWorkbook()}><Download size={15} />{transferring === 'export' ? 'Exporting...' : 'Export filtered Excel'}</button><button type="button" className="secondary-command" disabled={transferring !== null} onClick={() => importInput.current?.click()}><Upload size={15} />{transferring === 'import' ? 'Importing...' : 'Import Excel'}</button><button type="button" className="secondary-command" onClick={() => void load()}><RefreshCw size={15} />Refresh inventory</button><input ref={importInput} type="file" accept=".xlsx" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importWorkbook(file) }} /></div>
     </section>
 
     <section className="sprint-landing-zone-controls">

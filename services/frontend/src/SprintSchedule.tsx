@@ -36,6 +36,11 @@ function dateValue(value: string): number {
   return new Date(`${value}T00:00:00.000Z`).getTime()
 }
 
+function todayValue(): number {
+  const today = new Date()
+  return Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())
+}
+
 function addDays(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00.000Z`)
   date.setUTCDate(date.getUTCDate() + days)
@@ -216,14 +221,15 @@ function GanttChart({ sprints, serverTimeline, exporting, onExport }: { sprints:
   const tickCount = Math.min(8, Math.max(2, Math.ceil(totalDays / 7) + 1))
   const ticks = Array.from({ length: tickCount }, (_, index) => minimum + Math.round((totalDays - 1) * index / (tickCount - 1)) * millisecondsPerDay)
   const grouped = [...new Set(sprints.map((sprint) => sprint.wave))].sort((left, right) => left - right)
-  const todayValue = dateValue(new Date().toISOString().slice(0, 10))
-  const todayPercent = todayValue >= minimum && todayValue <= maximum ? ((todayValue - minimum) / rangeSpan) * 100 : null
+  const currentDate = todayValue()
+  const timelinePercent = (value: number) => ((value - minimum) / rangeSpan) * 100
+  const todayPercent = currentDate >= minimum && currentDate <= maximum ? timelinePercent(currentDate) : null
 
   return <section className="schedule-gantt-section" aria-labelledby="schedule-gantt-heading">
     <div className="section-heading"><div><p className="eyebrow">Timeline</p><h2 id="schedule-gantt-heading">Sprint Gantt chart</h2><small>{dateFormatter.format(minimum)} – {dateFormatter.format(maximum)}</small></div>{exportActions}</div>
     <div className="gantt-scroll"><div className="gantt-chart">
       <div className="gantt-axis-label">Wave / Sprint</div>
-      <div className="gantt-axis">{ticks.map((tick) => <span key={tick} style={{ left: `${((tick - minimum) / rangeSpan) * 100}%` }}>{dateFormatter.format(tick)}</span>)}{todayPercent !== null && <span className="gantt-today-label" style={{ left: `${todayPercent}%` }}>Today</span>}</div>
+      <div className="gantt-axis"><div className="gantt-axis-sprint-spacer" /><div className="gantt-axis-timeline">{ticks.map((tick) => <span key={tick} style={{ left: `${timelinePercent(tick)}%` }}>{dateFormatter.format(tick)}</span>)}{todayPercent !== null && <span className="gantt-today-label" style={{ left: `${todayPercent}%` }}>Today</span>}</div></div>
       {grouped.flatMap((wave) => sprints.filter((sprint) => sprint.wave === wave).map((sprint, index) => {
         const left = ((dateValue(sprint.start) - minimum) / millisecondsPerDay) / totalDays * 100
         const width = Math.max(1.5, (((dateValue(sprint.end) - dateValue(sprint.start)) / millisecondsPerDay) + 1) / totalDays * 100)
@@ -237,7 +243,7 @@ function GanttChart({ sprints, serverTimeline, exporting, onExport }: { sprints:
               <span className="gantt-sprint-name"><strong>{sprint.name}</strong><small>{sprint.applications.length} apps · {sprint.applications.slice(0, 3).join(', ')}{sprint.applications.length > 3 ? ` +${sprint.applications.length - 3}` : ''}</small></span>
             </button>
             <div className="gantt-grid">
-              {ticks.map((tick) => <i key={tick} style={{ left: `${((tick - minimum) / rangeSpan) * 100}%` }} />)}
+              {ticks.map((tick) => <i key={tick} style={{ left: `${timelinePercent(tick)}%` }} />)}
               {todayPercent !== null && <i className="gantt-today-line" style={{ left: `${todayPercent}%` }} />}
               <div className={`gantt-bar gantt-status-${statusSlug(sprint.status)}`} style={{ left: `${left}%`, width: `${width}%` }} title={`${sprint.name}: ${sprint.start} to ${sprint.end}\nStatus: ${sprint.status}\nApplications: ${sprint.applications.join(', ')}`}><strong>{sprint.name}</strong><small>{sprint.start} – {sprint.end}</small></div>
             </div>

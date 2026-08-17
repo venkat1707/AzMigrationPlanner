@@ -29,6 +29,7 @@ import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
 import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
 import { deriveResourceGroup, parseResourceGroupFile, type LandingZoneResourceGroupInput, type DerivedLandingZoneResourceGroup } from './target-landing-zone.js'
 import { deriveNetwork, networkKey, parseNetworkFile, type LandingZoneNetworkInput, type DerivedLandingZoneNetwork } from './landing-zone-network.js'
+import { createSprintMappingWorkbook, parseSprintMappingWorkbook, saveSprintMappings, validateSprintMappings, type LandingZoneNetworkOption, type LandingZoneResourceGroupOption, type SprintMappingInput } from './sprint-landing-zone-workbook.js'
 import { identifyServerEnvironments, validateEnvironmentRules, type AssessmentIdentity, type EnvironmentRuleInput } from './environment-identification.js'
 import { registerAuthentication, requireAdmin } from './auth.js'
 import { saveApplicationTreatmentPlans } from './application-treatment-plans.js'
@@ -1699,6 +1700,70 @@ app.get('/api/sprint-landing-zone-mappings', async (_request, response) => {
   response.json({ sprints, resourceGroups, networks })
 })
 
+app.post('/api/sprint-landing-zone-mappings/export', async (request, response) => {
+  const sprintSequence = Number(request.body?.sprintSequence)
+  const requestedMappings = Array.isArray(request.body?.mappings) ? request.body.mappings : []
+  if (!Number.isInteger(sprintSequence) || sprintSequence <= 0 || requestedMappings.length === 0 || requestedMappings.length > 500) {
+    response.status(400).json({ error: 'Provide a sprint and between 1 and 500 filtered server mappings.' })
+    return
+  }
+  const [saved, resourceGroups, networks] = await Promise.all([
+    loadSavedTaskPlan(),
+    database('landing_zone_resource_groups').select({ subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', resourceGroupName: 'resource_group_name' }) as Promise<LandingZoneResourceGroupOption[]>,
+    database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }) as Promise<LandingZoneNetworkOption[]>,
+  ])
+  const wave = saved?.plan.waves.find((candidate) => candidate.sprints.some((sprint) => sprint.sequence === sprintSequence))
+  const sprint = wave?.sprints.find((candidate) => candidate.sequence === sprintSequence)
+  if (!wave || !sprint) {
+    response.status(400).json({ error: 'Select a valid saved sprint before exporting mappings.' })
+    return
+  }
+  const mappings = requestedMappings.map((item: unknown): SprintMappingInput => {
+    const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    return {
+      serverName: String(value.serverName ?? '').trim(), subscriptionId: String(value.subscriptionId ?? '').trim(), subscriptionName: String(value.subscriptionName ?? '').trim(),
+      resourceGroupId: String(value.resourceGroupId ?? '').trim(), networkResourceGroup: String(value.networkResourceGroup ?? '').trim(), virtualNetwork: String(value.virtualNetwork ?? '').trim(),
+      subnet: String(value.subnet ?? '').trim(), networkSecurityGroup: String(value.networkSecurityGroup ?? '').trim(),
+    }
+  })
+  try {
+    const allowedServers = new Set(sprint.servers.map((server) => server.name.trim().toLowerCase()))
+    const rows = validateSprintMappings(mappings, allowedServers, resourceGroups, networks).map((mapping) => ({
+      ...mapping, sprintSequence, sprintName: sprint.name, wave: wave.wave, environment: wave.environment,
+    }))
+    const workbook = await createSprintMappingWorkbook(rows, resourceGroups, networks)
+    response.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').attachment(`sprint-${sprintSequence}-landing-zone-mappings.xlsx`).send(workbook)
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to export sprint landing-zone mappings.' })
+  }
+})
+
+app.post('/api/sprint-landing-zone-mappings/import', workbookUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select an Excel mapping workbook.' })
+    return
+  }
+  try {
+    if (extname(file.originalname).toLowerCase() !== '.xlsx') throw new Error('Upload an XLSX mapping workbook.')
+    const [saved, resourceGroups, networks] = await Promise.all([
+      loadSavedTaskPlan(),
+      database('landing_zone_resource_groups').select({ subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', resourceGroupName: 'resource_group_name' }) as Promise<LandingZoneResourceGroupOption[]>,
+      database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }) as Promise<LandingZoneNetworkOption[]>,
+    ])
+    const parsed = await parseSprintMappingWorkbook(file.path, resourceGroups, networks)
+    const sprint = saved?.plan.waves.flatMap((wave) => wave.sprints).find((item) => item.sequence === parsed.sprintSequence)
+    if (!sprint) throw new Error('The workbook sprint no longer exists in the saved plan.')
+    const allowedServers = new Set(sprint.servers.map((server) => server.name.trim().toLowerCase()))
+    const mappings = validateSprintMappings(parsed.mappings, allowedServers, resourceGroups, networks)
+    response.json({ saved: await saveSprintMappings(database, parsed.sprintSequence, mappings), sprintSequence: parsed.sprintSequence })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Unable to import sprint landing-zone mappings.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
 app.put('/api/sprint-landing-zone-mappings', async (request, response) => {
   const sprintSequence = Number(request.body?.sprintSequence)
   const requestedMappings = Array.isArray(request.body?.mappings) ? request.body.mappings : []
@@ -1713,8 +1778,7 @@ app.put('/api/sprint-landing-zone-mappings', async (request, response) => {
     return
   }
   const allowedServers = new Set(sprint.servers.map((server) => server.name.trim().toLowerCase()))
-  const seenServers = new Set<string>()
-  const mappings: Array<{ serverName: string; subscriptionId: string; subscriptionName: string; resourceGroupId: string; networkResourceGroup: string; virtualNetwork: string; subnet: string; networkSecurityGroup: string }> = []
+  const mappings: SprintMappingInput[] = []
   for (const item of requestedMappings) {
     const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
     const mapping = {
@@ -1727,29 +1791,17 @@ app.put('/api/sprint-landing-zone-mappings', async (request, response) => {
       subnet: String(value.subnet ?? '').trim(),
       networkSecurityGroup: String(value.networkSecurityGroup ?? '').trim(),
     }
-    const serverKey = mapping.serverName.toLowerCase()
-    if (!mapping.serverName || !allowedServers.has(serverKey) || seenServers.has(serverKey)) {
-      response.status(400).json({ error: 'Every draft mapping must belong to the selected sprint and include a unique server name.' })
-      return
-    }
-    seenServers.add(serverKey)
     mappings.push(mapping)
   }
-  await database.transaction(async (transaction) => {
-    await transaction('sprint_server_landing_zone_mappings').insert(mappings.map((mapping) => ({
-      server_name: mapping.serverName,
-      sprint_sequence: sprintSequence,
-      subscription_id: mapping.subscriptionId || null,
-      subscription_name: mapping.subscriptionName || null,
-      resource_group_id: mapping.resourceGroupId || null,
-      network_resource_group: mapping.networkResourceGroup || null,
-      virtual_network: mapping.virtualNetwork || null,
-      subnet: mapping.subnet || null,
-      network_security_group: mapping.networkSecurityGroup || null,
-      updated_at: transaction.fn.now(),
-    }))).onConflict('server_name').merge(['sprint_sequence', 'subscription_id', 'subscription_name', 'resource_group_id', 'network_resource_group', 'virtual_network', 'subnet', 'network_security_group', 'updated_at'])
-  })
-  response.json({ saved: mappings.length })
+  try {
+    const [resourceGroups, networks] = await Promise.all([
+      database('landing_zone_resource_groups').select({ subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', resourceGroupName: 'resource_group_name' }) as Promise<LandingZoneResourceGroupOption[]>,
+      database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }) as Promise<LandingZoneNetworkOption[]>,
+    ])
+    response.json({ saved: await saveSprintMappings(database, sprintSequence, validateSprintMappings(mappings, allowedServers, resourceGroups, networks)) })
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to save sprint landing-zone mappings.' })
+  }
 })
 
 const platformFields = [
