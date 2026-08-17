@@ -63,4 +63,15 @@ test('HLD Word document uses a restrained title and embeds the architecture diag
   assert.equal(metadata.width, 1000)
   assert.equal(metadata.height, 1050)
   assert.ok(image.byteLength > 10_000)
+  const { data, info } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true })
+  const darkPixels = (left: number, top: number, right: number, bottom: number) => {
+    let count = 0
+    for (let y = top; y < bottom; y += 1) for (let x = left; x < right; x += 1) {
+      const offset = (y * info.width + x) * info.channels
+      if ((data[offset] ?? 255) < 120 && (data[offset + 1] ?? 255) < 140 && (data[offset + 2] ?? 255) < 160) count += 1
+    }
+    return count
+  }
+  assert.ok(darkPixels(55, 35, 800, 105) > 500, 'architecture title and platform labels must be visible')
+  assert.ok(darkPixels(55, 150, 700, 190) > 250, 'architecture section heading must be visible')
 })
