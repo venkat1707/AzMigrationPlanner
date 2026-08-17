@@ -2,6 +2,7 @@ import type { Knex } from 'knex'
 import { ManagedIdentityCredential } from '@azure/identity'
 import JSZip from 'jszip'
 import sharp from 'sharp'
+import { AlignmentType, BorderStyle, Document as WordDocument, Footer, HeadingLevel, ImageRun, Packer, PageBreak, PageNumber, Paragraph, ShadingType, Table, TableCell, TableOfContents, TableRow, TextRun, WidthType } from 'docx'
 import { buildApplicationMap } from './application-map.js'
 
 const defaultApiVersion = 'v1'
@@ -417,7 +418,7 @@ function coverPage(title: string, metadata: HldDocumentMetadata, context: Record
   ].join('')
 }
 
-function markdownToDocumentXml(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata): string {
+export function markdownToDocumentXml(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata): string {
   const lines = markdown.replace(/\r\n/g, '\n').split('\n')
   const body: string[] = [coverPage(title, metadata, hldContext), pageBreak, styledParagraph('Heading1', inlineRuns('Table of Contents')), tocField, pageBreak]
   if (hldContext) body.push(styledParagraph('Heading1', inlineRuns('Architecture Overview')), architectureDrawing, '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:i/><w:color w:val="587086"/></w:rPr><w:t>Figure 1. Application workload, connected systems, and Azure landing-zone placement.</w:t></w:r></w:p>', pageBreak)
@@ -487,22 +488,108 @@ async function buildArchitecturePng(context: Record<string, unknown>): Promise<B
   return sharp(Buffer.from(svg)).png().toBuffer()
 }
 
+function wordInlineRuns(text: string): TextRun[] {
+  const tokens = text.split(/(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*]+\*|_[^_]+_)/g).filter(Boolean)
+  return (tokens.length ? tokens : ['']).map((token) => {
+    if (/^\*\*[\s\S]+\*\*$/.test(token) || /^__[\s\S]+__$/.test(token)) return new TextRun({ text: token.slice(2, -2), bold: true })
+    if (/^`[^`]+`$/.test(token)) return new TextRun({ text: token.slice(1, -1), font: 'Consolas', color: 'A31515' })
+    if (/^\*[\s\S]+\*$/.test(token) || /^_[\s\S]+_$/.test(token)) return new TextRun({ text: token.slice(1, -1), italics: true })
+    return new TextRun(token)
+  })
+}
+
+function wordTable(rows: string[][]): Table {
+  const columns = Math.max(1, ...rows.map((row) => row.length))
+  const border = { style: BorderStyle.SINGLE, size: 1, color: 'BFCBD5' }
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border },
+    rows: rows.map((row, rowIndex) => new TableRow({ children: Array.from({ length: columns }, (_, columnIndex) => new TableCell({
+      shading: rowIndex === 0 ? { type: ShadingType.CLEAR, fill: '2F5496' } : undefined,
+      children: [new Paragraph({ children: rowIndex === 0 ? [new TextRun({ text: row[columnIndex] ?? '', bold: true, color: 'FFFFFF' })] : wordInlineRuns(row[columnIndex] ?? '') })],
+    })) })),
+  })
+}
+
+function markdownToWordChildren(markdown: string): Array<Paragraph | Table> {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
+  const children: Array<Paragraph | Table> = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!.replace(/\s+$/, '')
+    const trimmed = line.trim()
+    if (!trimmed || /^([-*_])(\s*\1){2,}$/.test(trimmed)) continue
+    if (trimmed.startsWith('|') && index + 1 < lines.length && isTableSeparator(lines[index + 1]!)) {
+      const rows = [parseTableRow(trimmed)]
+      index += 2
+      while (index < lines.length && lines[index]!.trim().startsWith('|')) { rows.push(parseTableRow(lines[index]!)); index += 1 }
+      index -= 1
+      children.push(wordTable(rows))
+      continue
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed)
+    if (heading) {
+      const level = Math.min(Math.max(heading[1]!.length - 1, 1), 3)
+      const headingLevel = level === 1 ? HeadingLevel.HEADING_1 : level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3
+      children.push(new Paragraph({ heading: headingLevel, children: wordInlineRuns(heading[2]!) }))
+      continue
+    }
+    const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line)
+    if (bullet) {
+      children.push(new Paragraph({ bullet: { level: Math.min(Math.floor(bullet[1]!.replace(/\t/g, '  ').length / 2), 2) }, children: wordInlineRuns(bullet[2]!) }))
+      continue
+    }
+    const numbered = /^(\d+)[.)]\s+(.*)$/.exec(trimmed)
+    if (numbered) {
+      children.push(new Paragraph({ children: [new TextRun({ text: `${numbered[1]}. `, bold: true }), ...wordInlineRuns(numbered[2]!)] }))
+      continue
+    }
+    children.push(new Paragraph({ children: wordInlineRuns(line), spacing: { after: 160 } }))
+  }
+  return children
+}
+
 export async function buildDocx(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata = { author: 'To be confirmed', reviewers: ['Architecture Review Board (TBC)'], version: '0.1' }): Promise<string> {
-  const zip = new JSZip()
-  zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>`)
-  zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>`)
-  zip.file('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>${hldContext ? '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/architecture.png"/>' : ''}<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`)
-  zip.file('word/styles.xml', stylesXml)
-  zip.file('word/numbering.xml', numberingXml)
-  zip.file('word/settings.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:updateFields w:val="true"/></w:settings>')
-  zip.file('word/footer1.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:color w:val="6A7C8D"/><w:sz w:val="18"/></w:rPr><w:t>High-Level Design · Version ' + xmlEscape(metadata.version) + ' · Page </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t> of </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> NUMPAGES </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>')
-  zip.file('docProps/core.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xmlEscape(title)}</dc:title><dc:creator>${xmlEscape(metadata.author)}</dc:creator><cp:lastModifiedBy>Cloud Accelerate Factory</cp:lastModifiedBy><cp:revision>${xmlEscape(metadata.version)}</cp:revision><dcterms:created xsi:type="dcterms:W3CDTF">${new Date().toISOString()}</dcterms:created></cp:coreProperties>`)
-  if (hldContext) zip.file('word/media/architecture.png', await buildArchitecturePng(hldContext))
-  zip.file('word/document.xml', markdownToDocumentXml(title, markdown, hldContext, metadata))
-  const buffer = await zip.generateAsync({ type: 'nodebuffer' })
+  const application = firstString(hldContext?.application) ?? 'Application'
+  const environment = firstString(hldContext?.environment) ?? 'Environment not specified'
+  const border = { style: BorderStyle.SINGLE, size: 1, color: 'A9BBCB' }
+  const controlRows = [
+    ['Document title', title], ['Application', application], ['Environment', environment], ['Author', metadata.author],
+    ['Reviewers', metadata.reviewers.join('; ')], ['Version', metadata.version], ['Status', 'Draft'], ['Generated', new Date().toISOString().slice(0, 10)],
+  ].map(([label, value]) => new TableRow({ children: [
+    new TableCell({ shading: { type: ShadingType.CLEAR, fill: 'E8F1F8' }, width: { size: 24, type: WidthType.PERCENTAGE }, children: [new Paragraph({ children: [new TextRun({ text: label!, bold: true })] })] }),
+    new TableCell({ width: { size: 76, type: WidthType.PERCENTAGE }, children: [new Paragraph(value!)] }),
+  ] }))
+  const children: Array<Paragraph | Table | TableOfContents> = [
+    new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 900, after: 160 }, children: [new TextRun({ text: 'HIGH-LEVEL DESIGN', bold: true, color: '2F6F91', size: 24 })] }),
+    new Paragraph({ alignment: AlignmentType.CENTER, style: 'HldTitle', children: [new TextRun(title)] }),
+    new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 650 }, children: [new TextRun({ text: `${application} · ${environment}`, color: '587086', size: 24 })] }),
+    new Table({ rows: controlRows, width: { size: 100, type: WidthType.PERCENTAGE }, borders: { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border } }),
+    new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 520 }, children: [new TextRun({ text: 'Draft for architecture review. Validate assumptions and open decisions before approval.', italics: true, color: '6A7C8D' })] }),
+    new Paragraph({ children: [new PageBreak()] }),
+    new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Table of Contents' }),
+    new TableOfContents('Table of Contents', { hyperlink: true, headingStyleRange: '1-3' }),
+    new Paragraph({ children: [new PageBreak()] }),
+  ]
+  if (hldContext) {
+    children.push(
+      new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Architecture Overview' }),
+      new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ type: 'png', data: await buildArchitecturePng(hldContext), transformation: { width: 630, height: 354 }, altText: { title: 'High-level architecture diagram', description: 'Application workload, connected systems, and Azure landing-zone placement', name: 'architecture.png' } })] }),
+      new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'Figure 1. Application workload, connected systems, and Azure landing-zone placement.', italics: true, color: '587086' })] }),
+      new Paragraph({ children: [new PageBreak()] }),
+    )
+  }
+  children.push(...markdownToWordChildren(markdown))
+  const document = new WordDocument({
+    title, creator: metadata.author, lastModifiedBy: 'Cloud Accelerate Factory', revision: Number.parseInt(metadata.version, 10) || 1,
+    description: `${application} ${environment} High-Level Design`, features: { updateFields: true },
+    styles: { paragraphStyles: [{ id: 'HldTitle', name: 'HLD Title', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { bold: true, color: '1F3864', size: 40 }, paragraph: { spacing: { before: 120, after: 120 } } }] },
+    sections: [{
+      properties: { page: { margin: { top: 1440, right: 1440, bottom: 1440, left: 1440, footer: 720 } } },
+      footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `High-Level Design · Version ${metadata.version} · Page `, color: '6A7C8D', size: 18 }), new TextRun({ children: [PageNumber.CURRENT] }), new TextRun(' of '), new TextRun({ children: [PageNumber.TOTAL_PAGES] })] })] }) },
+      children,
+    }],
+  })
+  const buffer = await Packer.toBuffer(document)
   if (buffer.byteLength > maxDocumentBytes) throw new DesignDocumentError('The generated document exceeds the maximum supported size.', 502)
   return buffer.toString('base64')
 }
