@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import JSZip from 'jszip'
 import sharp from 'sharp'
-import { buildDocx, formatHldContextMessage } from './design-document.js'
+import { buildDocx, buildResponsesUrl, formatHldContextMessage } from './design-document.js'
 
 const context = {
   application: 'Billing',
@@ -24,17 +24,37 @@ test('HLD agent message includes all application and environment scoped design i
   assert.equal(payload.sprintToLandingZoneMappings[0]!.serverName, 'billing-01')
 })
 
+test('Foundry request uses the stable published endpoint without pinning an agent version', () => {
+  const endpoint = 'https://example.services.ai.azure.com/api/projects/project/agents/MigrationPlannerAgent/endpoint/protocols/openai/responses'
+  const requestUrl = new URL(buildResponsesUrl(endpoint))
+  assert.equal(requestUrl.pathname, '/api/projects/project/agents/MigrationPlannerAgent/endpoint/protocols/openai/responses')
+  assert.equal(requestUrl.searchParams.get('api-version'), 'v1')
+  assert.doesNotMatch(requestUrl.pathname, /\/versions?\//i)
+})
+
 test('HLD Word document uses a restrained title and embeds the architecture diagram', async () => {
-  const zip = await JSZip.loadAsync(Buffer.from(await buildDocx('Billing High-Level Design', '## Executive Summary\nDesign summary.', context), 'base64'))
+  const bytes = Buffer.from(await buildDocx('Billing High-Level Design', '## Executive Summary\nDesign summary.', context, { author: 'Alex Architect', reviewers: ['Cloud Review Board'], version: '0.3' }), 'base64')
+  assert.equal(bytes.subarray(0, 2).toString(), 'PK')
+  const zip = await JSZip.loadAsync(bytes)
   const styles = await zip.file('word/styles.xml')!.async('string')
   const document = await zip.file('word/document.xml')!.async('string')
   const relationships = await zip.file('word/_rels/document.xml.rels')!.async('string')
+  const settings = await zip.file('word/settings.xml')!.async('string')
+  const footer = await zip.file('word/footer1.xml')!.async('string')
+  const core = await zip.file('docProps/core.xml')!.async('string')
   const image = await zip.file('word/media/architecture.png')!.async('nodebuffer')
   const metadata = await sharp(image).metadata()
 
   assert.match(styles, /w:style w:type="paragraph" w:styleId="Title"[\s\S]*?<w:sz w:val="40"\/>/)
+  assert.match(document, /Document title[\s\S]*Alex Architect[\s\S]*Cloud Review Board[\s\S]*0\.3/)
+  assert.match(document, /TOC \\o "1-3" \\h \\z \\u/)
+  assert.match(document, /w:pStyle w:val="Heading1"\/><\/w:pPr><w:r><w:t xml:space="preserve">Executive Summary/)
   assert.match(document, /r:embed="rId3"/)
   assert.match(relationships, /Id="rId3"[^>]+relationships\/image[^>]+media\/architecture\.png/)
+  assert.match(relationships, /relationships\/footer/)
+  assert.match(settings, /updateFields w:val="true"/)
+  assert.match(footer, /Version 0\.3 · Page [\s\S]* PAGE [\s\S]* NUMPAGES /)
+  assert.match(core, /<dc:creator>Alex Architect<\/dc:creator>/)
   assert.equal(metadata.width, 1200)
   assert.equal(metadata.height, 675)
   assert.ok(image.byteLength > 10_000)

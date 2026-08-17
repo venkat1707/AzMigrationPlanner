@@ -197,7 +197,7 @@ async function loadHldContext(
       identityDomainController: 'identity_domain_controller', monitoringSolution: 'monitoring_solution', backupSolution: 'backup_solution',
       endpointProtectionSolution: 'endpoint_protection_solution', siemSolution: 'siem_solution', patchManagement: 'patch_management', notes: 'notes',
     }).first() as Promise<Record<string, unknown> | undefined>,
-    connection('applications').where({ name: application }).select({ application: 'name', treatmentPlan: 'treatment_plan' }).first() as Promise<{ application: string; treatmentPlan: string | null } | undefined>,
+    connection('applications').where({ name: application }).select({ application: 'name', treatmentPlan: 'treatment_plan', firstName: 'first_name', lastName: 'last_name', emailAddress: 'email_address' }).first() as Promise<{ application: string; treatmentPlan: string | null; firstName: string | null; lastName: string | null; emailAddress: string | null } | undefined>,
     assessmentQuery as Promise<Array<{ server_name: string }>>,
   ])
   const serverNames = applicationServers.map((row) => row.server_name)
@@ -214,7 +214,10 @@ async function loadHldContext(
     environment,
     platformLandingZone: platformLandingZone ?? null,
     applicationMap: { application: map.application, environment: map.environment, summary: summarizeMap(map), nodes: map.nodes, edges: map.edges },
-    applicationTreatment: { application, environment, treatmentPlan: applicationTreatment?.treatmentPlan ?? null, servers: serverNames },
+    applicationTreatment: {
+      application, environment, treatmentPlan: applicationTreatment?.treatmentPlan ?? null, servers: serverNames,
+      applicationOwner: applicationTreatment ? { firstName: applicationTreatment.firstName, lastName: applicationTreatment.lastName, emailAddress: applicationTreatment.emailAddress } : null,
+    },
     sprintToLandingZoneMappings,
   }
 }
@@ -248,8 +251,9 @@ function isQuestionStatus(status: string | null): boolean {
   return ['needs-input', 'needs_input', 'needsinput', 'question', 'questions', 'input-required', 'pending', 'awaiting-input', 'clarification'].includes(status)
 }
 
-// The Foundry agent is exposed through the OpenAI Responses protocol, which requires an api-version.
-function buildResponsesUrl(endpointUrl: string): string {
+// Keep the stable published-agent endpoint unversioned so Foundry routes each new request
+// to the currently published agent version. The api-version selects only the REST contract.
+export function buildResponsesUrl(endpointUrl: string): string {
   const url = new URL(endpointUrl)
   if (!url.searchParams.has('api-version')) url.searchParams.set('api-version', defaultApiVersion)
   return url.toString()
@@ -265,10 +269,12 @@ const responseContract = [
   'If you need clarification before you can produce the document, reply exactly with:',
   '{"status":"needs-input","message":"<short reason>","questions":[{"id":"q1","prompt":"<question>","kind":"single-choice|multi-choice|boolean|multiline|text","options":["..."],"required":true}]}',
   'When you have enough information, reply exactly with:',
-  '{"status":"completed","document":{"title":"<document title>","markdown":"<full HLD>"}}',
-  'Write the markdown as a professional, well-structured document. Use "## " for each major section and "### " for sub-sections, in this order:',
-  'Executive Summary, Current State, Target Azure Architecture, Networking, Security & Identity, Data & Storage, Availability & Resiliency, Migration Approach, Risks & Considerations.',
-  'In Target Azure Architecture, include an Architecture Overview that explains the components, connectivity, treatment, and landing-zone placements represented by the architecture diagram embedded by the document renderer.',
+  '{"status":"completed","document":{"title":"<document title>","author":"<application owner or To be confirmed>","reviewers":["<reviewer or Architecture Review Board (TBC)>"],"version":"0.1","markdown":"<full HLD>"}}',
+  'Do not invent people. Use the supplied application owner as author when available; otherwise use "To be confirmed". Use "Architecture Review Board (TBC)" when reviewers are not supplied.',
+  'Write an architecture decision document, not a generic assessment report. Use "## " for each major section and "### " for sub-sections, in this order:',
+  'Executive Summary, Purpose and Scope, Requirements and Assumptions, Current-State Architecture, Architecture Principles and Decisions, Target Azure Architecture, Component Design, Networking, Security and Identity, Data and Storage, Availability and Resiliency, Monitoring and Operations, Migration Approach, Risks and Mitigations, Open Decisions, and Appendices.',
+  'In Target Azure Architecture, include an Architecture Overview that explains every component, trust boundary, connectivity flow, treatment, and landing-zone placement represented by the architecture diagram embedded by the document renderer.',
+  'For each design area, distinguish supplied facts from assumptions, state the selected design, explain the rationale, and identify unresolved decisions. Do not fabricate Azure services, regions, controls, owners, recovery objectives, or compliance requirements.',
   'Under each section use short paragraphs, bullet lists ("- "), numbered steps ("1. ") and GitHub-style Markdown tables where they aid clarity. Keep the JSON valid and do not wrap it in code fences.',
 ].join('\n')
 
@@ -383,11 +389,38 @@ function renderTable(rows: string[][]): string {
 
 const architectureDrawing = `<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="120" w:after="240"/></w:pPr><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" distT="0" distB="0" distL="0" distR="0"><wp:extent cx="5715000" cy="3214688"/><wp:docPr id="1" name="High-level architecture diagram" descr="Application and Azure landing-zone architecture"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="architecture.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId3"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="5715000" cy="3214688"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`
 
-function markdownToDocumentXml(title: string, markdown: string, includeArchitecture: boolean): string {
+export type HldDocumentMetadata = { author: string; reviewers: string[]; version: string }
+
+const pageBreak = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+const tocField = '<w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" \\h \\z \\u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Table of contents updates when this document opens in Microsoft Word.</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>'
+
+function documentControlTable(title: string, metadata: HldDocumentMetadata, context: Record<string, unknown> | null): string {
+  const application = firstString(context?.application) ?? 'Not specified'
+  const environment = firstString(context?.environment) ?? 'Not specified'
+  const rows = [
+    ['Document title', title], ['Application', application], ['Environment', environment], ['Author', metadata.author],
+    ['Reviewers', metadata.reviewers.join('; ')], ['Version', metadata.version], ['Status', 'Draft'], ['Generated', new Date().toISOString().slice(0, 10)],
+  ]
+  const cells = rows.map(([label, value]) => `<w:tr><w:tc><w:tcPr><w:tcW w:w="2200" w:type="dxa"/><w:shd w:val="clear" w:fill="E8F1F8"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${xmlEscape(label!)}</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="6800" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>${xmlEscape(value!)}</w:t></w:r></w:p></w:tc></w:tr>`).join('')
+  return `<w:tbl><w:tblPr><w:tblW w:w="9000" w:type="dxa"/><w:tblBorders><w:top w:val="single" w:sz="4" w:color="A9BBCB"/><w:left w:val="single" w:sz="4" w:color="A9BBCB"/><w:bottom w:val="single" w:sz="4" w:color="A9BBCB"/><w:right w:val="single" w:sz="4" w:color="A9BBCB"/><w:insideH w:val="single" w:sz="4" w:color="C9D5DF"/><w:insideV w:val="single" w:sz="4" w:color="C9D5DF"/></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="2200"/><w:gridCol w:w="6800"/></w:tblGrid>${cells}</w:tbl>`
+}
+
+function coverPage(title: string, metadata: HldDocumentMetadata, context: Record<string, unknown> | null): string {
+  const application = firstString(context?.application) ?? 'Application'
+  const environment = firstString(context?.environment) ?? 'Environment not specified'
+  return [
+    '<w:p><w:pPr><w:spacing w:before="960" w:after="180"/><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="2F6F91"/><w:sz w:val="24"/></w:rPr><w:t>HIGH-LEVEL DESIGN</w:t></w:r></w:p>',
+    `<w:p><w:pPr><w:pStyle w:val="Title"/><w:jc w:val="center"/></w:pPr>${inlineRuns(title)}</w:p>`,
+    `<w:p><w:pPr><w:spacing w:after="720"/><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:color w:val="587086"/><w:sz w:val="24"/></w:rPr><w:t>${xmlEscape(application)} · ${xmlEscape(environment)}</w:t></w:r></w:p>`,
+    documentControlTable(title, metadata, context),
+    '<w:p><w:pPr><w:spacing w:before="600"/><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:i/><w:color w:val="6A7C8D"/></w:rPr><w:t>Draft for architecture review. Validate assumptions and open decisions before approval.</w:t></w:r></w:p>',
+  ].join('')
+}
+
+function markdownToDocumentXml(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata): string {
   const lines = markdown.replace(/\r\n/g, '\n').split('\n')
-  const body: string[] = []
-  if (title.trim()) body.push(styledParagraph('Title', inlineRuns(title.trim())))
-  if (includeArchitecture) body.push(architectureDrawing)
+  const body: string[] = [coverPage(title, metadata, hldContext), pageBreak, styledParagraph('Heading1', inlineRuns('Table of Contents')), tocField, pageBreak]
+  if (hldContext) body.push(styledParagraph('Heading1', inlineRuns('Architecture Overview')), architectureDrawing, '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:i/><w:color w:val="587086"/></w:rPr><w:t>Figure 1. Application workload, connected systems, and Azure landing-zone placement.</w:t></w:r></w:p>', pageBreak)
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]!.replace(/\s+$/, '')
     const trimmed = line.trim()
@@ -403,7 +436,7 @@ function markdownToDocumentXml(title: string, markdown: string, includeArchitect
 
     const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed)
     if (heading) {
-      const level = Math.min(heading[1]!.length, 3)
+      const level = Math.min(Math.max(heading[1]!.length - 1, 1), 3)
       body.push(styledParagraph(`Heading${level}`, inlineRuns(heading[2]!)))
       continue
     }
@@ -424,7 +457,7 @@ function markdownToDocumentXml(title: string, markdown: string, includeArchitect
     body.push(`<w:p>${inlineRuns(line)}</w:p>`)
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body.join('')}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body.join('')}<w:sectPr><w:footerReference w:type="default" r:id="rId4"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:footer="720"/></w:sectPr></w:body></w:document>`
 }
 
 const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -454,18 +487,21 @@ async function buildArchitecturePng(context: Record<string, unknown>): Promise<B
   return sharp(Buffer.from(svg)).png().toBuffer()
 }
 
-export async function buildDocx(title: string, markdown: string, hldContext: Record<string, unknown> | null): Promise<string> {
+export async function buildDocx(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata = { author: 'To be confirmed', reviewers: ['Architecture Review Board (TBC)'], version: '0.1' }): Promise<string> {
   const zip = new JSZip()
   zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`)
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>`)
   zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>`)
   zip.file('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>${hldContext ? '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/architecture.png"/>' : ''}</Relationships>`)
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>${hldContext ? '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/architecture.png"/>' : ''}<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`)
   zip.file('word/styles.xml', stylesXml)
   zip.file('word/numbering.xml', numberingXml)
+  zip.file('word/settings.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:updateFields w:val="true"/></w:settings>')
+  zip.file('word/footer1.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:color w:val="6A7C8D"/><w:sz w:val="18"/></w:rPr><w:t>High-Level Design · Version ' + xmlEscape(metadata.version) + ' · Page </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t> of </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> NUMPAGES </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>')
+  zip.file('docProps/core.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xmlEscape(title)}</dc:title><dc:creator>${xmlEscape(metadata.author)}</dc:creator><cp:lastModifiedBy>Cloud Accelerate Factory</cp:lastModifiedBy><cp:revision>${xmlEscape(metadata.version)}</cp:revision><dcterms:created xsi:type="dcterms:W3CDTF">${new Date().toISOString()}</dcterms:created></cp:coreProperties>`)
   if (hldContext) zip.file('word/media/architecture.png', await buildArchitecturePng(hldContext))
-  zip.file('word/document.xml', markdownToDocumentXml(title, markdown, Boolean(hldContext)))
+  zip.file('word/document.xml', markdownToDocumentXml(title, markdown, hldContext, metadata))
   const buffer = await zip.generateAsync({ type: 'nodebuffer' })
   if (buffer.byteLength > maxDocumentBytes) throw new DesignDocumentError('The generated document exceeds the maximum supported size.', 502)
   return buffer.toString('base64')
@@ -576,7 +612,17 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
   }
   const title = firstString(documentRecord.title, documentRecord.name) ?? (input.artifactType === 'design-document' ? `${input.application} — High-Level Design (${input.environment})` : input.artifactType === 'migration-plan' ? 'Azure Migration Plan' : `Migration Runsheet — Sprint ${input.sprintSequence}`)
   const fileName = `${sanitizeFileName(input.artifactType === 'design-document' ? `${input.application}-${input.environment}-high-level-design` : input.artifactType === 'migration-plan' ? 'azure-migration-plan' : `migration-runsheet-sprint-${input.sprintSequence}`)}.docx`
-  const contentBase64 = await buildDocx(title, markdown, hldContext)
+  const owner = asRecord(asRecord(hldContext?.applicationTreatment).applicationOwner)
+  const ownerName = [firstString(owner.firstName), firstString(owner.lastName)].filter(Boolean).join(' ')
+  const rawReviewers = documentRecord.reviewers
+  const reviewers = (Array.isArray(rawReviewers) ? rawReviewers : typeof rawReviewers === 'string' ? rawReviewers.split(/[;,]/) : [])
+    .map((reviewer) => String(reviewer).trim()).filter(Boolean)
+  const metadata: HldDocumentMetadata = {
+    author: firstString(documentRecord.author, ownerName, owner.emailAddress) ?? 'To be confirmed',
+    reviewers: reviewers.length ? reviewers : ['Architecture Review Board (TBC)'],
+    version: firstString(documentRecord.version) ?? '0.1',
+  }
+  const contentBase64 = await buildDocx(title, markdown, hldContext, metadata)
   return { status: 'completed', fileName, contentType: defaultDocumentType, contentBase64 }
 }
 
