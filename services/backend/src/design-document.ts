@@ -270,12 +270,13 @@ const responseContract = [
   'If you need clarification before you can produce the document, reply exactly with:',
   '{"status":"needs-input","message":"<short reason>","questions":[{"id":"q1","prompt":"<question>","kind":"single-choice|multi-choice|boolean|multiline|text","options":["..."],"required":true}]}',
   'When you have enough information, reply exactly with:',
-  '{"status":"completed","document":{"title":"<document title>","author":"<application owner or To be confirmed>","reviewers":["<reviewer or Architecture Review Board (TBC)>"],"version":"0.1","markdown":"<full HLD>"}}',
+  '{"status":"completed","document":{"title":"<document title>","author":"<application owner or To be confirmed>","reviewers":["<reviewer or Architecture Review Board (TBC)>"],"version":"0.1","markdown":"<full HLD>","diagram":{"zones":[{"name":"Hub (Platform)","components":["ExpressRoute","Azure Firewall Premium"]},{"name":"Spoke: <vnet>","components":["<subnet>","<app server>","<database>"]}],"flows":[{"from":"<app server>","to":"<database>","detail":"1521"}]}}}',
+  'Write in plain, simple English. Use short sentences and the active voice. Avoid jargon, and spell out each acronym the first time you use it.',
   'Do not invent people. Use the supplied application owner as author when available; otherwise use "To be confirmed". Use "Architecture Review Board (TBC)" when reviewers are not supplied.',
   'Write an architecture decision document, not a generic assessment report. Use "## " for each major section and "### " for sub-sections, in this order:',
   'Executive Summary, Purpose and Scope, Requirements and Assumptions, Current-State Architecture, Architecture Principles and Decisions, Target Azure Architecture, Component Design, Networking, Security and Identity, Data and Storage, Availability and Resiliency, Monitoring and Operations, Migration Approach, Risks and Mitigations, Open Decisions, and Appendices.',
-  'In Target Azure Architecture, include an Architecture Overview that explains every component, trust boundary, connectivity flow, treatment, and landing-zone placement represented by the architecture diagram embedded by the document renderer.',
-  'Do not include Mermaid, PlantUML, ASCII diagrams, fenced diagram source, or image-generation instructions. The application renders the architecture diagram separately from the supplied context.',
+  'In Target Azure Architecture, include an Architecture Overview that explains every component, trust boundary, connectivity flow, treatment, and landing-zone placement in plain English.',
+  'Provide the optional "diagram" object to describe the target architecture as a simple layered picture. Group components into ordered "zones" (for example Hub/Platform, then the application Spoke and its subnets, then Azure targets) and list the important "flows" as from/to pairs with a port or protocol in "detail". Use plain, human-readable names. Do NOT use Mermaid, PlantUML, ASCII art, fenced diagram source, or image links; the application draws the diagram from this structured data.',
   'For each design area, distinguish supplied facts from assumptions, state the selected design, explain the rationale, and identify unresolved decisions. Do not fabricate Azure services, regions, controls, owners, recovery objectives, or compliance requirements.',
   'Under each section use short paragraphs, bullet lists ("- "), numbered steps ("1. ") and GitHub-style Markdown tables where they aid clarity. Keep the JSON valid and do not wrap it in code fences.',
 ].join('\n')
@@ -511,32 +512,74 @@ function architectureLayer(heading: string, items: string[], headerFill: string,
 
 const architectureArrow = () => new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 40, after: 40 }, children: [new TextRun({ text: '▼', color: '2E6FBE', size: 30, bold: true })] })
 
-function buildArchitectureDiagram(context: Record<string, unknown>): Array<Paragraph | Table> {
+type DiagramZone = { name: string; components: string[] }
+type DiagramFlow = { from: string; to: string; detail?: string }
+export type ArchitectureDiagram = { zones: DiagramZone[]; flows: DiagramFlow[] }
+
+function parseAgentDiagram(record: Record<string, unknown>): ArchitectureDiagram | null {
+  const raw = asRecord(record.diagram)
+  const zonesRaw = Array.isArray(raw.zones) ? raw.zones : []
+  const zones: DiagramZone[] = zonesRaw.map(asRecord).map((zone) => ({
+    name: firstString(zone.name, zone.title, zone.label) ?? 'Zone',
+    components: (Array.isArray(zone.components) ? zone.components : Array.isArray(zone.items) ? zone.items : []).map((component) => String(component).trim()).filter(Boolean).slice(0, 8),
+  })).filter((zone) => zone.components.length)
+  const flowsRaw = Array.isArray(raw.flows) ? raw.flows : Array.isArray(raw.edges) ? raw.edges : []
+  const flows: DiagramFlow[] = flowsRaw.map(asRecord).map((flow) => ({
+    from: firstString(flow.from, flow.source) ?? '',
+    to: firstString(flow.to, flow.target) ?? '',
+    detail: firstString(flow.detail, flow.port, flow.protocol, flow.label) ?? undefined,
+  })).filter((flow) => flow.from && flow.to).slice(0, 14)
+  return zones.length ? { zones, flows } : null
+}
+
+function deriveDiagramFromContext(context: Record<string, unknown>): ArchitectureDiagram {
   const map = asRecord(context.applicationMap)
   const nodes = Array.isArray(map.nodes) ? map.nodes.map(asRecord) : []
   const edges = Array.isArray(map.edges) ? map.edges.map(asRecord) : []
+  const labelOf = new Map(nodes.map((node) => [String(node.id ?? ''), String(node.label ?? node.id ?? 'Node')]))
   const localNodes = nodes.filter((node) => node.local === true).slice(0, 6)
   const peerNodes = nodes.filter((node) => node.local !== true).slice(0, 6)
   const mappings = Array.isArray(context.sprintToLandingZoneMappings) ? context.sprintToLandingZoneMappings.map(asRecord).slice(0, 6) : []
   const platform = asRecord(context.platformLandingZone)
   const treatment = asRecord(context.applicationTreatment)
-  const truncate = (value: unknown, max: number) => { const text = String(value ?? '').trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text }
-  const peerLabel = (node: Record<string, unknown>) => {
-    const nodeId = String(node.id ?? '')
-    const ports = [...new Set(edges.filter((edge) => edge.sourceId === nodeId || edge.targetId === nodeId).map((edge) => Number(edge.port)).filter((port) => Number.isInteger(port) && port > 0))].slice(0, 4)
-    return `${truncate(node.label ?? node.id ?? 'Connected service', 42)}${ports.length ? ` · TCP ${ports.join(', ')}` : ''}`
-  }
-  const platformLine = [platform.primaryRegion, platform.networkTopology, platform.firewall].filter(Boolean).map(String).join(' · ') || 'Platform landing-zone controls not specified'
-  const treatmentPlan = truncate(treatment.treatmentPlan || 'Not specified', 40)
-  return [
-    new Paragraph({ spacing: { after: 160 }, children: [new TextRun({ text: platformLine, color: '607985', size: 19 })] }),
-    architectureLayer('1 · Connected systems and infrastructure', peerNodes.map(peerLabel), '1F5FA6', 'F4F8FD'),
-    architectureArrow(),
-    architectureLayer(`2 · Application workload · Treatment: ${treatmentPlan}`, localNodes.map((node) => truncate(node.label ?? node.id ?? 'Application server', 46)), '14315C', 'EAF2FB'),
-    architectureArrow(),
-    architectureLayer('3 · Azure landing-zone placement', mappings.map((mapping) => `${truncate(mapping.serverName ?? 'Server', 22)} → ${truncate(mapping.subscriptionName ?? 'Unmapped', 18)} / ${truncate(mapping.subnet ?? 'No subnet', 18)}`), '2E6FBE', 'EFF5FC'),
-    new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 160 }, children: [new TextRun({ text: 'Figure 1. Flow from connected systems through the application workload to its Azure landing-zone placement.', italics: true, color: '607985', size: 18 })] }),
+  const truncate = (value: unknown, max: number) => { const text = String(value ?? '').trim(); return text.length > max ? `${text.slice(0, max - 1)}\u2026` : text }
+  const platformComponents = [platform.primaryRegion, platform.secondaryRegion, platform.networkTopology, platform.firewall, platform.dns, platform.identityDomainController].map((value) => String(value ?? '').trim()).filter(Boolean).slice(0, 6)
+  const zones: DiagramZone[] = [
+    { name: 'Platform hub and shared services', components: platformComponents.length ? platformComponents : ['Platform controls not specified'] },
+    { name: 'Connected systems and infrastructure', components: peerNodes.map((node) => truncate(node.label ?? node.id, 44)) },
+    { name: `Application workload \u00b7 Treatment: ${truncate(treatment.treatmentPlan || 'Not specified', 30)}`, components: localNodes.map((node) => truncate(node.label ?? node.id, 46)) },
+    { name: 'Azure landing-zone placement', components: mappings.map((mapping) => `${truncate(mapping.serverName ?? 'Server', 22)} \u2192 ${truncate(mapping.subscriptionName ?? 'Unmapped', 18)} / ${truncate(mapping.subnet ?? 'No subnet', 18)}`) },
   ]
+  const flows: DiagramFlow[] = edges.slice(0, 12).map((edge) => ({
+    from: labelOf.get(String(edge.sourceId ?? '')) ?? String(edge.sourceId ?? ''),
+    to: labelOf.get(String(edge.targetId ?? '')) ?? String(edge.targetId ?? ''),
+    detail: Number.isInteger(Number(edge.port)) && Number(edge.port) > 0 ? `TCP ${Number(edge.port)}` : undefined,
+  })).filter((flow) => flow.from && flow.to)
+  return { zones, flows }
+}
+
+function flowsTable(flows: DiagramFlow[]): Table {
+  const border = { style: BorderStyle.SINGLE, size: 1, color: 'D6E1E6' }
+  const header = ['From', 'To', 'Port / protocol'].map((text) => new TableCell({ shading: { type: ShadingType.CLEAR, fill: '1F5FA6' }, children: [new Paragraph({ children: [new TextRun({ text, bold: true, color: 'FFFFFF', size: 18 })] })] }))
+  const rows = [new TableRow({ children: header })]
+  for (const flow of flows) rows.push(new TableRow({ children: [flow.from, flow.to, flow.detail ?? '\u2014'].map((value) => new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: value, color: '243E4A', size: 18 })] })] })) }))
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders: { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border }, rows })
+}
+
+function renderArchitectureDiagram(diagram: ArchitectureDiagram): Array<Paragraph | Table> {
+  const headerFills = ['1F5FA6', '14315C', '2E6FBE']
+  const chipFills = ['F4F8FD', 'EAF2FB', 'EFF5FC']
+  const blocks: Array<Paragraph | Table> = [new Paragraph({ spacing: { after: 140 }, children: [new TextRun({ text: 'Read the layers from top to bottom. Each blue bar is a group of components, and the arrows show how they connect.', color: '607985', size: 19 })] })]
+  diagram.zones.forEach((zone, index) => {
+    blocks.push(architectureLayer(zone.name, zone.components, headerFills[index % headerFills.length]!, chipFills[index % chipFills.length]!))
+    if (index < diagram.zones.length - 1) blocks.push(architectureArrow())
+  })
+  if (diagram.flows.length) {
+    blocks.push(new Paragraph({ spacing: { before: 220, after: 90 }, children: [new TextRun({ text: 'Key connections', bold: true, color: '14315C', size: 23 })] }))
+    blocks.push(flowsTable(diagram.flows))
+  }
+  blocks.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 160 }, children: [new TextRun({ text: 'Figure 1. Flow from connected systems through the application workload to its Azure landing-zone placement.', italics: true, color: '607985', size: 18 })] }))
+  return blocks
 }
 
 function wordInlineRuns(text: string): TextRun[] {
@@ -637,10 +680,11 @@ function contentsBlock(toc: TocEntry[], includeArchitecture: boolean): Paragraph
   return rows
 }
 
-export async function buildDocx(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata = { author: 'To be confirmed', reviewers: ['Architecture Review Board (TBC)'], version: '0.1' }): Promise<string> {
+export async function buildDocx(title: string, markdown: string, hldContext: Record<string, unknown> | null, metadata: HldDocumentMetadata = { author: 'To be confirmed', reviewers: ['Architecture Review Board (TBC)'], version: '0.1' }, diagram: ArchitectureDiagram | null = null): Promise<string> {
   const application = firstString(hldContext?.application) ?? 'Application'
   const environment = firstString(hldContext?.environment) ?? 'Environment not specified'
   const { body, toc } = buildBodyAndToc(markdown)
+  const architecture = diagram ?? (hldContext ? deriveDiagramFromContext(hldContext) : null)
   const border = { style: BorderStyle.SINGLE, size: 1, color: 'D6E1E6' }
   const controlRows = [
     ['Document title', title], ['Application', application], ['Environment', environment], ['Author', metadata.author],
@@ -659,13 +703,13 @@ export async function buildDocx(title: string, markdown: string, hldContext: Rec
     new Paragraph({ children: [new PageBreak()] }),
     new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Contents' }),
     new Paragraph({ spacing: { after: 300 }, children: [new TextRun({ text: `${application} — Microsoft Azure high-level design`, color: '6B7F88', size: 19 })] }),
-    ...contentsBlock(toc, Boolean(hldContext)),
+    ...contentsBlock(toc, Boolean(architecture)),
     new Paragraph({ children: [new PageBreak()] }),
   ]
-  if (hldContext) {
+  if (architecture) {
     children.push(
       new Paragraph({ heading: HeadingLevel.HEADING_1, text: 'Architecture Overview' }),
-      ...buildArchitectureDiagram(hldContext),
+      ...renderArchitectureDiagram(architecture),
       new Paragraph({ children: [new PageBreak()] }),
     )
   }
@@ -810,7 +854,7 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
     reviewers: reviewers.length ? reviewers : ['Architecture Review Board (TBC)'],
     version: firstString(documentRecord.version) ?? '0.1',
   }
-  const contentBase64 = await buildDocx(title, markdown, hldContext, metadata)
+  const contentBase64 = await buildDocx(title, markdown, hldContext, metadata, parseAgentDiagram(documentRecord))
   return { status: 'completed', fileName, contentType: defaultDocumentType, contentBase64 }
 }
 

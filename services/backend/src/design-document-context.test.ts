@@ -68,3 +68,24 @@ test('HLD Word document renders a modern themed native architecture diagram', as
   assert.doesNotMatch(footer, /w:fldChar|w:instrText|PAGE|NUMPAGES/)
   assert.match(core, /<dc:creator>Alex Architect<\/dc:creator>/)
 })
+
+test('HLD renders an agent-provided architecture diagram with zones and key connections', async () => {
+  const diagram = {
+    zones: [
+      { name: 'Hub (Platform)', components: ['ExpressRoute', 'Azure Firewall Premium'] },
+      { name: 'Spoke: vnet-migration-dev', components: ['snet-application', 'App VM', 'Oracle Database'] },
+    ],
+    flows: [{ from: 'App VM', to: 'Oracle Database', detail: '1521' }],
+  }
+  const bytes = Buffer.from(await buildDocx('Billing High-Level Design', '## Executive Summary\nPlain summary.', context, { author: 'Alex Architect', reviewers: ['Cloud Review Board'], version: '0.3' }, diagram), 'base64')
+  const zip = await JSZip.loadAsync(bytes)
+  const document = await zip.file('word/document.xml')!.async('string')
+  assert.match(document, /Hub \(Platform\)/)
+  assert.match(document, /Azure Firewall Premium/)
+  assert.match(document, /Spoke: vnet-migration-dev/)
+  assert.match(document, /Key connections/)
+  assert.match(document, /App VM/)
+  assert.match(document, /Oracle Database/)
+  assert.match(document, /1521/)
+  assert.doesNotMatch(document, /billing-01/)
+})
