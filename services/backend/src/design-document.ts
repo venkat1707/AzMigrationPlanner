@@ -1,6 +1,7 @@
 import type { Knex } from 'knex'
 import { ManagedIdentityCredential } from '@azure/identity'
 import JSZip from 'jszip'
+import sharp from 'sharp'
 import { buildApplicationMap } from './application-map.js'
 
 const defaultApiVersion = 'v1'
@@ -267,6 +268,7 @@ const responseContract = [
   '{"status":"completed","document":{"title":"<document title>","markdown":"<full HLD>"}}',
   'Write the markdown as a professional, well-structured document. Use "## " for each major section and "### " for sub-sections, in this order:',
   'Executive Summary, Current State, Target Azure Architecture, Networking, Security & Identity, Data & Storage, Availability & Resiliency, Migration Approach, Risks & Considerations.',
+  'In Target Azure Architecture, include an Architecture Overview that explains the components, connectivity, treatment, and landing-zone placements represented by the architecture diagram embedded by the document renderer.',
   'Under each section use short paragraphs, bullet lists ("- "), numbered steps ("1. ") and GitHub-style Markdown tables where they aid clarity. Keep the JSON valid and do not wrap it in code fences.',
 ].join('\n')
 
@@ -379,10 +381,13 @@ function renderTable(rows: string[][]): string {
   return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>${border}</w:tblBorders></w:tblPr><w:tblGrid>${grid}</w:tblGrid>${trs}</w:tbl><w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>`
 }
 
-function markdownToDocumentXml(title: string, markdown: string): string {
+const architectureDrawing = `<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="120" w:after="240"/></w:pPr><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" distT="0" distB="0" distL="0" distR="0"><wp:extent cx="5715000" cy="3214688"/><wp:docPr id="1" name="High-level architecture diagram" descr="Application and Azure landing-zone architecture"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="architecture.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId3"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="5715000" cy="3214688"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`
+
+function markdownToDocumentXml(title: string, markdown: string, includeArchitecture: boolean): string {
   const lines = markdown.replace(/\r\n/g, '\n').split('\n')
   const body: string[] = []
   if (title.trim()) body.push(styledParagraph('Title', inlineRuns(title.trim())))
+  if (includeArchitecture) body.push(architectureDrawing)
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]!.replace(/\s+$/, '')
     const trimmed = line.trim()
@@ -423,22 +428,44 @@ function markdownToDocumentXml(title: string, markdown: string): string {
 }
 
 const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:spacing w:before="240" w:after="240"/></w:pPr><w:rPr><w:b/><w:color w:val="1F3864"/><w:sz w:val="56"/><w:szCs w:val="56"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="360" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:color w:val="2F5496"/><w:sz w:val="34"/><w:szCs w:val="34"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:color w:val="2F5496"/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="200" w:after="60"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:color w:val="1F3864"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="60"/><w:contextualSpacing/></w:pPr></w:style></w:styles>`
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:spacing w:before="120" w:after="120"/></w:pPr><w:rPr><w:b/><w:color w:val="1F3864"/><w:sz w:val="40"/><w:szCs w:val="40"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="360" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:color w:val="2F5496"/><w:sz w:val="34"/><w:szCs w:val="34"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:color w:val="2F5496"/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="200" w:after="60"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:color w:val="1F3864"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="60"/><w:contextualSpacing/></w:pPr></w:style></w:styles>`
 
 const numberingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="360" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="◦"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="▪"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="1080" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="360" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="lowerRoman"/><w:lvlText w:val="%3."/><w:lvlJc w:val="right"/><w:pPr><w:ind w:left="1080" w:hanging="180"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>`
 
-async function buildDocx(title: string, markdown: string): Promise<string> {
+const svgText = (value: unknown, max = 28): string => xmlEscape(String(value ?? '').trim().slice(0, max))
+
+async function buildArchitecturePng(context: Record<string, unknown>): Promise<Buffer> {
+  const application = svgText(context.application, 34)
+  const environment = svgText(context.environment, 24)
+  const map = asRecord(context.applicationMap)
+  const nodes = Array.isArray(map.nodes) ? map.nodes.map(asRecord) : []
+  const localNodes = nodes.filter((node) => node.local === true).slice(0, 6)
+  const peerNodes = nodes.filter((node) => node.local !== true).slice(0, 5)
+  const mappings = Array.isArray(context.sprintToLandingZoneMappings) ? context.sprintToLandingZoneMappings.map(asRecord).slice(0, 6) : []
+  const platform = asRecord(context.platformLandingZone)
+  const treatment = asRecord(context.applicationTreatment)
+  const list = (items: Record<string, unknown>[], x: number, startY: number, label: (item: Record<string, unknown>) => string, fill: string) => items.map((item, index) => {
+    const y = startY + index * 55
+    return `<rect x="${x}" y="${y}" width="270" height="42" rx="5" fill="${fill}" stroke="#9fb3c8"/><text x="${x + 14}" y="${y + 26}" class="item">${svgText(label(item), 38)}</text>`
+  }).join('')
+  const platformLine = [platform.primaryRegion, platform.networkTopology, platform.firewall].filter(Boolean).map(String).join(' · ') || 'Platform landing-zone controls not specified'
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675"><style>text{font-family:Arial,sans-serif;fill:#24384d}.title{font-size:25px;font-weight:700}.subtitle{font-size:14px;fill:#587086}.heading{font-size:15px;font-weight:700}.item{font-size:13px}.small{font-size:12px;fill:#587086}</style><rect width="1200" height="675" fill="#f8fafc"/><rect x="30" y="25" width="1140" height="76" rx="7" fill="#e8f1f8" stroke="#9fb8cc"/><text x="55" y="58" class="title">${application} · ${environment} high-level architecture</text><text x="55" y="84" class="subtitle">${svgText(platformLine, 120)}</text><text x="55" y="135" class="heading">Connected systems</text><text x="465" y="135" class="heading">Application workload</text><text x="875" y="135" class="heading">Azure landing-zone targets</text><rect x="430" y="112" width="340" height="500" rx="8" fill="#eef5fb" stroke="#8daeca"/><path d="M340 355 H420" stroke="#3979a8" stroke-width="3" marker-end="url(#arrow)"/><path d="M780 355 H860" stroke="#3979a8" stroke-width="3" marker-end="url(#arrow)"/><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#3979a8"/></marker></defs>${list(peerNodes, 55, 165, (node) => String(node.label ?? node.id ?? 'Connected service'), '#ffffff')}${list(localNodes, 465, 165, (node) => String(node.label ?? node.id ?? 'Application server'), '#dcecf8')}${list(mappings, 875, 165, (mapping) => `${mapping.serverName ?? 'Server'} → ${mapping.subscriptionName ?? 'Unmapped'} / ${mapping.subnet ?? 'No subnet'}`, '#e5f2e9')}<rect x="430" y="625" width="340" height="30" rx="4" fill="#d9ece4"/><text x="600" y="645" text-anchor="middle" class="small">Treatment: ${svgText(treatment.treatmentPlan || 'Not specified', 32)}</text><text x="55" y="640" class="small">${peerNodes.length}${nodes.length > peerNodes.length + localNodes.length ? '+' : ''} connected nodes shown</text><text x="875" y="640" class="small">${mappings.length} mapped target${mappings.length === 1 ? '' : 's'} shown</text></svg>`
+  return sharp(Buffer.from(svg)).png().toBuffer()
+}
+
+export async function buildDocx(title: string, markdown: string, hldContext: Record<string, unknown> | null): Promise<string> {
   const zip = new JSZip()
   zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`)
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`)
   zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
   zip.file('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>`)
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>${hldContext ? '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/architecture.png"/>' : ''}</Relationships>`)
   zip.file('word/styles.xml', stylesXml)
   zip.file('word/numbering.xml', numberingXml)
-  zip.file('word/document.xml', markdownToDocumentXml(title, markdown))
+  if (hldContext) zip.file('word/media/architecture.png', await buildArchitecturePng(hldContext))
+  zip.file('word/document.xml', markdownToDocumentXml(title, markdown, Boolean(hldContext)))
   const buffer = await zip.generateAsync({ type: 'nodebuffer' })
   if (buffer.byteLength > maxDocumentBytes) throw new DesignDocumentError('The generated document exceeds the maximum supported size.', 502)
   return buffer.toString('base64')
@@ -549,7 +576,7 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
   }
   const title = firstString(documentRecord.title, documentRecord.name) ?? (input.artifactType === 'design-document' ? `${input.application} — High-Level Design (${input.environment})` : input.artifactType === 'migration-plan' ? 'Azure Migration Plan' : `Migration Runsheet — Sprint ${input.sprintSequence}`)
   const fileName = `${sanitizeFileName(input.artifactType === 'design-document' ? `${input.application}-${input.environment}-high-level-design` : input.artifactType === 'migration-plan' ? 'azure-migration-plan' : `migration-runsheet-sprint-${input.sprintSequence}`)}.docx`
-  const contentBase64 = await buildDocx(title, markdown)
+  const contentBase64 = await buildDocx(title, markdown, hldContext)
   return { status: 'completed', fileName, contentType: defaultDocumentType, contentBase64 }
 }
 
