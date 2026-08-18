@@ -346,7 +346,7 @@ function parseAgentJson(text: string): Record<string, unknown> | null {
   return null
 }
 
-const xmlEscape = (value: string): string => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+const xmlEscape = (value: string): string => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
 
 // Inline markdown (bold / italic / inline code) → WordprocessingML runs.
 function inlineRuns(text: string): string {
@@ -499,7 +499,7 @@ async function buildArchitecturePng(context: Record<string, unknown>): Promise<B
 }
 
 const architectureTruncate = (value: unknown, max: number) => { const text = String(value ?? '').trim(); return text.length > max ? `${text.slice(0, max - 1)}\u2026` : text }
-const svgEscape = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+const svgEscape = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
 
 function buildArchitectureSvg(zones: DiagramZone[], subtitle: string): { svg: string; width: number; height: number } {
   const width = 1000

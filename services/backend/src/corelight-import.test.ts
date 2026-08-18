@@ -11,9 +11,9 @@ async function withTempDir(run: (dir: string) => Promise<void>) {
 }
 
 const jsonConn = [
-  JSON.stringify({ ts: 1735689600, 'id.orig_h': '10.0.0.5', 'id.resp_h': '10.0.0.9', 'id.resp_p': 1521 }),
-  JSON.stringify({ ts: 1735689601, 'id.orig_h': '10.0.0.5', 'id.resp_h': '10.0.0.9', 'id.resp_p': 1521 }),
-  JSON.stringify({ ts: 1735689602, 'id.orig_h': '10.0.0.5', 'id.resp_h': '203.0.113.7', 'id.resp_p': 443 }),
+  JSON.stringify({ ts: 1735689600, 'id.orig_h': '10.0.0.5', 'id.resp_h': '10.0.0.9', 'id.resp_p': 1521, proto: 'tcp' }),
+  JSON.stringify({ ts: 1735689601, 'id.orig_h': '10.0.0.5', 'id.resp_h': '10.0.0.9', 'id.resp_p': 1521, proto: 'tcp' }),
+  JSON.stringify({ ts: 1735689602, 'id.orig_h': '10.0.0.5', 'id.resp_h': '203.0.113.7', 'id.resp_p': 443, proto: 'tcp' }),
 ].join('\n')
 
 const jsonDns = [
@@ -42,12 +42,12 @@ test('converts conn.log to canonical dependency rows, resolving hostnames and ag
     const hostnameByIp = hostnameMapFromDns(await parseDnsRecords(dnsPath))
     const { csv, result } = await convertConnLogToCsvString(connPath, hostnameByIp, { appliance: 'Corelight' })
     const lines = csv.trim().split('\n')
-    assert.equal(lines[0], 'Date,Source Appliance Name,Source Machine ARM ID,Source Server Name,Source IP,Source Application,Source Process,Destination Machine ARM ID,Destination Server Name,Destination IP,Destination Application,Destination Process,Destination Port,Connection Count')
+    assert.equal(lines[0], 'Date,Source Appliance Name,Source Machine ARM ID,Source Server Name,Source IP,Source Application,Source Process,Destination Machine ARM ID,Destination Server Name,Destination IP,Destination Application,Destination Process,Destination Port,Connection Count,Protocol')
     assert.equal(result.recordsRead, 3)
     assert.equal(result.dependencyRows, 2)
     const resolved = lines.find((line) => line.includes('app01.corp.local') && line.includes('db01.corp.local'))
     assert.ok(resolved, 'the two flows to the database should aggregate into one row')
-    assert.match(resolved!, /,1521,2$/)
+    assert.match(resolved!, /,1521,2,tcp$/)
     const fallback = lines.find((line) => line.includes('203.0.113.7'))
     assert.ok(fallback, 'an unresolved destination should fall back to its IP')
     assert.equal(result.unresolvedHosts, 1)
@@ -70,5 +70,6 @@ test('supports the classic Zeek TSV conn.log format', async () => {
     assert.match(csv, /Zeek/)
     assert.match(csv, /10\.0\.0\.5/)
     assert.match(csv, /10\.0\.0\.9/)
+    assert.match(csv, /,tcp$/m)
   })
 })

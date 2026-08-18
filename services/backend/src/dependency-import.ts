@@ -8,16 +8,18 @@ import { addToDependencySummary, refreshDependencySummary } from './dependency-s
 import { database } from './db.js'
 import { createHeaderMapping, mapImportRow, type HeaderMapping } from './import-schema.js'
 
-const expectedHeaders = [
+const baseHeaders = [
   'Date', 'Source Appliance Name', 'Source Machine ARM ID', 'Source Server Name',
   'Source IP', 'Source Application', 'Source Process', 'Destination Machine ARM ID',
   'Destination Server Name', 'Destination IP', 'Destination Application',
   'Destination Process', 'Destination Port', 'Connection Count',
 ] as const
+// Protocol is an optional trailing column populated by the Corelight/Zeek importer; Azure Migrate exports omit it.
+const expectedHeaders = [...baseHeaders, 'Protocol'] as const
 
 type Header = (typeof expectedHeaders)[number]
 type RawRow = Record<Header, unknown>
-type DependencyValidation = { warnings: Set<string>; canonicalOrder: boolean }
+type DependencyValidation = { warnings: Set<string>; canonicalOrder: boolean; hasProtocol: boolean }
 type DependencyRecord = {
   import_run_id: number
   observed_date: string
@@ -34,6 +36,7 @@ type DependencyRecord = {
   destination_process: string | null
   destination_port: number | null
   connection_count: number
+  protocol: string | null
 }
 
 export type ImportResult = { importRunId: number; fileName: string; rowsImported: number; warnings: string[] }
@@ -72,6 +75,8 @@ const dependencyHeaderContract = {
     'Destination Server': 'Destination Server Name',
     'Destination Machine Name': 'Destination Server Name',
     Connections: 'Connection Count',
+    Proto: 'Protocol',
+    Transport: 'Protocol',
   } satisfies Record<string, Header>,
   optionalDefaults: { 'Connection Count': '1' },
   formatName: 'Azure Migrate DependencyExport',
@@ -80,8 +85,12 @@ const dependencyHeaderContract = {
 function headerMapping(headers: string[], validation: DependencyValidation): HeaderMapping<Header> {
   const mapping = createHeaderMapping(headers, dependencyHeaderContract)
   mapping.warnings.forEach((warning) => validation.warnings.add(warning))
-  validation.canonicalOrder = validation.canonicalOrder && mapping.canonicalByIndex.length === expectedHeaders.length
+  const matchesBase = mapping.canonicalByIndex.length === baseHeaders.length
+    && mapping.canonicalByIndex.every((header, index) => header === baseHeaders[index])
+  const matchesFull = mapping.canonicalByIndex.length === expectedHeaders.length
     && mapping.canonicalByIndex.every((header, index) => header === expectedHeaders[index])
+  validation.canonicalOrder = validation.canonicalOrder && (matchesBase || matchesFull)
+  validation.hasProtocol = matchesFull
   return mapping
 }
 
@@ -133,6 +142,11 @@ function nullable(value: unknown): string | null {
   return cellText(value) || null
 }
 
+function normalizeProtocol(value: unknown): string | null {
+  const text = cellText(value).toLowerCase().replace(/[^a-z0-9]/g, '')
+  return text ? text.slice(0, 10) : null
+}
+
 function toDependencyRecord(row: RawRow, importRunId: number, rowNumber: number): DependencyRecord {
   const destinationPort = Number(cellText(row['Destination Port']))
   const connectionCountText = cellText(row['Connection Count'])
@@ -154,6 +168,7 @@ function toDependencyRecord(row: RawRow, importRunId: number, rowNumber: number)
     destination_process: nullable(row['Destination Process']),
     destination_port: Number.isInteger(destinationPort) ? destinationPort : null,
     connection_count: connectionCount,
+    protocol: normalizeProtocol(row.Protocol),
   }
 }
 
@@ -207,7 +222,7 @@ export async function validateDependencyFile(filePath: string): Promise<number> 
 
 export async function inspectDependencyFile(filePath: string, signal?: AbortSignal): Promise<{ rowCount: number; warnings: string[] }> {
   let rowCount = 0
-  const validation: DependencyValidation = { warnings: new Set(), canonicalOrder: true }
+  const validation: DependencyValidation = { warnings: new Set(), canonicalOrder: true, hasProtocol: false }
   for await (const row of rowsForFile(filePath, validation)) {
     throwIfCancelled(signal)
     toDependencyRecord(row, 0, rowCount + 2)
@@ -228,7 +243,7 @@ export async function importDependencyFile(filePath: string, fileName: string, o
   const destinationServers = new Set<string>()
   const evidenceCandidates = new Map<string, DependencyRecord>()
   let batch: DependencyRecord[] = []
-  const validation: DependencyValidation = { warnings: new Set(preflight.warnings), canonicalOrder: true }
+  const validation: DependencyValidation = { warnings: new Set(preflight.warnings), canonicalOrder: true, hasProtocol: false }
   try {
     const trackRecord = (record: DependencyRecord) => {
       connectionsImported += record.connection_count
@@ -252,11 +267,11 @@ export async function importDependencyFile(filePath: string, fileName: string, o
         rowsValidated++
       }
       if (validation.canonicalOrder) {
-        await loadDependencyCsv(filePath, importRunId, rowsValidated, options.signal)
+        await loadDependencyCsv(filePath, importRunId, rowsValidated, validation.hasProtocol, options.signal)
         rowsImported = rowsValidated
         await database('import_runs').where({ id: importRunId }).update({ rows_imported: rowsImported })
       } else {
-        const mappedValidation: DependencyValidation = { warnings: new Set(), canonicalOrder: true }
+        const mappedValidation: DependencyValidation = { warnings: new Set(), canonicalOrder: true, hasProtocol: false }
         for await (const row of rowsForFile(filePath, mappedValidation)) {
           throwIfCancelled(options.signal)
           batch.push(toDependencyRecord(row, importRunId, rowsImported + batch.length + 2))
@@ -321,10 +336,12 @@ export async function importDependencyFile(filePath: string, fileName: string, o
   }
 }
 
-async function loadDependencyCsv(filePath: string, importRunId: number, expectedRows: number, signal?: AbortSignal): Promise<void> {
+async function loadDependencyCsv(filePath: string, importRunId: number, expectedRows: number, hasProtocol: boolean, signal?: AbortSignal): Promise<void> {
   const absolutePath = resolve(filePath)
   const connection = await database.client.acquireConnection() as NativeConnection
   let abortHandler: (() => void) | undefined
+  const protocolColumn = hasProtocol ? ', @protocol' : ''
+  const protocolSet = hasProtocol ? ",\n              protocol = NULLIF(LOWER(TRIM(@protocol)), '')" : ''
   try {
     throwIfCancelled(signal)
     await new Promise<void>((resolveQuery, rejectQuery) => {
@@ -344,7 +361,7 @@ async function loadDependencyCsv(filePath: string, importRunId: number, expected
           (@observed_date, @source_appliance_name, @source_machine_arm_id, @source_server_name,
            @source_ip, @source_application, @source_process, @destination_machine_arm_id,
            @destination_server_name, @destination_ip, @destination_application, @destination_process,
-           @destination_port, @connection_count)
+           @destination_port, @connection_count${protocolColumn})
           SET import_run_id = ?,
               observed_date = CASE
                 WHEN TRIM(@observed_date) REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
@@ -367,7 +384,7 @@ async function loadDependencyCsv(filePath: string, importRunId: number, expected
               destination_application = NULLIF(TRIM(@destination_application), ''),
               destination_process = NULLIF(TRIM(@destination_process), ''),
               destination_port = NULLIF(TRIM(@destination_port), ''),
-              connection_count = TRIM(@connection_count)
+              connection_count = TRIM(@connection_count)${protocolSet}
         `,
         values: [absolutePath, importRunId],
         infileStreamFactory: (requestedPath) => {

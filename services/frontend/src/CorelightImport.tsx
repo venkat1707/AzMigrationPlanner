@@ -25,6 +25,7 @@ export default function CorelightImport() {
   const [busy, setBusy] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [awaitingRun, setAwaitingRun] = useState(false)
+  const [serverActive, setServerActive] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [runs, setRuns] = useState<ImportRun[]>([])
@@ -33,8 +34,11 @@ export default function CorelightImport() {
     try {
       const response = await apiFetch('/api/imports')
       if (!response.ok) return
-      const { items } = await response.json() as { items: ImportRun[] }
+      const { items, active } = await response.json() as { items: ImportRun[]; active?: boolean }
       setRuns(items)
+      setServerActive(Boolean(active))
+      // The backend confirms nothing is in flight, so drop any optimistic "just submitted" state.
+      if (!active) setAwaitingRun(false)
     } catch { /* transient network error; the next poll retries */ }
   }
 
@@ -47,7 +51,7 @@ export default function CorelightImport() {
   const corelightRuns = runs.filter((run) => run.fileName?.startsWith('Corelight-'))
   const activeRun = runs.find((run) => isActiveStatus(run.status))
   useEffect(() => { if (activeRun) setAwaitingRun(false) }, [activeRun])
-  const importing = busy || awaitingRun || Boolean(activeRun)
+  const importing = busy || awaitingRun || serverActive || Boolean(activeRun)
 
   const submit = async () => {
     if (!connFile) { setError('Select a conn.log file to import.'); return }

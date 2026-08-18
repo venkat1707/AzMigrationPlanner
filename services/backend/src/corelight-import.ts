@@ -15,7 +15,7 @@ import type { Knex } from 'knex'
 export const dependencyHeaders = [
   'Date', 'Source Appliance Name', 'Source Machine ARM ID', 'Source Server Name', 'Source IP',
   'Source Application', 'Source Process', 'Destination Machine ARM ID', 'Destination Server Name',
-  'Destination IP', 'Destination Application', 'Destination Process', 'Destination Port', 'Connection Count',
+  'Destination IP', 'Destination Application', 'Destination Process', 'Destination Port', 'Connection Count', 'Protocol',
 ] as const
 
 export type DnsRecord = { query: string; ipAddress: string; observedDate: string | null }
@@ -138,7 +138,7 @@ export async function convertConnLogToCsv(
 ): Promise<CorelightConversionResult> {
   const appliance = options.appliance?.trim() || 'Corelight'
   const allowIpFallback = options.allowIpFallback !== false
-  const counts = new Map<string, { date: string; sourceHost: string; sourceIp: string; destinationHost: string; destinationIp: string; destinationPort: string; connectionCount: number }>()
+  const counts = new Map<string, { date: string; sourceHost: string; sourceIp: string; destinationHost: string; destinationIp: string; destinationPort: string; protocol: string; connectionCount: number }>()
   let recordsRead = 0
   let unresolvedHosts = 0
 
@@ -156,10 +156,11 @@ export async function convertConnLogToCsv(
     const resolvedSource = sourceHost ?? String(sourceIp)
     const resolvedDestination = destinationHost ?? String(destinationIp)
     const port = destinationPort === undefined ? '' : String(destinationPort)
-    const key = [date, resolvedSource, resolvedDestination, port].join('|')
+    const protocol = String(field(row, 'proto', 'protocol', 'transport') ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10)
+    const key = [date, resolvedSource, resolvedDestination, port, protocol].join('|')
     const existing = counts.get(key)
     if (existing) existing.connectionCount += 1
-    else counts.set(key, { date, sourceHost: resolvedSource, sourceIp: String(sourceIp), destinationHost: resolvedDestination, destinationIp: String(destinationIp), destinationPort: port, connectionCount: 1 })
+    else counts.set(key, { date, sourceHost: resolvedSource, sourceIp: String(sourceIp), destinationHost: resolvedDestination, destinationIp: String(destinationIp), destinationPort: port, protocol, connectionCount: 1 })
   }
 
   await mkdir(dirname(resolve(outPath)), { recursive: true })
@@ -170,7 +171,7 @@ export async function convertConnLogToCsv(
     await write(csvRow([
       dependency.date, appliance, '', dependency.sourceHost, dependency.sourceIp,
       '', '', '', dependency.destinationHost, dependency.destinationIp, '', '',
-      dependency.destinationPort, dependency.connectionCount,
+      dependency.destinationPort, dependency.connectionCount, dependency.protocol,
     ]))
   }
   stream.end()

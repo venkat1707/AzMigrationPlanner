@@ -59,13 +59,13 @@ The client secret and identity tokens are never returned to the browser or store
 ```powershell
 npm install
 npm run migrate
-npm run import -- ".\DependencyExport-RWS-original (1).csv"
+npm run import -- ".\DependencyExport.csv"
 ```
 
 Validate the entire CSV without connecting to MySQL:
 
 ```powershell
-npm run import -- ".\DependencyExport-RWS-original (1).csv" --validate-only
+npm run import -- ".\DependencyExport.csv" --validate-only
 ```
 
 ## Synthetic migration dataset
@@ -205,6 +205,8 @@ After hard environment, capacity, and data-heavy constraints, minimizing cross-s
 `GET /api/imports` returns the 20 most recent import runs.
 
 `POST /api/imports` accepts up to 20 CSV/XLSX files in the multipart `files` field and returns a result for every file.
+
+The Load Balancer Rules workspace (Discover & prepare) imports virtual server, pool, and rule configuration exported from any enterprise load balancer (F5, Citrix ADC, AWS, Azure, NGINX, HAProxy, Kemp, and others) as JSON, XML, CSV, or Conf (F5 `bigip.conf` tmsh config, Citrix ADC/NetScaler `ns.conf` CLI script, or similar vendor CLI/DSL config dumps). The original document is stored verbatim in the `load_balancer_rule_imports` table (MySQL `LONGTEXT`, not a BLOB or external blob store, since all formats are text) alongside its format, an optional vendor label, a SHA-256 content hash, and byte size; a linked `import_runs` row makes it appear in the same recent-imports history as other imports. `GET /api/load-balancer-rules` lists imported rule sets (metadata only). `POST /api/load-balancer-rules/import` accepts one file in the multipart `file` field (up to 50 MB) plus an optional `vendor` text field; the file's format is detected from its extension (`.json`, `.xml`, `.csv`, `.conf`/`.cfg`) or, failing that, by content sniffing (JSON/XML markers, then common F5/NetScaler CLI keywords, otherwise CSV) and validated for well-formedness (JSON.parse, XML validation, or CSV parsing; Conf/CLI dumps have no single schema and are only checked for being non-empty) before being stored. `GET /api/load-balancer-rules/:id` returns the full stored document for viewing or download. `DELETE /api/load-balancer-rules/:id` removes a stored rule set.
 
 `POST /api/application-server-mappings/sheets` accepts one XLSX file in the multipart `file` field and lists its worksheet names. `POST /api/application-server-mappings/import` accepts one CSV or XLSX file in `file`; XLSX requests also require `sheetName`. A successful import returns inserted, updated, discarded, and imported row counts plus validation warnings.
 

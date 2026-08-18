@@ -14,6 +14,9 @@ import { database } from './db.js'
 import { migrateSchema } from './migrate.js'
 import { DependencyImportCancelledError, importDependencyFile } from './dependency-import.js'
 import { convertConnLogToCsv, hostnameMapFromDns, parseDnsRecords, saveDnsRecords } from './corelight-import.js'
+import {
+  deleteLoadBalancerRuleImport, getLoadBalancerRuleImport, importLoadBalancerRuleFile, listLoadBalancerRuleImports,
+} from './load-balancer-rules-import.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
@@ -88,11 +91,29 @@ const corelightUpload = multer({
   limits: { files: 2, fileSize: 1024 * 1024 * 1024 },
 })
 
+const loadBalancerRuleUpload = multer({
+  storage: multer.diskStorage({
+    destination: tmpdir(),
+    filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase()}`),
+  }),
+  fileFilter: (_request, file, callback) => {
+    const extension = extname(file.originalname).toLowerCase()
+    callback(null, ['.json', '.xml', '.csv', '.conf', '.cfg'].includes(extension))
+  },
+  limits: { files: 1, fileSize: 50 * 1024 * 1024 },
+})
+
 function safeImportError(error: unknown, fallback: string): string {
   console.error(error)
   if (!(error instanceof Error)) return fallback
   const message = error.message.trim()
   return /^(?:Row \d+|Missing required|Duplicate|Unknown column|The (?:CSV|Excel|workbook)|Select )/i.test(message) ? message.slice(0, 500) : fallback
+}
+
+// Strips control characters (CR/LF/etc.) from user-supplied filenames before they reach logs or storage, preventing log-line forging and keeping stored names within column limits.
+function sanitizeFileLabel(value: string, maxLength = 200): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, maxLength)
 }
 
 app.get('/api/health', async (_request, response) => {
@@ -847,7 +868,7 @@ app.get('/api/imports', async (_request, response) => {
     })
     .orderBy('id', 'desc')
     .limit(20)
-  response.json({ items: imports })
+  response.json({ items: imports, active: pendingDependencyImportFiles > 0 })
 })
 
 let dependencyImportQueue = Promise.resolve()
@@ -874,7 +895,7 @@ async function processDependencyUploads(files: Express.Multer.File[], generation
           onImportRunCreated: (importRunId) => { activeDependencyImportRunId = importRunId },
         })
       } catch (error) {
-        if (!(error instanceof DependencyImportCancelledError)) console.error(`Queued dependency import failed for ${file.originalname}`, error)
+        if (!(error instanceof DependencyImportCancelledError)) console.error(`Queued dependency import failed for ${sanitizeFileLabel(file.originalname)}`, error)
       } finally {
         activeDependencyImportRunId = null
         await unlink(file.path).catch(() => undefined)
@@ -933,7 +954,7 @@ app.post('/api/imports/corelight', corelightUpload.fields([{ name: 'conn', maxCo
   const appliance = String(request.body?.appliance ?? '').trim() || 'Corelight'
   const allowIpFallback = String(request.body?.allowIpFallback ?? 'true') !== 'false'
   const canonicalPath = resolve(tmpdir(), `${crypto.randomUUID()}.csv`)
-  const canonicalName = `Corelight-${connFile.originalname.replace(/\.(gz|log|json|ndjson|txt)$/i, '')}.csv`
+  const canonicalName = `Corelight-${sanitizeFileLabel(connFile.originalname.replace(/\.(gz|log|json|ndjson|txt)$/i, ''), 240)}.csv`
   const generation = dependencyImportGeneration
   // Reserve one queue slot; parsing/conversion runs off the request thread to avoid request timeouts on large logs.
   pendingDependencyImportFiles += 1
@@ -947,7 +968,7 @@ app.post('/api/imports/corelight', corelightUpload.fields([{ name: 'conn', maxCo
         if (conversion.dependencyRows === 0) {
           pendingDependencyImportFiles -= 1
           await unlink(canonicalPath).catch(() => undefined)
-          console.warn(`Corelight import produced no dependency rows from ${connFile.originalname}.`)
+          console.warn(`Corelight import produced no dependency rows from ${sanitizeFileLabel(connFile.originalname)}.`)
           return
         }
         await processDependencyUploads([{ path: canonicalPath, originalname: canonicalName } as Express.Multer.File], generation)
@@ -966,6 +987,47 @@ app.post('/api/imports/corelight', corelightUpload.fields([{ name: 'conn', maxCo
     fileName: canonicalName,
     message: 'Converting the flow log and importing it in the background. Track progress under Recent imports.',
   })
+})
+
+app.get('/api/load-balancer-rules', async (_request, response) => {
+  response.json({ items: await listLoadBalancerRuleImports() })
+})
+
+app.get('/api/load-balancer-rules/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  const item = Number.isInteger(id) ? await getLoadBalancerRuleImport(id) : undefined
+  if (!item) {
+    response.status(404).json({ error: 'Load balancer rule import not found.' })
+    return
+  }
+  response.json({ item })
+})
+
+app.post('/api/load-balancer-rules/import', loadBalancerRuleUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a JSON, XML, CSV, or Conf load balancer rules file.' })
+    return
+  }
+  try {
+    const vendor = String(request.body?.vendor ?? '').trim() || null
+    const result = await importLoadBalancerRuleFile(file.path, file.originalname, vendor)
+    response.status(201).json({ result })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Load balancer rules import failed.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.delete('/api/load-balancer-rules/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  const deleted = Number.isInteger(id) && await deleteLoadBalancerRuleImport(id)
+  if (!deleted) {
+    response.status(404).json({ error: 'Load balancer rule import not found.' })
+    return
+  }
+  response.status(204).end()
 })
 
 app.post('/api/server-assessments/sheets', workbookUpload.single('file'), async (request, response) => {

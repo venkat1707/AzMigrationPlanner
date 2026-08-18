@@ -172,6 +172,12 @@ export async function migrateSchema(): Promise<void> {
     await refreshDependencyDirections()
   }
 
+  if (!(await database.schema.hasColumn('dependency_records', 'protocol'))) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.string('protocol', 10).nullable()
+    })
+  }
+
   if (!(await database.schema.hasColumn('dependency_records', 'source_ip'))) {
     throw new Error('dependency_records is missing source_ip')
   }
@@ -186,6 +192,23 @@ export async function migrateSchema(): Promise<void> {
       table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
       table.unique(['query', 'ip_address'], 'uq_dns_records_query_ip')
       table.index(['ip_address'], 'idx_dns_records_ip')
+    })
+  }
+
+  // Vendor exports (F5, Citrix ADC, AWS ELB, Azure LB, NGINX, HAProxy, Kemp, ...) differ in schema, so the
+  // original JSON/XML/CSV document is kept verbatim in raw_content rather than normalized into columns.
+  if (!(await database.schema.hasTable('load_balancer_rule_imports'))) {
+    await database.schema.createTable('load_balancer_rule_imports', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('import_run_id').unsigned().notNullable().references('id').inTable('import_runs').onDelete('CASCADE')
+      table.string('vendor', 100).nullable()
+      table.string('file_name', 260).notNullable()
+      table.string('format', 10).notNullable()
+      table.text('raw_content', 'longtext').notNullable()
+      table.string('content_hash', 64).notNullable()
+      table.integer('size_bytes').unsigned().notNullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.index(['content_hash'], 'idx_load_balancer_rule_imports_hash')
     })
   }
 
