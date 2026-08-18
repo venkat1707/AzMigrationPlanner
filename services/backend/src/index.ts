@@ -933,38 +933,39 @@ app.post('/api/imports/corelight', corelightUpload.fields([{ name: 'conn', maxCo
   const appliance = String(request.body?.appliance ?? '').trim() || 'Corelight'
   const allowIpFallback = String(request.body?.allowIpFallback ?? 'true') !== 'false'
   const canonicalPath = resolve(tmpdir(), `${crypto.randomUUID()}.csv`)
-  try {
-    let dnsRecordsStored = 0
-    const dnsRecords = dnsFile ? await parseDnsRecords(dnsFile.path) : []
-    if (dnsRecords.length) dnsRecordsStored = await saveDnsRecords(database, dnsRecords)
-    const hostnameByIp = hostnameMapFromDns(dnsRecords)
-    const conversion = await convertConnLogToCsv(connFile.path, canonicalPath, hostnameByIp, { appliance, allowIpFallback })
-    if (conversion.dependencyRows === 0) {
-      await unlink(canonicalPath).catch(() => undefined)
-      response.status(400).json({ error: 'No connection records could be read from the conn.log file. Confirm it is a Zeek/Corelight conn.log in JSON or TSV format.' })
-      return
-    }
-    const canonicalFile = { path: canonicalPath, originalname: `Corelight-${connFile.originalname.replace(/\.(gz|log|json|ndjson|txt)$/i, '')}.csv` } as Express.Multer.File
-    const generation = dependencyImportGeneration
-    pendingDependencyImportFiles += 1
-    dependencyImportQueue = dependencyImportQueue
-      .then(() => processDependencyUploads([canonicalFile], generation))
-      .catch((error) => console.error('Corelight dependency import queue failed.', error))
-    response.status(202).json({
-      status: 'Accepted',
-      fileName: canonicalFile.originalname,
-      connRecordsRead: conversion.recordsRead,
-      dependencyRows: conversion.dependencyRows,
-      unresolvedHosts: conversion.unresolvedHosts,
-      dnsRecordsStored,
+  const canonicalName = `Corelight-${connFile.originalname.replace(/\.(gz|log|json|ndjson|txt)$/i, '')}.csv`
+  const generation = dependencyImportGeneration
+  // Reserve one queue slot; parsing/conversion runs off the request thread to avoid request timeouts on large logs.
+  pendingDependencyImportFiles += 1
+  dependencyImportQueue = dependencyImportQueue
+    .then(async () => {
+      if (generation !== dependencyImportGeneration) { pendingDependencyImportFiles -= 1; return }
+      try {
+        const dnsRecords = dnsFile ? await parseDnsRecords(dnsFile.path) : []
+        if (dnsRecords.length) await saveDnsRecords(database, dnsRecords)
+        const conversion = await convertConnLogToCsv(connFile.path, canonicalPath, hostnameMapFromDns(dnsRecords), { appliance, allowIpFallback })
+        if (conversion.dependencyRows === 0) {
+          pendingDependencyImportFiles -= 1
+          await unlink(canonicalPath).catch(() => undefined)
+          console.warn(`Corelight import produced no dependency rows from ${connFile.originalname}.`)
+          return
+        }
+        await processDependencyUploads([{ path: canonicalPath, originalname: canonicalName } as Express.Multer.File], generation)
+      } catch (error) {
+        pendingDependencyImportFiles -= 1
+        await unlink(canonicalPath).catch(() => undefined)
+        console.error('Corelight conversion/import failed.', error)
+      } finally {
+        await unlink(connFile.path).catch(() => undefined)
+        if (dnsFile) await unlink(dnsFile.path).catch(() => undefined)
+      }
     })
-  } catch (error) {
-    await unlink(canonicalPath).catch(() => undefined)
-    response.status(400).json({ error: safeImportError(error, 'Unable to import Corelight logs.') })
-  } finally {
-    await unlink(connFile.path).catch(() => undefined)
-    if (dnsFile) await unlink(dnsFile.path).catch(() => undefined)
-  }
+    .catch((error) => console.error('Corelight import queue failed.', error))
+  response.status(202).json({
+    status: 'Accepted',
+    fileName: canonicalName,
+    message: 'Converting the flow log and importing it in the background. Track progress under Recent imports.',
+  })
 })
 
 app.post('/api/server-assessments/sheets', workbookUpload.single('file'), async (request, response) => {

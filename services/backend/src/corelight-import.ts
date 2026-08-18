@@ -122,8 +122,8 @@ export async function saveDnsRecords(connection: Knex, records: DnsRecord[]): Pr
     updated_at: connection.fn.now(),
   }))
   let written = 0
-  for (let index = 0; index < rows.length; index += 1000) {
-    const chunk = rows.slice(index, index + 1000)
+  for (let index = 0; index < rows.length; index += 5000) {
+    const chunk = rows.slice(index, index + 5000)
     await connection('dns_records').insert(chunk).onConflict(['query', 'ip_address']).merge(['observed_date', 'source', 'updated_at'])
     written += chunk.length
   }

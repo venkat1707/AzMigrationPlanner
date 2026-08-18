@@ -54,7 +54,7 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'application-catalog' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'tasks' | 'imports' | 'cleanup' | 'admin'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'application-catalog' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'tasks' | 'imports' | 'corelight' | 'cleanup' | 'admin'
 type ImportKind = 'dependencies' | 'applications' | 'server-assessment' | 'application-mapping'
 const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   applications: 'application-mapping',
@@ -100,6 +100,7 @@ async function uploadResponsePayload(response: Response): Promise<{ result?: Upl
 const pageDefinitions: PageDefinition[] = [
   { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor discovery coverage and continue through the migration planning workflow.' },
   { page: 'imports', label: 'Imports', group: 'Discover & prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, dependency exports, and Corelight/Zeek flow logs.' },
+  { page: 'corelight', label: 'Flow logs', group: 'Discover & prepare', icon: Network, access: 'modify', eyebrow: 'Network telemetry', title: 'Import Corelight / Zeek flow logs', description: 'Import conn.log and dns.log to enrich dependency data for mapping, waves, firewall rules, and planning.' },
   { page: 'core-infrastructure', label: 'Core Infrastructure', group: 'Discover & prepare', icon: Settings2, access: 'all', eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
   { page: 'environment-identification', label: 'Environment Identification', group: 'Discover & prepare', icon: ScanSearch, access: 'modify', eyebrow: 'Assessment enrichment', title: 'Identify server environments', description: 'Prioritize assessment rules to identify each server environment.' },
   { page: 'landing-zone-platform', label: 'Landing Zone Platform', group: 'Target landing zone', icon: Cloud, access: 'modify', eyebrow: 'Target Landing Zone', title: 'Landing zone platform design decisions', description: 'Record platform-level choices: connectivity, firewall, DNS, regions, resiliency, identity, monitoring, backup, endpoint protection, SIEM, and patching.' },
@@ -219,13 +220,6 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         .then(({ items }) => setImports(items))
         .catch(() => undefined)
       }, [refreshKey])
-
-  const loadImports = () => {
-    apiFetch('/api/imports')
-      .then((response) => response.ok ? response.json() as Promise<{ items: ImportRun[] }> : Promise.reject())
-      .then(({ items }) => setImports(items))
-      .catch(() => undefined)
-  }
 
   useEffect(() => {
     if (!uploading) return
@@ -599,8 +593,8 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
           </div>
           <aside className="import-history"><div className="section-heading"><div><p className="eyebrow">History</p><h2>Recent imports</h2></div><span className="import-count">{completedImports} complete</span></div><ImportHistory items={imports} /></aside>
         </section>
-        <CorelightImport onQueued={loadImports} />
         </div>}
+        {activePage === 'corelight' && <CorelightImport />}
       </main>
     </div>
   )
