@@ -849,7 +849,7 @@ const fileTimestamp = (): string => new Date().toISOString().replace(/[-:]/g, ''
 export async function requestDesignDocument(connection: Knex, input: RequestInput): Promise<DesignDocumentResult> {
   const agent = await findDesignAgent(connection, input.artifactType)
   if (!agent) {
-    throw new DesignDocumentError(`No enabled ${input.artifactType === 'design-document' ? 'design-document' : 'general'} Foundry agent is configured. Add one in Administration → Foundry agents.`, 409)
+    throw new DesignDocumentError(`No enabled ${input.artifactType === 'design-document' ? 'design-document' : 'general'} Foundry agent is configured. Add one in the Agents page.`, 409)
   }
   const map = input.artifactType === 'design-document' && input.application && input.environment
     ? await buildApplicationMap(connection, input.application, input.environment)

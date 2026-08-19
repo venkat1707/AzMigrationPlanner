@@ -252,7 +252,7 @@ async function enabledAdminCount(excludeId?: number): Promise<number> {
   return Number(result?.count ?? 0)
 }
 
-const agentPurposes = ['design-document', 'firewall-rules', 'load-balancer-ruleset', 'general'] as const
+const agentPurposes = ['design-document', 'firewall-rules', 'firewall-ruleset', 'load-balancer-ruleset', 'general'] as const
 type AgentPurpose = (typeof agentPurposes)[number]
 
 function mapAgent(row: Record<string, unknown>) {

@@ -455,7 +455,7 @@ export async function parseLoadBalancerRuleset(importId: number): Promise<LoadBa
   if (!importRow) throw new LoadBalancerRulesetError('Load balancer rule import not found.', 404)
 
   const agent = await findRulesetAgent()
-  if (!agent) throw new LoadBalancerRulesetError('No enabled load-balancer-ruleset Foundry agent is configured. Add one in Administration → Foundry agents.', 409)
+  if (!agent) throw new LoadBalancerRulesetError('No enabled load-balancer-ruleset Foundry agent is configured. Add one in the Agents page.', 409)
 
   const nextVersionRow = await database('load_balancer_rulesets').where({ import_id: importId }).max({ maxVersion: 'version' }).first() as { maxVersion: number | null } | undefined
   const version = (nextVersionRow?.maxVersion ?? 0) + 1

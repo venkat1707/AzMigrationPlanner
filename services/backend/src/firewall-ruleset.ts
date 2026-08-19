@@ -379,7 +379,7 @@ export async function parseFirewallRuleset(importId: number): Promise<FirewallRu
   if (!importRow) throw new FirewallRulesetError('Firewall rule import not found.', 404)
 
   const agent = await findRulesetAgent()
-  if (!agent) throw new FirewallRulesetError('No enabled firewall-ruleset Foundry agent is configured. Add one in Administration → Foundry agents.', 409)
+  if (!agent) throw new FirewallRulesetError('No enabled firewall-ruleset Foundry agent is configured. Add one in the Agents page.', 409)
 
   const nextVersionRow = await database('firewall_rulesets').where({ import_id: importId }).max({ maxVersion: 'version' }).first() as { maxVersion: number | null } | undefined
   const version = (nextVersionRow?.maxVersion ?? 0) + 1
