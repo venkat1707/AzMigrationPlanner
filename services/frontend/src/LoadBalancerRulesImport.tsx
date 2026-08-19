@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Download, RefreshCw, Sparkles, Trash2, Waypoints, XCircle } from 'lucide-react'
+import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, ChevronRight, Download, RefreshCw, Search, Sparkles, Trash2, Waypoints, XCircle } from 'lucide-react'
 import { apiFetch } from './auth-client'
 
 type LoadBalancerRuleSummary = {
@@ -27,6 +27,21 @@ type LoadBalancerRulesetSummary = {
 
 type LoadBalancerRulesetDetail = LoadBalancerRulesetSummary & { errorMessage: string | null; ruleset: unknown }
 
+type RulesetVirtualServerRow = {
+  id: number; externalId: string; name: string; ipAddress: string | null; port: number | null
+  protocol: string | null; poolName: string | null; sslProfile: string | null; persistence: string | null; enabled: boolean
+}
+type RulesetVirtualServersPage = { items: RulesetVirtualServerRow[]; total: number; page: number; pageSize: number; protocols: string[] }
+
+type RulesetRuleRow = {
+  id: number; externalId: string; name: string; virtualServerId: number | null; virtualServerName: string | null
+  priority: number | null; description: string | null; conditionSummary: string
+  actions: { actionType: string; target: string | null }[]
+}
+type RulesetRulesPage = { items: RulesetRuleRow[]; total: number; page: number; pageSize: number; actionTypes: string[]; virtualServers: { id: number; name: string }[] }
+
+const explorerPageSize = 10
+
 const contentTypeByFormat: Record<LoadBalancerRuleSummary['format'], string> = {
   json: 'application/json',
   xml: 'application/xml',
@@ -39,6 +54,149 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+// Paginated, filterable view of a parsed ruleset's virtual servers and rules, backed by the
+// relational lb_ruleset_* tables (rather than re-rendering the raw agent JSON dump).
+function RulesetExplorer({ rulesetId }: { rulesetId: number }) {
+  const [tab, setTab] = useState<'servers' | 'rules'>('servers')
+
+  const [vsPage, setVsPage] = useState(1)
+  const [vsSearchDraft, setVsSearchDraft] = useState('')
+  const [vsSearch, setVsSearch] = useState('')
+  const [vsProtocol, setVsProtocol] = useState('')
+  const [vsEnabled, setVsEnabled] = useState('')
+  const [vsData, setVsData] = useState<RulesetVirtualServersPage>({ items: [], total: 0, page: 1, pageSize: explorerPageSize, protocols: [] })
+  const [vsLoading, setVsLoading] = useState(true)
+
+  const [rulePage, setRulePage] = useState(1)
+  const [ruleSearchDraft, setRuleSearchDraft] = useState('')
+  const [ruleSearch, setRuleSearch] = useState('')
+  const [ruleVsId, setRuleVsId] = useState('')
+  const [ruleActionType, setRuleActionType] = useState('')
+  const [ruleData, setRuleData] = useState<RulesetRulesPage>({ items: [], total: 0, page: 1, pageSize: explorerPageSize, actionTypes: [], virtualServers: [] })
+  const [ruleLoading, setRuleLoading] = useState(true)
+
+  useEffect(() => {
+    if (tab !== 'servers') return
+    let cancelled = false
+    setVsLoading(true)
+    const params = new URLSearchParams({ page: String(vsPage), pageSize: String(explorerPageSize) })
+    if (vsSearch) params.set('search', vsSearch)
+    if (vsProtocol) params.set('protocol', vsProtocol)
+    if (vsEnabled) params.set('enabled', vsEnabled)
+    void apiFetch(`/api/load-balancer-rules/rulesets/${rulesetId}/virtual-servers?${params}`)
+      .then((response) => response.json())
+      .then((payload: RulesetVirtualServersPage) => { if (!cancelled) setVsData(payload) })
+      .finally(() => { if (!cancelled) setVsLoading(false) })
+    return () => { cancelled = true }
+  }, [tab, rulesetId, vsPage, vsSearch, vsProtocol, vsEnabled])
+
+  useEffect(() => {
+    if (tab !== 'rules') return
+    let cancelled = false
+    setRuleLoading(true)
+    const params = new URLSearchParams({ page: String(rulePage), pageSize: String(explorerPageSize) })
+    if (ruleSearch) params.set('search', ruleSearch)
+    if (ruleVsId) params.set('virtualServerId', ruleVsId)
+    if (ruleActionType) params.set('actionType', ruleActionType)
+    void apiFetch(`/api/load-balancer-rules/rulesets/${rulesetId}/rules?${params}`)
+      .then((response) => response.json())
+      .then((payload: RulesetRulesPage) => { if (!cancelled) setRuleData(payload) })
+      .finally(() => { if (!cancelled) setRuleLoading(false) })
+    return () => { cancelled = true }
+  }, [tab, rulesetId, rulePage, ruleSearch, ruleVsId, ruleActionType])
+
+  const vsPages = Math.max(1, Math.ceil(vsData.total / explorerPageSize))
+  const rulePages = Math.max(1, Math.ceil(ruleData.total / explorerPageSize))
+
+  return <div className="ruleset-explorer">
+    <div className="ruleset-explorer-tabs">
+      <button type="button" className={tab === 'servers' ? 'active' : ''} onClick={() => setTab('servers')}>Virtual servers ({vsData.total})</button>
+      <button type="button" className={tab === 'rules' ? 'active' : ''} onClick={() => setTab('rules')}>Rules ({ruleData.total})</button>
+    </div>
+
+    {tab === 'servers' && <>
+      <form className="ruleset-explorer-filters" onSubmit={(event) => { event.preventDefault(); setVsSearch(vsSearchDraft.trim()); setVsPage(1) }}>
+        <input type="text" placeholder="Search name, id, or IP" value={vsSearchDraft} onChange={(event) => setVsSearchDraft(event.target.value)} />
+        <select value={vsProtocol} onChange={(event) => { setVsProtocol(event.target.value); setVsPage(1) }}>
+          <option value="">All protocols</option>
+          {vsData.protocols.map((protocol) => <option key={protocol} value={protocol}>{protocol}</option>)}
+        </select>
+        <select value={vsEnabled} onChange={(event) => { setVsEnabled(event.target.value); setVsPage(1) }}>
+          <option value="">Enabled + disabled</option>
+          <option value="true">Enabled only</option>
+          <option value="false">Disabled only</option>
+        </select>
+        <button type="submit"><Search size={14} />Search</button>
+        <button type="button" className="icon-button" title="Reset filters" onClick={() => { setVsSearchDraft(''); setVsSearch(''); setVsProtocol(''); setVsEnabled(''); setVsPage(1) }}><RefreshCw size={14} /></button>
+      </form>
+      <div className="ruleset-explorer-table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Address</th><th>Protocol</th><th>Pool</th><th>SSL profile</th><th>Persistence</th><th>State</th></tr></thead>
+          <tbody>
+            {vsLoading ? <tr><td colSpan={7} className="empty-state">Loading…</td></tr>
+              : vsData.items.length === 0 ? <tr><td colSpan={7} className="empty-state">No virtual servers match these filters.</td></tr>
+              : vsData.items.map((row) => <tr key={row.id}>
+                <td><strong>{row.name}</strong><small>{row.externalId}</small></td>
+                <td>{row.ipAddress ?? '—'}{row.port ? `:${row.port}` : ''}</td>
+                <td>{row.protocol ?? '—'}</td>
+                <td>{row.poolName ?? '—'}</td>
+                <td>{row.sslProfile ?? '—'}</td>
+                <td>{row.persistence ?? '—'}</td>
+                <td><span className={`run-status ${row.enabled ? 'completed' : 'failed'}`}>{row.enabled ? 'Enabled' : 'Disabled'}</span></td>
+              </tr>)}
+          </tbody>
+        </table>
+      </div>
+      <footer className="pagination">
+        <span>Page {vsPage} of {vsPages} · {vsData.total} virtual server{vsData.total === 1 ? '' : 's'}</span>
+        <div>
+          <button type="button" className="icon-button" title="Previous page" disabled={vsPage <= 1} onClick={() => setVsPage((page) => page - 1)}><ArrowLeft size={17} /></button>
+          <button type="button" className="icon-button" title="Next page" disabled={vsPage >= vsPages} onClick={() => setVsPage((page) => page + 1)}><ArrowRight size={17} /></button>
+        </div>
+      </footer>
+    </>}
+
+    {tab === 'rules' && <>
+      <form className="ruleset-explorer-filters" onSubmit={(event) => { event.preventDefault(); setRuleSearch(ruleSearchDraft.trim()); setRulePage(1) }}>
+        <input type="text" placeholder="Search name, id, or description" value={ruleSearchDraft} onChange={(event) => setRuleSearchDraft(event.target.value)} />
+        <select value={ruleVsId} onChange={(event) => { setRuleVsId(event.target.value); setRulePage(1) }}>
+          <option value="">All virtual servers</option>
+          {ruleData.virtualServers.map((vs) => <option key={vs.id} value={vs.id}>{vs.name}</option>)}
+        </select>
+        <select value={ruleActionType} onChange={(event) => { setRuleActionType(event.target.value); setRulePage(1) }}>
+          <option value="">All action types</option>
+          {ruleData.actionTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+        </select>
+        <button type="submit"><Search size={14} />Search</button>
+        <button type="button" className="icon-button" title="Reset filters" onClick={() => { setRuleSearchDraft(''); setRuleSearch(''); setRuleVsId(''); setRuleActionType(''); setRulePage(1) }}><RefreshCw size={14} /></button>
+      </form>
+      <div className="ruleset-explorer-table-wrap">
+        <table>
+          <thead><tr><th>Rule</th><th>Virtual server</th><th>Priority</th><th>Condition</th><th>Actions</th></tr></thead>
+          <tbody>
+            {ruleLoading ? <tr><td colSpan={5} className="empty-state">Loading…</td></tr>
+              : ruleData.items.length === 0 ? <tr><td colSpan={5} className="empty-state">No rules match these filters.</td></tr>
+              : ruleData.items.map((row) => <tr key={row.id}>
+                <td><strong>{row.name}</strong><small>{row.externalId}</small></td>
+                <td>{row.virtualServerName ?? '—'}</td>
+                <td>{row.priority ?? '—'}</td>
+                <td>{row.conditionSummary}</td>
+                <td>{row.actions.length === 0 ? '—' : row.actions.map((action, index) => <span key={index}>{action.actionType}{action.target ? ` → ${action.target}` : ''}{index < row.actions.length - 1 ? '; ' : ''}</span>)}</td>
+              </tr>)}
+          </tbody>
+        </table>
+      </div>
+      <footer className="pagination">
+        <span>Page {rulePage} of {rulePages} · {ruleData.total} rule{ruleData.total === 1 ? '' : 's'}</span>
+        <div>
+          <button type="button" className="icon-button" title="Previous page" disabled={rulePage <= 1} onClick={() => setRulePage((page) => page - 1)}><ArrowLeft size={17} /></button>
+          <button type="button" className="icon-button" title="Next page" disabled={rulePage >= rulePages} onClick={() => setRulePage((page) => page + 1)}><ArrowRight size={17} /></button>
+        </div>
+      </footer>
+    </>}
+  </div>
 }
 
 export default function LoadBalancerRulesImport() {
@@ -76,12 +234,25 @@ export default function LoadBalancerRulesImport() {
       body.append('file', file)
       if (vendor.trim()) body.append('vendor', vendor.trim())
       const response = await apiFetch('/api/load-balancer-rules/import', { method: 'POST', body })
-      const payload = await response.json() as { result?: { fileName: string; format: string }; error?: string }
-      if (!response.ok) throw new Error(payload.error ?? 'Unable to import the load balancer rules file.')
-      setNotice(`Imported ${payload.result?.fileName} as ${payload.result?.format?.toUpperCase()}.`)
+      const payload = await response.json() as {
+        result?: { id: number; fileName: string; format: string }
+        parseResult?: LoadBalancerRulesetSummary
+        parseError?: string
+        error?: string
+      }
+      if (!response.ok || !payload.result) throw new Error(payload.error ?? 'Unable to import the load balancer rules file.')
+      const importedText = `Imported ${payload.result.fileName} as ${payload.result.format.toUpperCase()}.`
+      if (payload.parseResult) {
+        const r = payload.parseResult
+        setNotice(`${importedText} Parsed automatically: ${r.virtualServerCount} virtual servers, ${r.poolCount} pools, ${r.ruleCount} rules${r.warnings.length ? ` (${r.warnings.length} warning${r.warnings.length === 1 ? '' : 's'})` : ''}.`)
+      } else {
+        setNotice(importedText)
+        setError(payload.parseError ? `Automatic parsing failed: ${payload.parseError}` : '')
+      }
       setFile(null)
       if (fileInput.current) fileInput.current.value = ''
       void loadItems()
+      void loadRulesets(payload.result.id)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to import the load balancer rules file.')
     } finally {
@@ -219,7 +390,7 @@ export default function LoadBalancerRulesImport() {
                       : <>
                         {rulesetDetail.errorMessage && <div className="upload-message failed"><AlertCircle size={16} />{rulesetDetail.errorMessage}</div>}
                         {rulesetDetail.warnings.length > 0 && <ul className="ruleset-warnings">{rulesetDetail.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
-                        <pre className="ruleset-json">{JSON.stringify(rulesetDetail.ruleset, null, 2)}</pre>
+                        {rulesetDetail.status === 'Completed' && <RulesetExplorer rulesetId={ruleset.id} key={ruleset.id} />}
                       </>}
                   </div>}
                 </div>)}

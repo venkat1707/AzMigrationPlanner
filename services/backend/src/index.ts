@@ -18,7 +18,8 @@ import {
   deleteLoadBalancerRuleImport, getLoadBalancerRuleImport, importLoadBalancerRuleFile, listLoadBalancerRuleImports,
 } from './load-balancer-rules-import.js'
 import {
-  LoadBalancerRulesetError, getLoadBalancerRulesetDetail, listLoadBalancerRulesets, parseLoadBalancerRuleset,
+  LoadBalancerRulesetError, getLoadBalancerRulesetDetail, listLoadBalancerRulesets, listRulesetRulesPaged,
+  listRulesetVirtualServersPaged, parseLoadBalancerRuleset,
 } from './load-balancer-ruleset.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
@@ -1015,7 +1016,16 @@ app.post('/api/load-balancer-rules/import', loadBalancerRuleUpload.single('file'
   try {
     const vendor = String(request.body?.vendor ?? '').trim() || null
     const result = await importLoadBalancerRuleFile(file.path, file.originalname, vendor)
-    response.status(201).json({ result })
+    // Kick off parsing automatically once the import itself has succeeded; a parse failure is
+    // reported alongside the import result rather than failing the (already-successful) import.
+    let parseResult: Awaited<ReturnType<typeof parseLoadBalancerRuleset>> | undefined
+    let parseError: string | undefined
+    try {
+      parseResult = await parseLoadBalancerRuleset(result.id)
+    } catch (error) {
+      parseError = error instanceof LoadBalancerRulesetError ? error.message : 'The load balancer ruleset could not be parsed automatically.'
+    }
+    response.status(201).json({ result, parseResult, parseError })
   } catch (error) {
     response.status(400).json({ error: safeImportError(error, 'Load balancer rules import failed.') })
   } finally {
@@ -1067,6 +1077,40 @@ app.get('/api/load-balancer-rules/rulesets/:rulesetId', async (request, response
     return
   }
   response.json({ item })
+})
+
+app.get('/api/load-balancer-rules/rulesets/:rulesetId/virtual-servers', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  if (!Number.isInteger(rulesetId)) {
+    response.status(400).json({ error: 'Invalid load balancer ruleset ID.' })
+    return
+  }
+  const enabledParam = String(request.query.enabled ?? '')
+  const result = await listRulesetVirtualServersPaged(rulesetId, {
+    page: Number(request.query.page) || 1,
+    pageSize: Number(request.query.pageSize) || 25,
+    search: String(request.query.search ?? '').trim() || undefined,
+    protocol: String(request.query.protocol ?? '').trim() || undefined,
+    enabled: enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined,
+  })
+  response.json(result)
+})
+
+app.get('/api/load-balancer-rules/rulesets/:rulesetId/rules', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  if (!Number.isInteger(rulesetId)) {
+    response.status(400).json({ error: 'Invalid load balancer ruleset ID.' })
+    return
+  }
+  const virtualServerId = Number(request.query.virtualServerId)
+  const result = await listRulesetRulesPaged(rulesetId, {
+    page: Number(request.query.page) || 1,
+    pageSize: Number(request.query.pageSize) || 25,
+    search: String(request.query.search ?? '').trim() || undefined,
+    virtualServerId: Number.isInteger(virtualServerId) && virtualServerId > 0 ? virtualServerId : undefined,
+    actionType: String(request.query.actionType ?? '').trim() || undefined,
+  })
+  response.json(result)
 })
 
 app.post('/api/server-assessments/sheets', workbookUpload.single('file'), async (request, response) => {

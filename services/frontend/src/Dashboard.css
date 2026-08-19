@@ -142,7 +142,19 @@ button { letter-spacing: 0; }
 .ruleset-version-toggle .run-status { width: auto; }
 .ruleset-version-detail { padding: 4px 2px 12px 24px; }
 .ruleset-warnings { margin: 0 0 8px; padding-left: 18px; color: #9a6b12; font-size: 11px; line-height: 1.5; }
-.ruleset-json { max-height: 320px; padding: 10px; overflow: auto; color: #334b63; background: #f8faff; border: 1px solid var(--line); border-radius: 4px; font-family: var(--mono); font-size: 10px; line-height: 1.5; white-space: pre-wrap; }
+.ruleset-explorer { margin-top: 4px; }
+.ruleset-explorer-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.ruleset-explorer-tabs button { height: 30px; padding: 0 14px; color: #52627a; background: #eef2f8; border: 1px solid #d2dbe7; border-radius: 4px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.ruleset-explorer-tabs button.active { color: var(--accent); background: white; border-color: var(--accent); }
+.ruleset-explorer-filters { padding: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: #f8faff; border: 1px solid var(--line); border-radius: 4px 4px 0 0; }
+.ruleset-explorer-filters input, .ruleset-explorer-filters select { height: 32px; min-width: 140px; padding: 0 9px; color: var(--ink); background: white; border: 1px solid #c4cfdf; border-radius: 4px; outline: none; font: inherit; font-size: 12px; }
+.ruleset-explorer-filters button { height: 32px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; color: white; background: var(--accent); border: 0; border-radius: 4px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.ruleset-explorer-filters .icon-button { width: 32px; height: 32px; padding: 0; color: #526176; background: white; border: 1px solid #c4cfdf; }
+.ruleset-explorer-table-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-top: 0; }
+.ruleset-explorer-table-wrap table { font-size: 11px; }
+.ruleset-explorer-table-wrap th { position: sticky; top: 0; }
+.ruleset-explorer-table-wrap td { max-width: 260px; }
+.ruleset-explorer .pagination { padding: 0 4px; border: 1px solid var(--line); border-top: 0; }
 .workspace { overflow: hidden; }
 .filters { padding: 18px; display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1fr) 100px auto auto; align-items: end; gap: 11px; background: #f8faff; border-bottom: 1px solid var(--line); }
 .filters label { display: grid; gap: 6px; color: #415169; font-size: 11px; font-weight: 700; }

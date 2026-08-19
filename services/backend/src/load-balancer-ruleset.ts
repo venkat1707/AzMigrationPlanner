@@ -637,3 +637,136 @@ export async function getLoadBalancerRulesetDetail(rulesetId: number): Promise<L
     warnings: parseJsonColumn<string[]>(header.warnings, []), errorMessage: header.error_message, createdAt: header.created_at, ruleset,
   }
 }
+
+// --- Paginated, filterable views for the "Import load balancer rules" page -------------------
+
+export type PagedResult<T> = { items: T[]; total: number; page: number; pageSize: number }
+
+function clampPage(page: number): number { return Number.isFinite(page) && page > 0 ? Math.floor(page) : 1 }
+function clampPageSize(pageSize: number): number { return Number.isFinite(pageSize) && pageSize > 0 ? Math.min(Math.floor(pageSize), 200) : 25 }
+
+// Renders a condition tree as a short human-readable string (e.g. for a table cell), independent
+// of the fully structured JSON — a compact fallback view alongside the raw ruleset export.
+export function stringifyConditionNode(node: LbConditionNode | null): string {
+  if (!node) return 'Always'
+  if (node.operator === 'LEAF') {
+    const value = Array.isArray(node.value) ? node.value.join(', ') : String(node.value ?? '')
+    const base = `${node.field ?? '?'} ${node.comparator ?? '?'} ${value}`.trim()
+    return node.negate ? `NOT (${base})` : base
+  }
+  const joined = node.children.map(stringifyConditionNode).join(node.operator === 'NOT' ? ', ' : ` ${node.operator} `)
+  return node.operator === 'NOT' ? `NOT (${joined})` : `(${joined})`
+}
+
+export type RulesetVirtualServerRow = {
+  id: number; externalId: string; name: string; ipAddress: string | null; port: number | null
+  protocol: string | null; poolName: string | null; sslProfile: string | null; persistence: string | null; enabled: boolean
+}
+export type RulesetVirtualServerFilters = { page: number; pageSize: number; search?: string; protocol?: string; enabled?: 'true' | 'false' }
+
+export async function listRulesetVirtualServersPaged(
+  rulesetId: number, filters: RulesetVirtualServerFilters,
+): Promise<PagedResult<RulesetVirtualServerRow> & { protocols: string[] }> {
+  const page = clampPage(filters.page)
+  const pageSize = clampPageSize(filters.pageSize)
+  const search = filters.search
+  const protocol = filters.protocol
+  const enabled = filters.enabled
+
+  const base = database('lb_ruleset_virtual_servers as vs')
+    .leftJoin('lb_ruleset_pools as p', 'p.id', 'vs.pool_id')
+    .where('vs.ruleset_id', rulesetId)
+  if (search) {
+    const term = `%${search}%`
+    base.andWhere((qb) => { qb.where('vs.name', 'like', term).orWhere('vs.external_id', 'like', term).orWhere('vs.ip_address', 'like', term) })
+  }
+  if (protocol) base.andWhere('vs.protocol', protocol)
+  if (enabled === 'true' || enabled === 'false') base.andWhere('vs.enabled', enabled === 'true')
+
+  const [countRow, rows, protocolRows] = await Promise.all([
+    base.clone().count({ count: 'vs.id' }).first() as Promise<{ count: number | string } | undefined>,
+    base.clone().select({
+      id: 'vs.id', externalId: 'vs.external_id', name: 'vs.name', ipAddress: 'vs.ip_address', port: 'vs.port',
+      protocol: 'vs.protocol', poolName: 'p.name', sslProfile: 'vs.ssl_profile', persistence: 'vs.persistence', enabled: 'vs.enabled',
+    }).orderBy('vs.name').offset((page - 1) * pageSize).limit(pageSize),
+    database('lb_ruleset_virtual_servers').where({ ruleset_id: rulesetId }).whereNotNull('protocol').distinct('protocol').orderBy('protocol'),
+  ])
+
+  return {
+    items: rows.map((row) => ({ ...row, enabled: Boolean(row.enabled) })),
+    total: Number(countRow?.count ?? 0), page, pageSize,
+    protocols: protocolRows.map((row) => row.protocol as string),
+  }
+}
+
+export type RulesetRuleRow = {
+  id: number; externalId: string; name: string; virtualServerId: number | null; virtualServerName: string | null
+  priority: number | null; description: string | null; conditionSummary: string
+  actions: { actionType: string; target: string | null }[]
+}
+export type RulesetRuleFilters = { page: number; pageSize: number; search?: string; virtualServerId?: number; actionType?: string }
+
+export async function listRulesetRulesPaged(
+  rulesetId: number, filters: RulesetRuleFilters,
+): Promise<PagedResult<RulesetRuleRow> & { actionTypes: string[]; virtualServers: { id: number; name: string }[] }> {
+  const page = clampPage(filters.page)
+  const pageSize = clampPageSize(filters.pageSize)
+  const search = filters.search
+  const virtualServerId = filters.virtualServerId
+  const actionType = filters.actionType
+
+  const base = database('lb_ruleset_rules as r')
+    .leftJoin('lb_ruleset_virtual_servers as vs', 'vs.id', 'r.virtual_server_id')
+    .where('r.ruleset_id', rulesetId)
+  if (search) {
+    const term = `%${search}%`
+    base.andWhere((qb) => { qb.where('r.name', 'like', term).orWhere('r.external_id', 'like', term).orWhere('r.description', 'like', term) })
+  }
+  if (virtualServerId) base.andWhere('r.virtual_server_id', virtualServerId)
+  if (actionType) {
+    base.andWhere((qb) => {
+      qb.whereExists(database('lb_ruleset_rule_actions as a').whereRaw('a.rule_id = r.id').andWhere('a.action_type', actionType))
+    })
+  }
+
+  const [countRow, rows, actionTypeRows, virtualServerRows] = await Promise.all([
+    base.clone().count({ count: 'r.id' }).first() as Promise<{ count: number | string } | undefined>,
+    base.clone().select({
+      id: 'r.id', externalId: 'r.external_id', name: 'r.name', virtualServerId: 'r.virtual_server_id',
+      virtualServerName: 'vs.name', priority: 'r.priority', description: 'r.description',
+    }).orderByRaw('r.priority is null, r.priority asc').orderBy('r.id').offset((page - 1) * pageSize).limit(pageSize),
+    database('lb_ruleset_rule_actions as a').join('lb_ruleset_rules as r', 'r.id', 'a.rule_id').where('r.ruleset_id', rulesetId).distinct('a.action_type').orderBy('a.action_type'),
+    database('lb_ruleset_virtual_servers').where({ ruleset_id: rulesetId }).select({ id: 'id', name: 'name' }).orderBy('name'),
+  ])
+
+  const ruleIds = rows.map((row) => row.id)
+  const [conditions, actions] = ruleIds.length ? await Promise.all([
+    database('lb_ruleset_rule_conditions').whereIn('rule_id', ruleIds),
+    database('lb_ruleset_rule_actions').whereIn('rule_id', ruleIds).orderBy('sort_order'),
+  ]) : [[], []]
+
+  const conditionsByRule = new Map<number, StoredConditionRow[]>()
+  for (const condition of conditions) {
+    const list = conditionsByRule.get(condition.rule_id) ?? []
+    list.push({ id: condition.id, parentConditionId: condition.parent_condition_id, operator: condition.operator, field: condition.field, comparator: condition.comparator, value: parseJsonColumn(condition.value, null), negate: Boolean(condition.negate), sortOrder: condition.sort_order })
+    conditionsByRule.set(condition.rule_id, list)
+  }
+  const actionsByRule = new Map<number, { actionType: string; target: string | null }[]>()
+  for (const action of actions) {
+    const list = actionsByRule.get(action.rule_id) ?? []
+    list.push({ actionType: action.action_type, target: action.target })
+    actionsByRule.set(action.rule_id, list)
+  }
+
+  return {
+    items: rows.map((row) => ({
+      id: row.id, externalId: row.externalId, name: row.name, virtualServerId: row.virtualServerId, virtualServerName: row.virtualServerName,
+      priority: row.priority, description: row.description,
+      conditionSummary: stringifyConditionNode(buildConditionTree(conditionsByRule.get(row.id) ?? [])),
+      actions: actionsByRule.get(row.id) ?? [],
+    })),
+    total: Number(countRow?.count ?? 0), page, pageSize,
+    actionTypes: actionTypeRows.map((row) => row.action_type as string),
+    virtualServers: virtualServerRows.map((row) => ({ id: row.id, name: row.name })),
+  }
+}
