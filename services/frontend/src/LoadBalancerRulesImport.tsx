@@ -17,7 +17,7 @@ type LoadBalancerRulesetSummary = {
   importId: number
   version: number
   vendor: string | null
-  status: 'Completed' | 'Failed'
+  status: 'Processing' | 'Completed' | 'Failed'
   virtualServerCount: number
   poolCount: number
   ruleCount: number
@@ -256,9 +256,22 @@ export default function LoadBalancerRulesImport() {
       }
       if (!response.ok || !payload.result) throw new Error(payload.error ?? 'Unable to import the load balancer rules file.')
       const importedText = `Imported ${payload.result.fileName} as ${payload.result.format.toUpperCase()}.`
+      const importId = payload.result.id
       if (payload.parseResult) {
         const r = payload.parseResult
-        setNotice(`${importedText} Parsed automatically: ${r.virtualServerCount} virtual servers, ${r.poolCount} pools, ${r.ruleCount} rules${r.warnings.length ? ` (${r.warnings.length} warning${r.warnings.length === 1 ? '' : 's'})` : ''}.`)
+        if (r.status === 'Processing') {
+          setNotice(`${importedText} Parsing automatically in the background — this can take a few minutes for larger exports.`)
+          pollRulesetUntilSettled(importId, r.id, (settled) => {
+            if (settled.status === 'Completed') {
+              setNotice(`${importedText} Parsed automatically: ${settled.virtualServerCount} virtual servers, ${settled.poolCount} pools, ${settled.ruleCount} rules${settled.warnings.length ? ` (${settled.warnings.length} warning${settled.warnings.length === 1 ? '' : 's'})` : ''}.`)
+            } else {
+              setNotice(importedText)
+              setError('Automatic parsing failed. Expand the version below for details.')
+            }
+          })
+        } else {
+          setNotice(`${importedText} Parsed automatically: ${r.virtualServerCount} virtual servers, ${r.poolCount} pools, ${r.ruleCount} rules${r.warnings.length ? ` (${r.warnings.length} warning${r.warnings.length === 1 ? '' : 's'})` : ''}.`)
+        }
       } else {
         setNotice(importedText)
         setError(payload.parseError ? `Automatic parsing failed: ${payload.parseError}` : '')
@@ -266,7 +279,7 @@ export default function LoadBalancerRulesImport() {
       setFile(null)
       if (fileInput.current) fileInput.current.value = ''
       void loadItems()
-      void loadRulesets(payload.result.id)
+      void loadRulesets(importId)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to import the load balancer rules file.')
     } finally {
@@ -317,7 +330,29 @@ export default function LoadBalancerRulesImport() {
       if (!response.ok) return
       const { items: loaded } = await response.json() as { items: LoadBalancerRulesetSummary[] }
       setRulesetsByImport((current) => ({ ...current, [importId]: loaded }))
+      return loaded
     } catch { /* transient network error; the user can retry via Parse or Refresh */ }
+  }
+
+  const pollingRulesetIds = useRef(new Set<number>())
+
+  // Parsing runs in the background on the server (agent calls can take minutes), so the parse
+  // endpoints return a 'Processing' placeholder immediately. Poll the ruleset list until the
+  // specific ruleset we started settles into 'Completed' or 'Failed', then report the outcome.
+  const pollRulesetUntilSettled = (importId: number, rulesetId: number, onSettled: (ruleset: LoadBalancerRulesetSummary) => void) => {
+    if (pollingRulesetIds.current.has(rulesetId)) return
+    pollingRulesetIds.current.add(rulesetId)
+    const tick = async () => {
+      const loaded = await loadRulesets(importId)
+      const match = loaded?.find((ruleset) => ruleset.id === rulesetId)
+      if (match && match.status !== 'Processing') {
+        pollingRulesetIds.current.delete(rulesetId)
+        onSettled(match)
+        return
+      }
+      if (pollingRulesetIds.current.has(rulesetId)) setTimeout(() => { void tick() }, 3000)
+    }
+    void tick()
   }
 
   const loadAllRulesets = async (importIds: number[]) => {
@@ -341,11 +376,19 @@ export default function LoadBalancerRulesImport() {
       const payload = await response.json() as { result?: LoadBalancerRulesetSummary; error?: string }
       if (!response.ok) throw new Error(payload.error ?? 'Unable to parse the load balancer rules with the agent.')
       const result = payload.result!
-      setNotice(`Parsed version ${result.version}: ${result.virtualServerCount} virtual servers, ${result.poolCount} pools, ${result.ruleCount} rules${result.warnings.length ? ` (${result.warnings.length} warning${result.warnings.length === 1 ? '' : 's'})` : ''}.`)
       void loadRulesets(item.id)
+      setNotice(`Parsing version ${result.version} in the background — this can take a few minutes for larger exports.`)
+      pollRulesetUntilSettled(item.id, result.id, (settled) => {
+        setParsingId((current) => (current === item.id ? null : current))
+        if (settled.status === 'Completed') {
+          setNotice(`Parsed version ${settled.version}: ${settled.virtualServerCount} virtual servers, ${settled.poolCount} pools, ${settled.ruleCount} rules${settled.warnings.length ? ` (${settled.warnings.length} warning${settled.warnings.length === 1 ? '' : 's'})` : ''}.`)
+        } else {
+          setNotice('')
+          setError('Automatic parsing failed. Expand the version below for details.')
+        }
+      })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to parse the load balancer rules with the agent.')
-    } finally {
       setParsingId(null)
     }
   }
@@ -405,13 +448,14 @@ export default function LoadBalancerRulesImport() {
                 {rulesets.map((ruleset) => <div className="ruleset-version-row" key={ruleset.id}>
                   <button type="button" className="ruleset-version-toggle" onClick={() => void toggleExpanded(ruleset)}>
                     {expandedId === ruleset.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    <span className={`run-status ${ruleset.status === 'Completed' ? 'completed' : 'failed'}`}>{ruleset.status === 'Completed' ? <CheckCircle2 size={14} /> : <XCircle size={14} />}</span>
-                    <span>Version {ruleset.version}{ruleset.vendor ? ` · ${ruleset.vendor}` : ''} · {ruleset.virtualServerCount} virtual servers · {ruleset.poolCount} pools · {ruleset.ruleCount} rules{ruleset.warnings.length ? ` · ${ruleset.warnings.length} warning${ruleset.warnings.length === 1 ? '' : 's'}` : ''} · {new Date(ruleset.createdAt).toLocaleString()}</span>
+                    <span className={`run-status ${ruleset.status === 'Completed' ? 'completed' : ruleset.status === 'Processing' ? 'running' : 'failed'}`}>{ruleset.status === 'Completed' ? <CheckCircle2 size={14} /> : ruleset.status === 'Processing' ? <RefreshCw size={14} /> : <XCircle size={14} />}</span>
+                    <span>Version {ruleset.version}{ruleset.vendor ? ` · ${ruleset.vendor}` : ''} · {ruleset.status === 'Processing' ? 'Parsing…' : `${ruleset.virtualServerCount} virtual servers · ${ruleset.poolCount} pools · ${ruleset.ruleCount} rules${ruleset.warnings.length ? ` · ${ruleset.warnings.length} warning${ruleset.warnings.length === 1 ? '' : 's'}` : ''}`} · {new Date(ruleset.createdAt).toLocaleString()}</span>
                   </button>
                   {expandedId === ruleset.id && <div className="ruleset-version-detail">
                     {!rulesetDetail
-                      ? <span>Loading…</span>
+                      ? <span>{ruleset.status === 'Processing' ? 'Parsing in the background…' : 'Loading…'}</span>
                       : <>
+                        {rulesetDetail.status === 'Processing' && <span>Parsing in the background…</span>}
                         {rulesetDetail.errorMessage && <div className="upload-message failed"><AlertCircle size={16} />{rulesetDetail.errorMessage}</div>}
                         {rulesetDetail.warnings.length > 0 && <ul className="ruleset-warnings">{rulesetDetail.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
                         {rulesetDetail.status === 'Completed' && <RulesetExplorer rulesetId={ruleset.id} key={ruleset.id} />}

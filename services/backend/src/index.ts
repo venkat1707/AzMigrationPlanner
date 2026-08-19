@@ -19,14 +19,14 @@ import {
 } from './load-balancer-rules-import.js'
 import {
   LoadBalancerRulesetError, getLoadBalancerRulesetDetail, listLoadBalancerRulesets, listLoadBalancerRulesetsBatch, listRulesetRulesPaged,
-  listRulesetVirtualServersPaged, parseLoadBalancerRuleset,
+  listRulesetVirtualServersPaged, startLoadBalancerRulesetParse,
 } from './load-balancer-ruleset.js'
 import {
   deleteFirewallRuleImport, getFirewallRuleImport, importFirewallRuleFile, listFirewallRuleImports,
 } from './firewall-rules-import.js'
 import {
   FirewallRulesetError, getFirewallRulesetDetail, listFirewallRulesetRulesPaged, listFirewallRulesets, listFirewallRulesetsBatch,
-  parseFirewallRuleset,
+  startFirewallRulesetParse,
 } from './firewall-ruleset.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
@@ -1044,10 +1044,10 @@ app.post('/api/load-balancer-rules/import', loadBalancerRuleUpload.single('file'
     const result = await importLoadBalancerRuleFile(file.path, file.originalname, vendor)
     // Kick off parsing automatically once the import itself has succeeded; a parse failure is
     // reported alongside the import result rather than failing the (already-successful) import.
-    let parseResult: Awaited<ReturnType<typeof parseLoadBalancerRuleset>> | undefined
+    let parseResult: Awaited<ReturnType<typeof startLoadBalancerRulesetParse>> | undefined
     let parseError: string | undefined
     try {
-      parseResult = await parseLoadBalancerRuleset(result.id)
+      parseResult = await startLoadBalancerRulesetParse(result.id)
     } catch (error) {
       parseError = error instanceof LoadBalancerRulesetError ? error.message : 'The load balancer ruleset could not be parsed automatically.'
     }
@@ -1076,7 +1076,7 @@ app.post('/api/load-balancer-rules/:id/parse', async (request, response) => {
     return
   }
   try {
-    response.status(201).json({ result: await parseLoadBalancerRuleset(id) })
+    response.status(202).json({ result: await startLoadBalancerRulesetParse(id) })
   } catch (error) {
     if (error instanceof LoadBalancerRulesetError) {
       response.status(error.statusCode).json({ error: error.message })
@@ -1172,10 +1172,10 @@ app.post('/api/firewall-rule-imports/import', firewallRuleUpload.single('file'),
     const result = await importFirewallRuleFile(file.path, file.originalname, vendor)
     // Kick off parsing automatically once the import itself has succeeded; a parse failure is
     // reported alongside the import result rather than failing the (already-successful) import.
-    let parseResult: Awaited<ReturnType<typeof parseFirewallRuleset>> | undefined
+    let parseResult: Awaited<ReturnType<typeof startFirewallRulesetParse>> | undefined
     let parseError: string | undefined
     try {
-      parseResult = await parseFirewallRuleset(result.id)
+      parseResult = await startFirewallRulesetParse(result.id)
     } catch (error) {
       parseError = error instanceof FirewallRulesetError ? error.message : 'The firewall ruleset could not be parsed automatically.'
     }
@@ -1204,7 +1204,7 @@ app.post('/api/firewall-rule-imports/:id/parse', async (request, response) => {
     return
   }
   try {
-    response.status(201).json({ result: await parseFirewallRuleset(id) })
+    response.status(202).json({ result: await startFirewallRulesetParse(id) })
   } catch (error) {
     if (error instanceof FirewallRulesetError) {
       response.status(error.statusCode).json({ error: error.message })

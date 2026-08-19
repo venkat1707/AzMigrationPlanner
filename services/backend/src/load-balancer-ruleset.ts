@@ -451,7 +451,7 @@ export type LoadBalancerRulesetSummary = {
   virtualServerCount: number; poolCount: number; ruleCount: number; warnings: string[]; createdAt: string
 }
 
-export async function parseLoadBalancerRuleset(importId: number): Promise<LoadBalancerRulesetSummary> {
+export async function startLoadBalancerRulesetParse(importId: number): Promise<LoadBalancerRulesetSummary> {
   const importRow = await database('load_balancer_rule_imports').where({ id: importId }).first() as
     { id: number; vendor: string | null; file_name: string; format: string; raw_content: string } | undefined
   if (!importRow) throw new LoadBalancerRulesetError('Load balancer rule import not found.', 404)
@@ -462,26 +462,44 @@ export async function parseLoadBalancerRuleset(importId: number): Promise<LoadBa
   const nextVersionRow = await database('load_balancer_rulesets').where({ import_id: importId }).max({ maxVersion: 'version' }).first() as { maxVersion: number | null } | undefined
   const version = (nextVersionRow?.maxVersion ?? 0) + 1
 
+  // Insert the header row up front so the request can return immediately (agent calls can take
+  // minutes, well past IIS's/browsers' request timeouts); the caller polls the ruleset list/detail
+  // endpoints for status, and runLoadBalancerRulesetParse fills in the same row once the agent replies.
+  const [rulesetId] = await database('load_balancer_rulesets').insert({
+    import_id: importId, version, status: 'Processing', agent_endpoint_id: agent.id,
+  })
+  if (rulesetId === undefined) throw new LoadBalancerRulesetError('MySQL did not return a ruleset ID.', 500)
+
+  void runLoadBalancerRulesetParse(rulesetId, agent, importRow).catch((error) => {
+    console.error(`Load balancer ruleset parse ${rulesetId} (import ${importId}) failed unexpectedly:`, error)
+  })
+
+  return {
+    id: rulesetId, importId, version, vendor: null, status: 'Processing',
+    virtualServerCount: 0, poolCount: 0, ruleCount: 0, warnings: [], createdAt: new Date().toISOString(),
+  }
+}
+
+async function runLoadBalancerRulesetParse(
+  rulesetId: number, agent: AgentRow, importRow: { vendor: string | null; file_name: string; format: string; raw_content: string },
+): Promise<void> {
   let contract: Record<string, unknown>
   try {
     contract = await callRulesetAgent(agent, importRow.vendor, importRow.format, importRow.file_name, importRow.raw_content)
   } catch (error) {
     const message = error instanceof LoadBalancerRulesetError ? error.message : 'The load balancer ruleset agent request failed.'
-    await database('load_balancer_rulesets').insert({
-      import_id: importId, version, status: 'Failed', agent_endpoint_id: agent.id, error_message: message,
-    })
-    throw error
+    await database('load_balancer_rulesets').where({ id: rulesetId }).update({ status: 'Failed', error_message: message })
+    return
   }
 
   const { ruleset, warnings } = normalizeAgentRuleset(contract)
 
-  return database.transaction(async (transaction) => {
-    const [rulesetId] = await transaction('load_balancer_rulesets').insert({
-      import_id: importId, version, vendor: ruleset.vendor, status: 'Completed', agent_endpoint_id: agent.id,
+  await database.transaction(async (transaction) => {
+    await transaction('load_balancer_rulesets').where({ id: rulesetId }).update({
+      vendor: ruleset.vendor, status: 'Completed',
       virtual_server_count: ruleset.virtualServers.length, pool_count: ruleset.pools.length, rule_count: ruleset.rules.length,
       warnings: JSON.stringify(warnings), agent_response_json: JSON.stringify(contract),
     })
-    if (rulesetId === undefined) throw new LoadBalancerRulesetError('MySQL did not return a ruleset ID.', 500)
 
     const poolIdByExternalId = new Map<string, number>()
     for (const pool of ruleset.pools) {
@@ -544,12 +562,6 @@ export async function parseLoadBalancerRuleset(importId: number): Promise<LoadBa
           parameters: JSON.stringify(action.parameters), extra_attributes: JSON.stringify(action.extraAttributes),
         })))
       }
-    }
-
-    return {
-      id: rulesetId, importId, version, vendor: ruleset.vendor, status: 'Completed',
-      virtualServerCount: ruleset.virtualServers.length, poolCount: ruleset.pools.length, ruleCount: ruleset.rules.length,
-      warnings, createdAt: new Date().toISOString(),
     }
   })
 }

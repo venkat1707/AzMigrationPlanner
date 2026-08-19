@@ -375,7 +375,7 @@ function parseJsonColumn<T>(value: unknown, fallback: T): T {
   try { return JSON.parse(value) as T } catch { return fallback }
 }
 
-export async function parseFirewallRuleset(importId: number): Promise<FirewallRulesetSummary> {
+export async function startFirewallRulesetParse(importId: number): Promise<FirewallRulesetSummary> {
   const importRow = await database('firewall_rule_imports').where({ id: importId }).first() as
     { id: number; vendor: string | null; file_name: string; format: string; raw_content: string } | undefined
   if (!importRow) throw new FirewallRulesetError('Firewall rule import not found.', 404)
@@ -386,27 +386,46 @@ export async function parseFirewallRuleset(importId: number): Promise<FirewallRu
   const nextVersionRow = await database('firewall_rulesets').where({ import_id: importId }).max({ maxVersion: 'version' }).first() as { maxVersion: number | null } | undefined
   const version = (nextVersionRow?.maxVersion ?? 0) + 1
 
+  // Insert the header row up front so the request can return immediately (agent calls can take
+  // minutes, well past IIS's/browsers' request timeouts); the caller polls the ruleset list/detail
+  // endpoints for status, and runFirewallRulesetParse fills in the same row once the agent replies.
+  const [rulesetId] = await database('firewall_rulesets').insert({
+    import_id: importId, version, status: 'Processing', agent_endpoint_id: agent.id,
+  })
+  if (rulesetId === undefined) throw new FirewallRulesetError('MySQL did not return a ruleset ID.', 500)
+
+  void runFirewallRulesetParse(rulesetId, agent, importRow).catch((error) => {
+    console.error(`Firewall ruleset parse ${rulesetId} (import ${importId}) failed unexpectedly:`, error)
+  })
+
+  return {
+    id: rulesetId, importId, version, vendor: null, status: 'Processing',
+    zoneCount: 0, addressObjectCount: 0, serviceObjectCount: 0, ruleCount: 0, natRuleCount: 0,
+    warnings: [], createdAt: new Date().toISOString(),
+  }
+}
+
+async function runFirewallRulesetParse(
+  rulesetId: number, agent: AgentRow, importRow: { vendor: string | null; file_name: string; format: string; raw_content: string },
+): Promise<void> {
   let contract: Record<string, unknown>
   try {
     contract = await callRulesetAgent(agent, importRow.vendor, importRow.format, importRow.file_name, importRow.raw_content)
   } catch (error) {
     const message = error instanceof FirewallRulesetError ? error.message : 'The firewall ruleset agent request failed.'
-    await database('firewall_rulesets').insert({
-      import_id: importId, version, status: 'Failed', agent_endpoint_id: agent.id, error_message: message,
-    })
-    throw error
+    await database('firewall_rulesets').where({ id: rulesetId }).update({ status: 'Failed', error_message: message })
+    return
   }
 
   const { ruleset, warnings } = normalizeAgentFirewallRuleset(contract)
 
-  return database.transaction(async (transaction) => {
-    const [rulesetId] = await transaction('firewall_rulesets').insert({
-      import_id: importId, version, vendor: ruleset.vendor, status: 'Completed', agent_endpoint_id: agent.id,
+  await database.transaction(async (transaction) => {
+    await transaction('firewall_rulesets').where({ id: rulesetId }).update({
+      vendor: ruleset.vendor, status: 'Completed',
       zone_count: ruleset.zones.length, address_object_count: ruleset.addressObjects.length,
       service_object_count: ruleset.serviceObjects.length, rule_count: ruleset.rules.length, nat_rule_count: ruleset.natRules.length,
       warnings: JSON.stringify(warnings), agent_response_json: JSON.stringify(contract),
     })
-    if (rulesetId === undefined) throw new FirewallRulesetError('MySQL did not return a ruleset ID.', 500)
 
     if (ruleset.zones.length) {
       await transaction('firewall_ruleset_zones').insert(ruleset.zones.map((zone) => ({
@@ -443,13 +462,6 @@ export async function parseFirewallRuleset(importId: number): Promise<FirewallRu
         translated_source: nat.translatedSource, translated_destination: nat.translatedDestination, translated_service: nat.translatedService,
         extra_attributes: JSON.stringify(nat.extraAttributes),
       })))
-    }
-
-    return {
-      id: rulesetId, importId, version, vendor: ruleset.vendor, status: 'Completed',
-      zoneCount: ruleset.zones.length, addressObjectCount: ruleset.addressObjects.length, serviceObjectCount: ruleset.serviceObjects.length,
-      ruleCount: ruleset.rules.length, natRuleCount: ruleset.natRules.length,
-      warnings, createdAt: new Date().toISOString(),
     }
   })
 }
