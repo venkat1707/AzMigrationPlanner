@@ -660,9 +660,18 @@ export function stringifyConditionNode(node: LbConditionNode | null): string {
 
 export type RulesetVirtualServerRow = {
   id: number; externalId: string; name: string; ipAddress: string | null; port: number | null
-  protocol: string | null; poolName: string | null; sslProfile: string | null; persistence: string | null; enabled: boolean
+  protocol: string | null; poolId: number | null; poolName: string | null; poolMembers: string[]
+  sslProfile: string | null; persistence: string | null; enabled: boolean
 }
 export type RulesetVirtualServerFilters = { page: number; pageSize: number; search?: string; protocol?: string; enabled?: 'true' | 'false' }
+
+// Formats a pool member as "ip:port" (falling back to whatever identifier is available),
+// annotating a non-enabled state so the table can surface it at a glance.
+function formatPoolMember(member: { ip_address: string | null; port: number | null; state: string | null }): string {
+  const address = member.ip_address ?? '?'
+  const label = member.port ? `${address}:${member.port}` : address
+  return member.state && member.state.toLowerCase() !== 'enabled' ? `${label} (${member.state})` : label
+}
 
 export async function listRulesetVirtualServersPaged(
   rulesetId: number, filters: RulesetVirtualServerFilters,
@@ -687,13 +696,24 @@ export async function listRulesetVirtualServersPaged(
     base.clone().count({ count: 'vs.id' }).first() as Promise<{ count: number | string } | undefined>,
     base.clone().select({
       id: 'vs.id', externalId: 'vs.external_id', name: 'vs.name', ipAddress: 'vs.ip_address', port: 'vs.port',
-      protocol: 'vs.protocol', poolName: 'p.name', sslProfile: 'vs.ssl_profile', persistence: 'vs.persistence', enabled: 'vs.enabled',
+      protocol: 'vs.protocol', poolId: 'p.id', poolName: 'p.name', sslProfile: 'vs.ssl_profile', persistence: 'vs.persistence', enabled: 'vs.enabled',
     }).orderBy('vs.name').offset((page - 1) * pageSize).limit(pageSize),
     database('lb_ruleset_virtual_servers').where({ ruleset_id: rulesetId }).whereNotNull('protocol').distinct('protocol').orderBy('protocol'),
   ])
 
+  const poolIds = [...new Set(rows.map((row) => row.poolId).filter((id): id is number => id != null))]
+  const membersByPool = new Map<number, string[]>()
+  if (poolIds.length > 0) {
+    const members = await database('lb_ruleset_pool_members').whereIn('pool_id', poolIds).select('pool_id', 'ip_address', 'port', 'state')
+    for (const member of members) {
+      const list = membersByPool.get(member.pool_id) ?? []
+      list.push(formatPoolMember(member))
+      membersByPool.set(member.pool_id, list)
+    }
+  }
+
   return {
-    items: rows.map((row) => ({ ...row, enabled: Boolean(row.enabled) })),
+    items: rows.map((row) => ({ ...row, enabled: Boolean(row.enabled), poolMembers: row.poolId != null ? membersByPool.get(row.poolId) ?? [] : [] })),
     total: Number(countRow?.count ?? 0), page, pageSize,
     protocols: protocolRows.map((row) => row.protocol as string),
   }

@@ -29,7 +29,8 @@ type LoadBalancerRulesetDetail = LoadBalancerRulesetSummary & { errorMessage: st
 
 type RulesetVirtualServerRow = {
   id: number; externalId: string; name: string; ipAddress: string | null; port: number | null
-  protocol: string | null; poolName: string | null; sslProfile: string | null; persistence: string | null; enabled: boolean
+  protocol: string | null; poolId: number | null; poolName: string | null; poolMembers: string[]
+  sslProfile: string | null; persistence: string | null; enabled: boolean
 }
 type RulesetVirtualServersPage = { items: RulesetVirtualServerRow[]; total: number; page: number; pageSize: number; protocols: string[] }
 
@@ -141,7 +142,12 @@ function RulesetExplorer({ rulesetId }: { rulesetId: number }) {
                 <td><strong>{row.name}</strong><small>{row.externalId}</small></td>
                 <td>{row.ipAddress ?? '—'}{row.port ? `:${row.port}` : ''}</td>
                 <td>{row.protocol ?? '—'}</td>
-                <td>{row.poolName ?? '—'}</td>
+                <td>
+                  {row.poolName ?? '—'}
+                  {row.poolMembers.length > 0 && <ul className="pool-members-list">
+                    {row.poolMembers.map((member) => <li key={member}>{member}</li>)}
+                  </ul>}
+                </td>
                 <td>{row.sslProfile ?? '—'}</td>
                 <td>{row.persistence ?? '—'}</td>
                 <td><span className={`run-status ${row.enabled ? 'completed' : 'failed'}`}>{row.enabled ? 'Enabled' : 'Disabled'}</span></td>
