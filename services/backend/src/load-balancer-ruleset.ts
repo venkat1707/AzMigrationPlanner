@@ -737,7 +737,14 @@ export async function listRulesetVirtualServersPaged(
     .where('vs.ruleset_id', rulesetId)
   if (search) {
     const term = `%${search}%`
-    base.andWhere((qb) => { qb.where('vs.name', 'like', term).orWhere('vs.external_id', 'like', term).orWhere('vs.ip_address', 'like', term) })
+    base.andWhere((qb) => {
+      qb.where('vs.name', 'like', term).orWhere('vs.external_id', 'like', term).orWhere('vs.ip_address', 'like', term)
+        // Also matches a pool member's own IP, so searching for a backend member finds the
+        // virtual server(s) that front it, even though the member itself has no separate row here.
+        .orWhereExists((builder) => {
+          builder.select(1).from('lb_ruleset_pool_members as pm').whereRaw('pm.pool_id = vs.pool_id').andWhere('pm.ip_address', 'like', term)
+        })
+    })
   }
   if (protocol) base.andWhere('vs.protocol', protocol)
   if (enabled === 'true' || enabled === 'false') base.andWhere('vs.enabled', enabled === 'true')

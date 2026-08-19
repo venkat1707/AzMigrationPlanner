@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
+import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Scale, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
@@ -19,6 +19,7 @@ import VisualizeSprints from './VisualizeSprints'
 import ApplicationTreatmentPlanning from './ApplicationTreatmentPlanning'
 import CorelightImport from './CorelightImport'
 import LoadBalancerRulesImport from './LoadBalancerRulesImport'
+import LoadBalancerScale from './LoadBalancerScale'
 import FirewallRulesImport from './FirewallRulesImport'
 import ApplicationCatalog from './ApplicationCatalog'
 import ServerCoverage from './ServerCoverage'
@@ -57,7 +58,7 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'application-catalog' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'tasks' | 'imports' | 'corelight' | 'load-balancer-rules' | 'firewall-rule-imports' | 'cleanup' | 'admin' | 'agents'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'application-catalog' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'load-balancer-scale' | 'tasks' | 'imports' | 'corelight' | 'load-balancer-rules' | 'firewall-rule-imports' | 'cleanup' | 'admin' | 'agents'
 type ImportKind = 'dependencies' | 'applications' | 'server-assessment' | 'application-mapping'
 const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   applications: 'application-mapping',
@@ -122,6 +123,7 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'tasks', label: 'Finalize Sprints', group: 'Plan & deliver', icon: ClipboardList, access: 'all', eyebrow: 'Delivery workspace', title: 'Finalize Sprints', description: 'Track sprint and cross-dependency ownership, status, decisions, and comment history.' },
   { page: 'artefact-generation', label: 'Migration (Preview)', group: 'Artefacts (Preview)', icon: WandSparkles, access: 'modify', eyebrow: 'Migration deliverables', title: 'Generate migration artefacts', description: 'Preview feature: create Foundry-assisted design, migration plan, and runsheet documents.' },
   { page: 'firewall-rules', label: 'Security (Preview)', group: 'Artefacts (Preview)', icon: Shield, access: 'modify', eyebrow: 'Security deliverables', title: 'Generate firewall rules', description: 'Preview feature: review and export Azure NSG, Azure Firewall, and on-premise firewall rules as Excel, Terraform, or Bicep.' },
+  { page: 'load-balancer-scale', label: 'Scale (Preview)', group: 'Artefacts (Preview)', icon: Scale, access: 'modify', eyebrow: 'Load balancing deliverables', title: 'Recommend Azure load balancing services', description: 'Preview feature: ask the Foundry agent to recommend Azure Application Gateway or Azure Load Balancer for a parsed load balancer rule and generate an implementation guide as a Word document.' },
   { page: 'sprint-schedule', label: 'Sprint Schedule', group: 'Plan & deliver', icon: CalendarClock, access: 'modify', eyebrow: 'Migration timeline', title: 'Schedule waves and sprints', description: 'Set target migration dates and review delivery across environments and waves.' },
   { page: 'sprint-landing-zone-mapping', label: 'Sprint Landing Zone Mapping', group: 'Plan & deliver', icon: Network, access: 'modify', eyebrow: 'Target placement', title: 'Map sprint servers to landing zone resources', description: 'Assign each sprint server to a target subscription, resource group, virtual network, subnet, and NSG.' },
   { page: 'cleanup', label: 'Data Cleanup', group: 'Manage workspace', icon: Trash2, access: 'delete', eyebrow: 'Data management', title: 'Clean up application data', description: 'Remove imported data through a controlled, observable cleanup flow.' },
@@ -533,6 +535,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'sprint-landing-zone-mapping' && canPlanWaves && <SprintLandingZoneMapping />}
         {activePage === 'artefact-generation' && canPlanWaves && <ArtefactGeneration />}
         {activePage === 'firewall-rules' && canPlanWaves && <FirewallRules />}
+        {activePage === 'load-balancer-scale' && canPlanWaves && <LoadBalancerScale />}
         {activePage === 'tasks' && <TaskWorkspace canModify={canManageTasks} canReassign={canPlanWaves} currentUserId={auth.user?.id} />}
         {activePage === 'admin' && <AdminPage onAuthChanged={onAuthChanged} />}
         {activePage === 'agents' && <AgentsPage />}

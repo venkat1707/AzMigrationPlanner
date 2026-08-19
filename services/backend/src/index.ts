@@ -39,6 +39,7 @@ import { getCleanupStatus, startDataCleanup } from './data-cleanup.js'
 import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
 import { buildApplicationMap, listApplicationEnvironments } from './application-map.js'
 import { requestDesignDocument, DesignDocumentError, diagnoseAgentIdentity, type DesignAnswer } from './design-document.js'
+import { requestLoadBalancerScaleDocument, LoadBalancerScaleError, type ScaleAnswer } from './load-balancer-scale.js'
 import { createMigrationWavePlan, defaultMigrationWaveOptions, loadDependencyPairs, type MigrationWaveOptions } from './migration-wave-planning.js'
 import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
 import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
@@ -1138,6 +1139,33 @@ app.get('/api/load-balancer-rules/rulesets/:rulesetId/rules', async (request, re
     actionType: String(request.query.actionType ?? '').trim() || undefined,
   })
   response.json(result)
+})
+
+app.post('/api/load-balancer-rules/rulesets/:rulesetId/virtual-servers/:virtualServerId/scale-document', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  const virtualServerId = Number(request.params.virtualServerId)
+  if (!Number.isInteger(rulesetId) || !Number.isInteger(virtualServerId)) {
+    response.status(400).json({ error: 'Invalid load balancer ruleset or virtual server ID.' })
+    return
+  }
+  const conversationId = request.body?.conversationId ? String(request.body.conversationId) : null
+  const answers: ScaleAnswer[] = Array.isArray(request.body?.answers)
+    ? request.body.answers.map((entry: unknown) => {
+        const record = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+        return { id: String(record.id ?? '').trim(), response: String(record.response ?? '').trim() }
+      }).filter((answer: ScaleAnswer) => answer.id)
+    : []
+  try {
+    const result = await requestLoadBalancerScaleDocument({ rulesetId, virtualServerId, conversationId, answers })
+    response.json(result)
+  } catch (error) {
+    if (error instanceof LoadBalancerScaleError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    console.error('Failed to generate load balancer scale document:', error)
+    response.status(502).json({ error: 'The Azure load balancing recommendation could not be generated.' })
+  }
 })
 
 app.get('/api/firewall-rule-imports', async (_request, response) => {
