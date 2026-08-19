@@ -628,6 +628,136 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  // Normalized, agent-parsed load balancer rulesets — the single source of truth for rule analysis,
+  // kept separate from load_balancer_rule_imports (which only stores the raw document). Re-parsing an
+  // import adds a new version rather than overwriting, so prior analysis stays reproducible.
+  if (!(await database.schema.hasTable('load_balancer_rulesets'))) {
+    await database.schema.createTable('load_balancer_rulesets', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('import_id').unsigned().notNullable().references('id').inTable('load_balancer_rule_imports').onDelete('CASCADE')
+      table.integer('version').unsigned().notNullable()
+      table.string('vendor', 100).nullable()
+      table.string('status', 20).notNullable()
+      table.bigInteger('agent_endpoint_id').unsigned().nullable().references('id').inTable('agent_endpoints').onDelete('SET NULL')
+      table.integer('virtual_server_count').unsigned().notNullable().defaultTo(0)
+      table.integer('pool_count').unsigned().notNullable().defaultTo(0)
+      table.integer('rule_count').unsigned().notNullable().defaultTo(0)
+      table.json('warnings').nullable()
+      table.text('error_message').nullable()
+      // Full agent reply kept verbatim as a fidelity fallback in case the relational mapping below misses a field.
+      table.json('agent_response_json').nullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.unique(['import_id', 'version'], 'uq_load_balancer_rulesets_version')
+      table.index(['import_id'], 'idx_load_balancer_rulesets_import')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_pools'))) {
+    await database.schema.createTable('lb_ruleset_pools', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('load_balancer_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('load_balancing_method', 100).nullable()
+      table.json('monitor_external_ids').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_lb_ruleset_pools_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_pool_members'))) {
+    await database.schema.createTable('lb_ruleset_pool_members', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('pool_id').unsigned().notNullable().references('id').inTable('lb_ruleset_pools').onDelete('CASCADE')
+      table.string('ip_address', 64).nullable()
+      table.integer('port').unsigned().nullable()
+      table.integer('weight').unsigned().nullable()
+      table.integer('priority_group').unsigned().nullable()
+      table.string('state', 30).nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['pool_id'], 'idx_lb_ruleset_pool_members_pool')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_monitors'))) {
+    await database.schema.createTable('lb_ruleset_monitors', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('load_balancer_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('type', 50).nullable()
+      table.integer('interval_seconds').unsigned().nullable()
+      table.integer('timeout_seconds').unsigned().nullable()
+      table.text('send_string').nullable()
+      table.text('receive_string').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_lb_ruleset_monitors_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_virtual_servers'))) {
+    await database.schema.createTable('lb_ruleset_virtual_servers', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('load_balancer_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('ip_address', 64).nullable()
+      table.integer('port').unsigned().nullable()
+      table.string('protocol', 30).nullable()
+      table.bigInteger('pool_id').unsigned().nullable().references('id').inTable('lb_ruleset_pools').onDelete('SET NULL')
+      table.string('ssl_profile', 200).nullable()
+      table.string('persistence', 100).nullable()
+      table.boolean('enabled').notNullable().defaultTo(true)
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_lb_ruleset_virtual_servers_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_rules'))) {
+    await database.schema.createTable('lb_ruleset_rules', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('load_balancer_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.bigInteger('virtual_server_id').unsigned().nullable().references('id').inTable('lb_ruleset_virtual_servers').onDelete('SET NULL')
+      table.integer('priority').nullable()
+      table.text('description').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_lb_ruleset_rules_ruleset')
+    })
+  }
+
+  // Adjacency list so arbitrarily nested AND/OR/NOT condition trees (F5 iRule logic, NetScaler
+  // compound expressions, Zscaler policy criteria) can be stored and rebuilt without a fixed depth limit.
+  if (!(await database.schema.hasTable('lb_ruleset_rule_conditions'))) {
+    await database.schema.createTable('lb_ruleset_rule_conditions', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('rule_id').unsigned().notNullable().references('id').inTable('lb_ruleset_rules').onDelete('CASCADE')
+      table.bigInteger('parent_condition_id').unsigned().nullable().references('id').inTable('lb_ruleset_rule_conditions').onDelete('CASCADE')
+      table.string('operator', 10).notNullable()
+      table.string('field', 300).nullable()
+      table.string('comparator', 30).nullable()
+      table.json('value').nullable()
+      table.boolean('negate').notNullable().defaultTo(false)
+      table.integer('sort_order').unsigned().notNullable().defaultTo(0)
+      table.index(['rule_id'], 'idx_lb_ruleset_rule_conditions_rule')
+      table.index(['parent_condition_id'], 'idx_lb_ruleset_rule_conditions_parent')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_rule_actions'))) {
+    await database.schema.createTable('lb_ruleset_rule_actions', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('rule_id').unsigned().notNullable().references('id').inTable('lb_ruleset_rules').onDelete('CASCADE')
+      table.integer('sort_order').unsigned().notNullable().defaultTo(0)
+      table.string('action_type', 100).notNullable()
+      table.string('target', 300).nullable()
+      table.json('parameters').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['rule_id'], 'idx_lb_ruleset_rule_actions_rule')
+    })
+  }
+
   if (await database.schema.hasTable('target_landing_zones')) {
     // Replaced by the resource-group-only landing zone model.
     await database.schema.dropTable('target_landing_zones')

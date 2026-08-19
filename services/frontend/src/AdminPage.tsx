@@ -14,7 +14,7 @@ type AdminSettings = AuthSettings & {
   entraCredentialType: 'managedIdentity' | 'clientSecret' | null
 }
 
-type AgentPurpose = 'design-document' | 'firewall-rules' | 'general'
+type AgentPurpose = 'design-document' | 'firewall-rules' | 'load-balancer-ruleset' | 'general'
 
 type AgentEndpoint = {
   id: number
@@ -29,6 +29,7 @@ type AgentEndpoint = {
 const agentPurposeOptions: { value: AgentPurpose; label: string }[] = [
   { value: 'design-document', label: 'High-level design document' },
   { value: 'firewall-rules', label: 'Firewall rules' },
+  { value: 'load-balancer-ruleset', label: 'Load balancer ruleset parsing' },
   { value: 'general', label: 'General' },
 ]
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertCircle, CheckCircle2, Download, RefreshCw, Trash2, Waypoints } from 'lucide-react'
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Download, RefreshCw, Sparkles, Trash2, Waypoints, XCircle } from 'lucide-react'
 import { apiFetch } from './auth-client'
 
 type LoadBalancerRuleSummary = {
@@ -11,6 +11,21 @@ type LoadBalancerRuleSummary = {
   sizeBytes: number
   createdAt: string
 }
+
+type LoadBalancerRulesetSummary = {
+  id: number
+  importId: number
+  version: number
+  vendor: string | null
+  status: 'Completed' | 'Failed'
+  virtualServerCount: number
+  poolCount: number
+  ruleCount: number
+  warnings: string[]
+  createdAt: string
+}
+
+type LoadBalancerRulesetDetail = LoadBalancerRulesetSummary & { errorMessage: string | null; ruleset: unknown }
 
 const contentTypeByFormat: Record<LoadBalancerRuleSummary['format'], string> = {
   json: 'application/json',
@@ -35,6 +50,10 @@ export default function LoadBalancerRulesImport() {
   const [notice, setNotice] = useState('')
   const [items, setItems] = useState<LoadBalancerRuleSummary[]>([])
   const [pendingId, setPendingId] = useState<number | null>(null)
+  const [rulesetsByImport, setRulesetsByImport] = useState<Record<number, LoadBalancerRulesetSummary[]>>({})
+  const [parsingId, setParsingId] = useState<number | null>(null)
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [rulesetDetail, setRulesetDetail] = useState<LoadBalancerRulesetDetail | null>(null)
 
   const loadItems = async () => {
     try {
@@ -107,6 +126,50 @@ export default function LoadBalancerRulesImport() {
     }
   }
 
+  const loadRulesets = async (importId: number) => {
+    try {
+      const response = await apiFetch(`/api/load-balancer-rules/${importId}/rulesets`)
+      if (!response.ok) return
+      const { items: loaded } = await response.json() as { items: LoadBalancerRulesetSummary[] }
+      setRulesetsByImport((current) => ({ ...current, [importId]: loaded }))
+    } catch { /* transient network error; the user can retry via Parse or Refresh */ }
+  }
+
+  useEffect(() => { items.forEach((item) => { void loadRulesets(item.id) }) }, [items])
+
+  const parseWithAgent = async (item: LoadBalancerRuleSummary) => {
+    setParsingId(item.id)
+    setError('')
+    setNotice('')
+    try {
+      const response = await apiFetch(`/api/load-balancer-rules/${item.id}/parse`, { method: 'POST' })
+      const payload = await response.json() as { result?: LoadBalancerRulesetSummary; error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Unable to parse the load balancer rules with the agent.')
+      const result = payload.result!
+      setNotice(`Parsed version ${result.version}: ${result.virtualServerCount} virtual servers, ${result.poolCount} pools, ${result.ruleCount} rules${result.warnings.length ? ` (${result.warnings.length} warning${result.warnings.length === 1 ? '' : 's'})` : ''}.`)
+      void loadRulesets(item.id)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to parse the load balancer rules with the agent.')
+    } finally {
+      setParsingId(null)
+    }
+  }
+
+  const toggleExpanded = async (ruleset: LoadBalancerRulesetSummary) => {
+    if (expandedId === ruleset.id) { setExpandedId(null); setRulesetDetail(null); return }
+    setExpandedId(ruleset.id)
+    setRulesetDetail(null)
+    setError('')
+    try {
+      const response = await apiFetch(`/api/load-balancer-rules/rulesets/${ruleset.id}`)
+      const payload = await response.json() as { item?: LoadBalancerRulesetDetail; error?: string }
+      if (!response.ok || !payload.item) throw new Error(payload.error ?? 'Unable to load the parsed ruleset.')
+      setRulesetDetail(payload.item)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to load the parsed ruleset.')
+    }
+  }
+
   return <div className="page corelight-page">
     <section className="corelight-intro-card" aria-labelledby="load-balancer-rules-heading">
       <span><Waypoints size={21} /></span>
@@ -134,12 +197,35 @@ export default function LoadBalancerRulesImport() {
       <div className="history-list">
         {items.length === 0
           ? <div className="history-empty"><Waypoints size={22} /><strong>No load balancer rules imported yet</strong><span>Imported rule exports will appear here.</span></div>
-          : items.map((item) => <div key={item.id}>
-            <span className="run-status completed"><CheckCircle2 size={16} /></span>
-            <span><strong>{item.fileName}</strong><small>{item.vendor ? `${item.vendor} · ` : ''}{item.format.toUpperCase()} · {formatSize(item.sizeBytes)} · {new Date(item.createdAt).toLocaleString()}</small></span>
-            <button type="button" className="secondary-command" disabled={pendingId === item.id} onClick={() => void download(item)}><Download size={14} />Download</button>
-            <button type="button" className="secondary-command" disabled={pendingId === item.id} onClick={() => void remove(item)}><Trash2 size={14} />Delete</button>
-          </div>)}
+          : items.map((item) => {
+            const rulesets = rulesetsByImport[item.id] ?? []
+            const latest = rulesets[0]
+            return <div className="load-balancer-history-row" key={item.id}>
+              <span className="run-status completed"><CheckCircle2 size={16} /></span>
+              <span><strong>{item.fileName}</strong><small>{item.vendor ? `${item.vendor} · ` : ''}{item.format.toUpperCase()} · {formatSize(item.sizeBytes)} · {new Date(item.createdAt).toLocaleString()}</small></span>
+              <button type="button" className="secondary-command" disabled={parsingId === item.id} onClick={() => void parseWithAgent(item)}><Sparkles size={14} />{parsingId === item.id ? 'Parsing…' : latest ? 'Re-parse with agent' : 'Parse with agent'}</button>
+              <button type="button" className="secondary-command" disabled={pendingId === item.id} onClick={() => void download(item)}><Download size={14} />Download</button>
+              <button type="button" className="secondary-command" disabled={pendingId === item.id} onClick={() => void remove(item)}><Trash2 size={14} />Delete</button>
+              {rulesets.length > 0 && <div className="ruleset-versions">
+                {rulesets.map((ruleset) => <div className="ruleset-version-row" key={ruleset.id}>
+                  <button type="button" className="ruleset-version-toggle" onClick={() => void toggleExpanded(ruleset)}>
+                    {expandedId === ruleset.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    <span className={`run-status ${ruleset.status === 'Completed' ? 'completed' : 'failed'}`}>{ruleset.status === 'Completed' ? <CheckCircle2 size={14} /> : <XCircle size={14} />}</span>
+                    <span>Version {ruleset.version}{ruleset.vendor ? ` · ${ruleset.vendor}` : ''} · {ruleset.virtualServerCount} virtual servers · {ruleset.poolCount} pools · {ruleset.ruleCount} rules{ruleset.warnings.length ? ` · ${ruleset.warnings.length} warning${ruleset.warnings.length === 1 ? '' : 's'}` : ''} · {new Date(ruleset.createdAt).toLocaleString()}</span>
+                  </button>
+                  {expandedId === ruleset.id && <div className="ruleset-version-detail">
+                    {!rulesetDetail
+                      ? <span>Loading…</span>
+                      : <>
+                        {rulesetDetail.errorMessage && <div className="upload-message failed"><AlertCircle size={16} />{rulesetDetail.errorMessage}</div>}
+                        {rulesetDetail.warnings.length > 0 && <ul className="ruleset-warnings">{rulesetDetail.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
+                        <pre className="ruleset-json">{JSON.stringify(rulesetDetail.ruleset, null, 2)}</pre>
+                      </>}
+                  </div>}
+                </div>)}
+              </div>}
+            </div>
+          })}
       </div>
     </section>
   </div>

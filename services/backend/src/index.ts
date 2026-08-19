@@ -17,6 +17,9 @@ import { convertConnLogToCsv, hostnameMapFromDns, parseDnsRecords, saveDnsRecord
 import {
   deleteLoadBalancerRuleImport, getLoadBalancerRuleImport, importLoadBalancerRuleFile, listLoadBalancerRuleImports,
 } from './load-balancer-rules-import.js'
+import {
+  LoadBalancerRulesetError, getLoadBalancerRulesetDetail, listLoadBalancerRulesets, parseLoadBalancerRuleset,
+} from './load-balancer-ruleset.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
@@ -1028,6 +1031,42 @@ app.delete('/api/load-balancer-rules/:id', async (request, response) => {
     return
   }
   response.status(204).end()
+})
+
+app.post('/api/load-balancer-rules/:id/parse', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id)) {
+    response.status(400).json({ error: 'Invalid load balancer rule import ID.' })
+    return
+  }
+  try {
+    response.status(201).json({ result: await parseLoadBalancerRuleset(id) })
+  } catch (error) {
+    if (error instanceof LoadBalancerRulesetError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    response.status(502).json({ error: 'The load balancer ruleset could not be parsed.' })
+  }
+})
+
+app.get('/api/load-balancer-rules/:id/rulesets', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id)) {
+    response.status(400).json({ error: 'Invalid load balancer rule import ID.' })
+    return
+  }
+  response.json({ items: await listLoadBalancerRulesets(id) })
+})
+
+app.get('/api/load-balancer-rules/rulesets/:rulesetId', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  const item = Number.isInteger(rulesetId) ? await getLoadBalancerRulesetDetail(rulesetId) : undefined
+  if (!item) {
+    response.status(404).json({ error: 'Load balancer ruleset not found.' })
+    return
+  }
+  response.json({ item })
 })
 
 app.post('/api/server-assessments/sheets', workbookUpload.single('file'), async (request, response) => {

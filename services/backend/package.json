@@ -10,7 +10,7 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/migrate.ts",
     "import": "tsx src/import-csv.ts",
-    "test": "npm run build && node --test dist/application-catalog-import.test.js dist/application-treatment-plans.test.js dist/core-infrastructure-networks.test.js dist/corelight-import.test.js dist/dependency-indexes.test.js dist/design-document-context.test.js dist/environment-identification.test.js dist/firewall-rules.test.js dist/import-schema.test.js dist/import-files.test.js dist/load-balancer-rules-import.test.js dist/migration-wave-planning.test.js dist/sprint-schedule.test.js dist/sprint-landing-zone-workbook.test.js dist/target-landing-zone.test.js dist/landing-zone-network.test.js",
+    "test": "npm run build && node --test dist/application-catalog-import.test.js dist/application-treatment-plans.test.js dist/core-infrastructure-networks.test.js dist/corelight-import.test.js dist/dependency-indexes.test.js dist/design-document-context.test.js dist/environment-identification.test.js dist/firewall-rules.test.js dist/import-schema.test.js dist/import-files.test.js dist/load-balancer-rules-import.test.js dist/load-balancer-ruleset.test.js dist/migration-wave-planning.test.js dist/sprint-schedule.test.js dist/sprint-landing-zone-workbook.test.js dist/target-landing-zone.test.js dist/landing-zone-network.test.js",
     "start": "node dist/index.js"
   },
   "dependencies": {
