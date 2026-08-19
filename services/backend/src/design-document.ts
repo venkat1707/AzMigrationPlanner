@@ -918,11 +918,13 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
     throw new DesignDocumentError(`The design-document agent returned an error (HTTP ${agentResponse.status}).${detail}`, 502)
   }
 
+  const rawBody = await agentResponse.text().catch(() => '')
   let data: Record<string, unknown>
   try {
-    data = asRecord(await agentResponse.json())
+    data = asRecord(JSON.parse(rawBody))
   } catch {
-    throw new DesignDocumentError('The design-document agent returned a response that could not be read.', 502)
+    console.error(`Design-document agent returned a non-JSON response (HTTP ${agentResponse.status}) from ${requestUrl}: ${rawBody.trim().slice(0, 1000)}`)
+    throw new DesignDocumentError('The design-document agent returned a response that was not valid JSON. This usually means the endpoint URL is wrong or the agent needs re-authentication.', 502)
   }
 
   const responseId = firstString(data.id, data.response_id)

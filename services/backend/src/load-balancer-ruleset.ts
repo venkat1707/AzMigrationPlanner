@@ -427,11 +427,13 @@ async function callRulesetAgent(agent: AgentRow, vendor: string | null, format: 
     console.error(`Load balancer ruleset agent error (HTTP ${response.status}) from ${requestUrl}: ${detail}`)
     throw new LoadBalancerRulesetError(`The load balancer ruleset agent returned an error (HTTP ${response.status}).`, 502)
   }
+  const rawBody = await response.text().catch(() => '')
   let data: Record<string, unknown>
   try {
-    data = asRecord(await response.json())
+    data = asRecord(JSON.parse(rawBody))
   } catch {
-    throw new LoadBalancerRulesetError('The load balancer ruleset agent returned a response that could not be read.', 502)
+    console.error(`Load balancer ruleset agent returned a non-JSON response (HTTP ${response.status}) from ${requestUrl}: ${rawBody.trim().slice(0, 1000)}`)
+    throw new LoadBalancerRulesetError('The load balancer ruleset agent returned a response that was not valid JSON. This usually means the endpoint URL is wrong or the agent needs re-authentication.', 502)
   }
   const assistantText = extractAssistantText(data)
   if (!assistantText) throw new LoadBalancerRulesetError('The load balancer ruleset agent returned an empty response.', 502)
@@ -679,29 +681,37 @@ export function stringifyConditionNode(node: LbConditionNode | null): string {
 export type RulesetVirtualServerRow = {
   id: number; externalId: string; name: string; ipAddress: string | null; port: number | null
   protocol: string | null; poolId: number | null; poolName: string | null; poolMembers: string[]
-  sslProfile: string | null; persistence: string | null; enabled: boolean
+  sslProfile: string | null; persistence: string | null; enabled: boolean; application: string | null
 }
-export type RulesetVirtualServerFilters = { page: number; pageSize: number; search?: string; protocol?: string; enabled?: 'true' | 'false' }
+export type RulesetVirtualServerFilters = { page: number; pageSize: number; search?: string; protocol?: string; enabled?: 'true' | 'false'; application?: string }
 
 // Formats a pool member as "ip:port" (falling back to whatever identifier is available),
-// annotating a non-enabled state so the table can surface it at a glance.
-function formatPoolMember(member: { ip_address: string | null; port: number | null; state: string | null }): string {
+// annotating a non-enabled state and its resolved application (via the server_assessments IP
+// join) so the table can surface both at a glance.
+function formatPoolMember(member: { ip_address: string | null; port: number | null; state: string | null; application?: string | null }): string {
   const address = member.ip_address ?? '?'
-  const label = member.port ? `${address}:${member.port}` : address
+  let label = member.port ? `${address}:${member.port}` : address
+  if (member.application) label += ` — ${member.application}`
   return member.state && member.state.toLowerCase() !== 'enabled' ? `${label} (${member.state})` : label
 }
 
+// Resolves "which application does this IP belong to" the same way the rest of the app does:
+// a live join against server_assessments.ip_address (kept current by the Application to Server
+// Mapping import), rather than a separate cached/manual mapping table.
+
 export async function listRulesetVirtualServersPaged(
   rulesetId: number, filters: RulesetVirtualServerFilters,
-): Promise<PagedResult<RulesetVirtualServerRow> & { protocols: string[] }> {
+): Promise<PagedResult<RulesetVirtualServerRow> & { protocols: string[]; applications: string[] }> {
   const page = clampPage(filters.page)
   const pageSize = clampPageSize(filters.pageSize)
   const search = filters.search
   const protocol = filters.protocol
   const enabled = filters.enabled
+  const application = filters.application
 
   const base = database('lb_ruleset_virtual_servers as vs')
     .leftJoin('lb_ruleset_pools as p', 'p.id', 'vs.pool_id')
+    .leftJoin('server_assessments as sa', 'sa.ip_address', 'vs.ip_address')
     .where('vs.ruleset_id', rulesetId)
   if (search) {
     const term = `%${search}%`
@@ -709,20 +719,40 @@ export async function listRulesetVirtualServersPaged(
   }
   if (protocol) base.andWhere('vs.protocol', protocol)
   if (enabled === 'true' || enabled === 'false') base.andWhere('vs.enabled', enabled === 'true')
+  // Matches the virtual server's own IP, or (since a VIP is often not itself a modeled server)
+  // any backend pool member whose IP resolves to this application.
+  if (application) {
+    base.andWhere((qb) => {
+      qb.where('sa.application', application).orWhereExists((builder) => {
+        builder.select(1).from('lb_ruleset_pool_members as pm')
+          .join('server_assessments as sa2', 'sa2.ip_address', 'pm.ip_address')
+          .whereRaw('pm.pool_id = vs.pool_id').andWhere('sa2.application', application)
+      })
+    })
+  }
 
-  const [countRow, rows, protocolRows] = await Promise.all([
+  const [countRow, rows, protocolRows, vsApplicationRows, memberApplicationRows] = await Promise.all([
     base.clone().count({ count: 'vs.id' }).first() as Promise<{ count: number | string } | undefined>,
     base.clone().select({
       id: 'vs.id', externalId: 'vs.external_id', name: 'vs.name', ipAddress: 'vs.ip_address', port: 'vs.port',
       protocol: 'vs.protocol', poolId: 'p.id', poolName: 'p.name', sslProfile: 'vs.ssl_profile', persistence: 'vs.persistence', enabled: 'vs.enabled',
+      application: 'sa.application',
     }).orderBy('vs.name').offset((page - 1) * pageSize).limit(pageSize),
     database('lb_ruleset_virtual_servers').where({ ruleset_id: rulesetId }).whereNotNull('protocol').distinct('protocol').orderBy('protocol'),
+    database('lb_ruleset_virtual_servers as vs')
+      .leftJoin('server_assessments as sa', 'sa.ip_address', 'vs.ip_address')
+      .where('vs.ruleset_id', rulesetId).whereNotNull('sa.application').distinct('sa.application'),
+    database('lb_ruleset_pool_members as pm').join('lb_ruleset_pools as p', 'p.id', 'pm.pool_id')
+      .join('server_assessments as sa', 'sa.ip_address', 'pm.ip_address')
+      .where('p.ruleset_id', rulesetId).whereNotNull('sa.application').distinct('sa.application'),
   ])
 
   const poolIds = [...new Set(rows.map((row) => row.poolId).filter((id): id is number => id != null))]
   const membersByPool = new Map<number, string[]>()
   if (poolIds.length > 0) {
-    const members = await database('lb_ruleset_pool_members').whereIn('pool_id', poolIds).select('pool_id', 'ip_address', 'port', 'state')
+    const members = await database('lb_ruleset_pool_members as pm')
+      .leftJoin('server_assessments as sa', 'sa.ip_address', 'pm.ip_address')
+      .whereIn('pm.pool_id', poolIds).select('pm.pool_id', 'pm.ip_address', 'pm.port', 'pm.state', 'sa.application')
     for (const member of members) {
       const list = membersByPool.get(member.pool_id) ?? []
       list.push(formatPoolMember(member))
@@ -730,16 +760,19 @@ export async function listRulesetVirtualServersPaged(
     }
   }
 
+  const applications = [...new Set([...vsApplicationRows, ...memberApplicationRows].map((row) => row.application as string))].sort()
+
   return {
-    items: rows.map((row) => ({ ...row, enabled: Boolean(row.enabled), poolMembers: row.poolId != null ? membersByPool.get(row.poolId) ?? [] : [] })),
+    items: rows.map((row) => ({ ...row, enabled: Boolean(row.enabled), application: row.application ?? null, poolMembers: row.poolId != null ? membersByPool.get(row.poolId) ?? [] : [] })),
     total: Number(countRow?.count ?? 0), page, pageSize,
     protocols: protocolRows.map((row) => row.protocol as string),
+    applications,
   }
 }
 
 export type RulesetRuleRow = {
   id: number; externalId: string; name: string; virtualServerId: number | null; virtualServerName: string | null
-  priority: number | null; description: string | null; conditionSummary: string
+  priority: number | null; description: string | null; conditionSummary: string; application: string | null
   actions: { actionType: string; target: string | null }[]
 }
 export type RulesetRuleFilters = { page: number; pageSize: number; search?: string; virtualServerId?: number; actionType?: string }
@@ -755,6 +788,7 @@ export async function listRulesetRulesPaged(
 
   const base = database('lb_ruleset_rules as r')
     .leftJoin('lb_ruleset_virtual_servers as vs', 'vs.id', 'r.virtual_server_id')
+    .leftJoin('server_assessments as sa', 'sa.ip_address', 'vs.ip_address')
     .where('r.ruleset_id', rulesetId)
   if (search) {
     const term = `%${search}%`
@@ -771,7 +805,7 @@ export async function listRulesetRulesPaged(
     base.clone().count({ count: 'r.id' }).first() as Promise<{ count: number | string } | undefined>,
     base.clone().select({
       id: 'r.id', externalId: 'r.external_id', name: 'r.name', virtualServerId: 'r.virtual_server_id',
-      virtualServerName: 'vs.name', priority: 'r.priority', description: 'r.description',
+      virtualServerName: 'vs.name', priority: 'r.priority', description: 'r.description', application: 'sa.application',
     }).orderByRaw('r.priority is null, r.priority asc').orderBy('r.id').offset((page - 1) * pageSize).limit(pageSize),
     database('lb_ruleset_rule_actions as a').join('lb_ruleset_rules as r', 'r.id', 'a.rule_id').where('r.ruleset_id', rulesetId).distinct('a.action_type').orderBy('a.action_type'),
     database('lb_ruleset_virtual_servers').where({ ruleset_id: rulesetId }).select({ id: 'id', name: 'name' }).orderBy('name'),
@@ -799,7 +833,7 @@ export async function listRulesetRulesPaged(
   return {
     items: rows.map((row) => ({
       id: row.id, externalId: row.externalId, name: row.name, virtualServerId: row.virtualServerId, virtualServerName: row.virtualServerName,
-      priority: row.priority, description: row.description,
+      priority: row.priority, description: row.description, application: row.application ?? null,
       conditionSummary: stringifyConditionNode(buildConditionTree(conditionsByRule.get(row.id) ?? [])),
       actions: actionsByRule.get(row.id) ?? [],
     })),

@@ -1118,6 +1118,7 @@ app.get('/api/load-balancer-rules/rulesets/:rulesetId/virtual-servers', async (r
     search: String(request.query.search ?? '').trim() || undefined,
     protocol: String(request.query.protocol ?? '').trim() || undefined,
     enabled: enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined,
+    application: String(request.query.application ?? '').trim() || undefined,
   })
   response.json(result)
 })

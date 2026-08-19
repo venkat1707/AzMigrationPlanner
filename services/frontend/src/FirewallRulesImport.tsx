@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { AlertCircle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, ChevronRight, Download, RefreshCw, Search, ShieldCheck, Sparkles, Trash2, XCircle } from 'lucide-react'
-import { apiFetch } from './auth-client'
+import { apiFetch, readJson } from './auth-client'
 
 type FirewallRuleImportSummary = {
   id: number
@@ -334,7 +334,7 @@ export default function FirewallRulesImport() {
     setNotice('')
     try {
       const response = await apiFetch(`/api/firewall-rule-imports/${item.id}/parse`, { method: 'POST' })
-      const payload = await response.json() as { result?: FirewallRulesetSummary; error?: string }
+      const payload = await readJson<{ result?: FirewallRulesetSummary; error?: string }>(response)
       if (!response.ok) throw new Error(payload.error ?? 'Unable to parse the firewall rules with the agent.')
       const result = payload.result!
       setNotice(`Parsed version ${result.version}: ${result.zoneCount} zones, ${result.addressObjectCount} address objects, ${result.serviceObjectCount} service objects, ${result.ruleCount} rules, ${result.natRuleCount} NAT rules${result.warnings.length ? ` (${result.warnings.length} warning${result.warnings.length === 1 ? '' : 's'})` : ''}.`)

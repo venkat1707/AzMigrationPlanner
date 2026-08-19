@@ -30,13 +30,13 @@ type LoadBalancerRulesetDetail = LoadBalancerRulesetSummary & { errorMessage: st
 type RulesetVirtualServerRow = {
   id: number; externalId: string; name: string; ipAddress: string | null; port: number | null
   protocol: string | null; poolId: number | null; poolName: string | null; poolMembers: string[]
-  sslProfile: string | null; persistence: string | null; enabled: boolean
+  sslProfile: string | null; persistence: string | null; enabled: boolean; application: string | null
 }
-type RulesetVirtualServersPage = { items: RulesetVirtualServerRow[]; total: number; page: number; pageSize: number; protocols: string[] }
+type RulesetVirtualServersPage = { items: RulesetVirtualServerRow[]; total: number; page: number; pageSize: number; protocols: string[]; applications: string[] }
 
 type RulesetRuleRow = {
   id: number; externalId: string; name: string; virtualServerId: number | null; virtualServerName: string | null
-  priority: number | null; description: string | null; conditionSummary: string
+  priority: number | null; description: string | null; conditionSummary: string; application: string | null
   actions: { actionType: string; target: string | null }[]
 }
 type RulesetRulesPage = { items: RulesetRuleRow[]; total: number; page: number; pageSize: number; actionTypes: string[]; virtualServers: { id: number; name: string }[] }
@@ -67,7 +67,8 @@ function RulesetExplorer({ rulesetId }: { rulesetId: number }) {
   const [vsSearch, setVsSearch] = useState('')
   const [vsProtocol, setVsProtocol] = useState('')
   const [vsEnabled, setVsEnabled] = useState('')
-  const [vsData, setVsData] = useState<RulesetVirtualServersPage>({ items: [], total: 0, page: 1, pageSize: explorerPageSize, protocols: [] })
+  const [vsApplication, setVsApplication] = useState('')
+  const [vsData, setVsData] = useState<RulesetVirtualServersPage>({ items: [], total: 0, page: 1, pageSize: explorerPageSize, protocols: [], applications: [] })
   const [vsLoading, setVsLoading] = useState(true)
 
   const [rulePage, setRulePage] = useState(1)
@@ -86,12 +87,13 @@ function RulesetExplorer({ rulesetId }: { rulesetId: number }) {
     if (vsSearch) params.set('search', vsSearch)
     if (vsProtocol) params.set('protocol', vsProtocol)
     if (vsEnabled) params.set('enabled', vsEnabled)
+    if (vsApplication) params.set('application', vsApplication)
     void apiFetch(`/api/load-balancer-rules/rulesets/${rulesetId}/virtual-servers?${params}`)
       .then((response) => response.json())
       .then((payload: RulesetVirtualServersPage) => { if (!cancelled) setVsData(payload) })
       .finally(() => { if (!cancelled) setVsLoading(false) })
     return () => { cancelled = true }
-  }, [tab, rulesetId, vsPage, vsSearch, vsProtocol, vsEnabled])
+  }, [tab, rulesetId, vsPage, vsSearch, vsProtocol, vsEnabled, vsApplication])
 
   useEffect(() => {
     if (tab !== 'rules') return
@@ -129,19 +131,24 @@ function RulesetExplorer({ rulesetId }: { rulesetId: number }) {
           <option value="true">Enabled only</option>
           <option value="false">Disabled only</option>
         </select>
+        <select value={vsApplication} onChange={(event) => { setVsApplication(event.target.value); setVsPage(1) }}>
+          <option value="">All applications</option>
+          {vsData.applications.map((application) => <option key={application} value={application}>{application}</option>)}
+        </select>
         <button type="submit"><Search size={14} />Search</button>
-        <button type="button" className="icon-button" title="Reset filters" onClick={() => { setVsSearchDraft(''); setVsSearch(''); setVsProtocol(''); setVsEnabled(''); setVsPage(1) }}><RefreshCw size={14} /></button>
+        <button type="button" className="icon-button" title="Reset filters" onClick={() => { setVsSearchDraft(''); setVsSearch(''); setVsProtocol(''); setVsEnabled(''); setVsApplication(''); setVsPage(1) }}><RefreshCw size={14} /></button>
       </form>
       <div className="ruleset-explorer-table-wrap">
         <table>
-          <thead><tr><th>Name</th><th>Address</th><th>Protocol</th><th>Pool</th><th>SSL profile</th><th>Persistence</th><th>State</th></tr></thead>
+          <thead><tr><th>Name</th><th>Address</th><th>Protocol</th><th>Application</th><th>Pool</th><th>SSL profile</th><th>Persistence</th><th>State</th></tr></thead>
           <tbody>
-            {vsLoading ? <tr><td colSpan={7} className="empty-state">Loading…</td></tr>
-              : vsData.items.length === 0 ? <tr><td colSpan={7} className="empty-state">No virtual servers match these filters.</td></tr>
+            {vsLoading ? <tr><td colSpan={8} className="empty-state">Loading…</td></tr>
+              : vsData.items.length === 0 ? <tr><td colSpan={8} className="empty-state">No virtual servers match these filters.</td></tr>
               : vsData.items.map((row) => <tr key={row.id}>
                 <td><strong>{row.name}</strong><small>{row.externalId}</small></td>
                 <td>{row.ipAddress ?? '—'}{row.port ? `:${row.port}` : ''}</td>
                 <td>{row.protocol ?? '—'}</td>
+                <td>{row.application ?? '—'}</td>
                 <td>
                   {row.poolName ?? '—'}
                   {row.poolMembers.length > 0 && <ul className="pool-members-list">
@@ -180,13 +187,14 @@ function RulesetExplorer({ rulesetId }: { rulesetId: number }) {
       </form>
       <div className="ruleset-explorer-table-wrap">
         <table>
-          <thead><tr><th>Rule</th><th>Virtual server</th><th>Priority</th><th>Condition</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Rule</th><th>Virtual server</th><th>Application</th><th>Priority</th><th>Condition</th><th>Actions</th></tr></thead>
           <tbody>
-            {ruleLoading ? <tr><td colSpan={5} className="empty-state">Loading…</td></tr>
-              : ruleData.items.length === 0 ? <tr><td colSpan={5} className="empty-state">No rules match these filters.</td></tr>
+            {ruleLoading ? <tr><td colSpan={6} className="empty-state">Loading…</td></tr>
+              : ruleData.items.length === 0 ? <tr><td colSpan={6} className="empty-state">No rules match these filters.</td></tr>
               : ruleData.items.map((row) => <tr key={row.id}>
                 <td><strong>{row.name}</strong><small>{row.externalId}</small></td>
                 <td>{row.virtualServerName ?? '—'}</td>
+                <td>{row.application ?? '—'}</td>
                 <td>{row.priority ?? '—'}</td>
                 <td>{row.conditionSummary}</td>
                 <td>{row.actions.length === 0 ? '—' : row.actions.map((action, index) => <span key={index}>{action.actionType}{action.target ? ` → ${action.target}` : ''}{index < row.actions.length - 1 ? '; ' : ''}</span>)}</td>

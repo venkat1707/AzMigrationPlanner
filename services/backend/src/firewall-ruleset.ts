@@ -344,11 +344,13 @@ async function callRulesetAgent(agent: AgentRow, vendor: string | null, format: 
     console.error(`Firewall ruleset agent error (HTTP ${response.status}) from ${requestUrl}: ${detail}`)
     throw new FirewallRulesetError(`The firewall ruleset agent returned an error (HTTP ${response.status}).`, 502)
   }
+  const rawBody = await response.text().catch(() => '')
   let data: Record<string, unknown>
   try {
-    data = asRecord(await response.json())
+    data = asRecord(JSON.parse(rawBody))
   } catch {
-    throw new FirewallRulesetError('The firewall ruleset agent returned a response that could not be read.', 502)
+    console.error(`Firewall ruleset agent returned a non-JSON response (HTTP ${response.status}) from ${requestUrl}: ${rawBody.trim().slice(0, 1000)}`)
+    throw new FirewallRulesetError('The firewall ruleset agent returned a response that was not valid JSON. This usually means the endpoint URL is wrong or the agent needs re-authentication.', 502)
   }
   const assistantText = extractAssistantText(data)
   if (!assistantText) throw new FirewallRulesetError('The firewall ruleset agent returned an empty response.', 502)
