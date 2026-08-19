@@ -352,10 +352,20 @@ async function callRulesetAgent(agent: AgentRow, vendor: string | null, format: 
     console.error(`Firewall ruleset agent returned a non-JSON response (HTTP ${response.status}) from ${requestUrl}: ${rawBody.trim().slice(0, 1000)}`)
     throw new FirewallRulesetError('The firewall ruleset agent returned a response that was not valid JSON. This usually means the endpoint URL is wrong or the agent needs re-authentication.', 502)
   }
+  const responseStatus = asString(data.status)?.toLowerCase()
+  if (responseStatus === 'incomplete') {
+    const reason = asString(asRecord(data.incomplete_details).reason) ?? 'unknown reason'
+    console.error(`Firewall ruleset agent response was incomplete (reason: ${reason}) from ${requestUrl}.`)
+    throw new FirewallRulesetError(`The firewall ruleset agent's response was cut off before finishing (${reason === 'max_output_tokens' ? 'it hit the model\u2019s max output token limit' : reason}). This export may be too large for the agent's configured output length; try increasing the agent's max output tokens or splitting the export.`, 502)
+  }
   const assistantText = extractAssistantText(data)
   if (!assistantText) throw new FirewallRulesetError('The firewall ruleset agent returned an empty response.', 502)
   const contract = parseAgentJson(assistantText)
-  if (!contract) throw new FirewallRulesetError('The firewall ruleset agent returned a response that was not valid JSON.', 502)
+  if (!contract) {
+    const snippet = assistantText.length > 300 ? `${assistantText.slice(0, 300)}\u2026` : assistantText
+    console.error(`Firewall ruleset agent response was not valid JSON from ${requestUrl}: ${assistantText.slice(0, 500)}${assistantText.length > 500 ? '\u2026' : ''} <<<END>>> ${assistantText.length > 500 ? assistantText.slice(-500) : ''}`)
+    throw new FirewallRulesetError(`The firewall ruleset agent returned a response that was not valid JSON. Response started with: ${snippet}`, 502)
+  }
   const status = asString(contract.status)?.toLowerCase()
   if (status === 'failed') throw new FirewallRulesetError(asString(contract.message) ?? 'The agent could not parse this file.', 422)
   return contract
