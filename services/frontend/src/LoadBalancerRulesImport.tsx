@@ -312,7 +312,17 @@ export default function LoadBalancerRulesImport() {
     } catch { /* transient network error; the user can retry via Parse or Refresh */ }
   }
 
-  useEffect(() => { items.forEach((item) => { void loadRulesets(item.id) }) }, [items])
+  const loadAllRulesets = async (importIds: number[]) => {
+    if (importIds.length === 0) return
+    try {
+      const response = await apiFetch(`/api/load-balancer-rules/rulesets?importIds=${importIds.join(',')}`)
+      if (!response.ok) return
+      const { itemsByImportId } = await response.json() as { itemsByImportId: Record<number, LoadBalancerRulesetSummary[]> }
+      setRulesetsByImport((current) => ({ ...current, ...itemsByImportId }))
+    } catch { /* transient network error; the user can retry via Refresh */ }
+  }
+
+  useEffect(() => { void loadAllRulesets(items.map((item) => item.id)) }, [items])
 
   const parseWithAgent = async (item: LoadBalancerRuleSummary) => {
     setParsingId(item.id)
@@ -360,7 +370,7 @@ export default function LoadBalancerRulesImport() {
     <section className="corelight-import" aria-labelledby="load-balancer-rules-upload-heading">
       <div className="section-heading"><div><p className="eyebrow">Upload</p><h2 id="load-balancer-rules-upload-heading">Select a rules export to import</h2></div><span className="file-limit">JSON · XML · CSV · Conf · up to 50 MB</span></div>
       <div className="corelight-fields">
-        <label>Rules file<input ref={fileInput} type="file" accept=".json,.xml,.csv,.conf,.cfg" disabled={busy} onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><small>{file ? `${file.name} · ${formatSize(file.size)}` : 'Required · exported virtual server / pool / rule configuration'}</small></label>
+        <label>Rules file<input ref={fileInput} type="file" accept=".json,.xml,.csv,.conf,.cfg" disabled={busy} onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><small>{file ? `${file.name} · ${formatSize(file.size)}` : 'Required · exported virtual server / pool / rule configuration · up to 50 MB'}</small></label>
         <label>Vendor (optional)<input type="text" value={vendor} maxLength={100} list="load-balancer-vendors" disabled={busy} onChange={(event) => setVendor(event.target.value)} placeholder="e.g. F5 BIG-IP" /><small>Helps identify the source solution when reviewing history.</small></label>
         <datalist id="load-balancer-vendors">{vendorSuggestions.map((name) => <option value={name} key={name} />)}</datalist>
       </div>

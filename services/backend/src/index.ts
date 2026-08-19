@@ -18,9 +18,16 @@ import {
   deleteLoadBalancerRuleImport, getLoadBalancerRuleImport, importLoadBalancerRuleFile, listLoadBalancerRuleImports,
 } from './load-balancer-rules-import.js'
 import {
-  LoadBalancerRulesetError, getLoadBalancerRulesetDetail, listLoadBalancerRulesets, listRulesetRulesPaged,
+  LoadBalancerRulesetError, getLoadBalancerRulesetDetail, listLoadBalancerRulesets, listLoadBalancerRulesetsBatch, listRulesetRulesPaged,
   listRulesetVirtualServersPaged, parseLoadBalancerRuleset,
 } from './load-balancer-ruleset.js'
+import {
+  deleteFirewallRuleImport, getFirewallRuleImport, importFirewallRuleFile, listFirewallRuleImports,
+} from './firewall-rules-import.js'
+import {
+  FirewallRulesetError, getFirewallRulesetDetail, listFirewallRulesetRulesPaged, listFirewallRulesets, listFirewallRulesetsBatch,
+  parseFirewallRuleset,
+} from './firewall-ruleset.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
@@ -96,6 +103,18 @@ const corelightUpload = multer({
 })
 
 const loadBalancerRuleUpload = multer({
+  storage: multer.diskStorage({
+    destination: tmpdir(),
+    filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase()}`),
+  }),
+  fileFilter: (_request, file, callback) => {
+    const extension = extname(file.originalname).toLowerCase()
+    callback(null, ['.json', '.xml', '.csv', '.conf', '.cfg'].includes(extension))
+  },
+  limits: { files: 1, fileSize: 50 * 1024 * 1024 },
+})
+
+const firewallRuleUpload = multer({
   storage: multer.diskStorage({
     destination: tmpdir(),
     filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase()}`),
@@ -997,6 +1016,13 @@ app.get('/api/load-balancer-rules', async (_request, response) => {
   response.json({ items: await listLoadBalancerRuleImports() })
 })
 
+// Registered ahead of the /:id route below so the literal "rulesets" segment isn't swallowed by :id.
+app.get('/api/load-balancer-rules/rulesets', async (request, response) => {
+  const raw = typeof request.query.importIds === 'string' ? request.query.importIds : ''
+  const importIds = raw.split(',').map((value) => Number(value.trim())).filter((value) => Number.isInteger(value))
+  response.json({ itemsByImportId: await listLoadBalancerRulesetsBatch(importIds) })
+})
+
 app.get('/api/load-balancer-rules/:id', async (request, response) => {
   const id = Number(request.params.id)
   const item = Number.isInteger(id) ? await getLoadBalancerRuleImport(id) : undefined
@@ -1109,6 +1135,117 @@ app.get('/api/load-balancer-rules/rulesets/:rulesetId/rules', async (request, re
     search: String(request.query.search ?? '').trim() || undefined,
     virtualServerId: Number.isInteger(virtualServerId) && virtualServerId > 0 ? virtualServerId : undefined,
     actionType: String(request.query.actionType ?? '').trim() || undefined,
+  })
+  response.json(result)
+})
+
+app.get('/api/firewall-rule-imports', async (_request, response) => {
+  response.json({ items: await listFirewallRuleImports() })
+})
+
+// Registered ahead of the /:id route below so the literal "rulesets" segment isn't swallowed by :id.
+app.get('/api/firewall-rule-imports/rulesets', async (request, response) => {
+  const raw = typeof request.query.importIds === 'string' ? request.query.importIds : ''
+  const importIds = raw.split(',').map((value) => Number(value.trim())).filter((value) => Number.isInteger(value))
+  response.json({ itemsByImportId: await listFirewallRulesetsBatch(importIds) })
+})
+
+app.get('/api/firewall-rule-imports/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  const item = Number.isInteger(id) ? await getFirewallRuleImport(id) : undefined
+  if (!item) {
+    response.status(404).json({ error: 'Firewall rule import not found.' })
+    return
+  }
+  response.json({ item })
+})
+
+app.post('/api/firewall-rule-imports/import', firewallRuleUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a JSON, XML, CSV, or Conf firewall rules file.' })
+    return
+  }
+  try {
+    const vendor = String(request.body?.vendor ?? '').trim() || null
+    const result = await importFirewallRuleFile(file.path, file.originalname, vendor)
+    // Kick off parsing automatically once the import itself has succeeded; a parse failure is
+    // reported alongside the import result rather than failing the (already-successful) import.
+    let parseResult: Awaited<ReturnType<typeof parseFirewallRuleset>> | undefined
+    let parseError: string | undefined
+    try {
+      parseResult = await parseFirewallRuleset(result.id)
+    } catch (error) {
+      parseError = error instanceof FirewallRulesetError ? error.message : 'The firewall ruleset could not be parsed automatically.'
+    }
+    response.status(201).json({ result, parseResult, parseError })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Firewall rules import failed.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.delete('/api/firewall-rule-imports/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  const deleted = Number.isInteger(id) && await deleteFirewallRuleImport(id)
+  if (!deleted) {
+    response.status(404).json({ error: 'Firewall rule import not found.' })
+    return
+  }
+  response.status(204).end()
+})
+
+app.post('/api/firewall-rule-imports/:id/parse', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id)) {
+    response.status(400).json({ error: 'Invalid firewall rule import ID.' })
+    return
+  }
+  try {
+    response.status(201).json({ result: await parseFirewallRuleset(id) })
+  } catch (error) {
+    if (error instanceof FirewallRulesetError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    response.status(502).json({ error: 'The firewall ruleset could not be parsed.' })
+  }
+})
+
+app.get('/api/firewall-rule-imports/:id/rulesets', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id)) {
+    response.status(400).json({ error: 'Invalid firewall rule import ID.' })
+    return
+  }
+  response.json({ items: await listFirewallRulesets(id) })
+})
+
+app.get('/api/firewall-rule-imports/rulesets/:rulesetId', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  const item = Number.isInteger(rulesetId) ? await getFirewallRulesetDetail(rulesetId) : undefined
+  if (!item) {
+    response.status(404).json({ error: 'Firewall ruleset not found.' })
+    return
+  }
+  response.json({ item })
+})
+
+app.get('/api/firewall-rule-imports/rulesets/:rulesetId/rules', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  if (!Number.isInteger(rulesetId)) {
+    response.status(400).json({ error: 'Invalid firewall ruleset ID.' })
+    return
+  }
+  const enabledParam = String(request.query.enabled ?? '')
+  const result = await listFirewallRulesetRulesPaged(rulesetId, {
+    page: Number(request.query.page) || 1,
+    pageSize: Number(request.query.pageSize) || 25,
+    search: String(request.query.search ?? '').trim() || undefined,
+    action: String(request.query.action ?? '').trim() || undefined,
+    zone: String(request.query.zone ?? '').trim() || undefined,
+    enabled: enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined,
   })
   response.json(result)
 })

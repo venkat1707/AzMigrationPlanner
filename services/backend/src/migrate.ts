@@ -758,6 +758,139 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  // Vendor exports (Palo Alto, Fortigate, Cisco ASA/IOS/Firepower, AWS Security Groups/NACLs, Check Point, ...)
+  // differ in schema, so the original JSON/XML/CSV/Conf document is kept verbatim in raw_content rather than
+  // normalized into columns. Mirrors load_balancer_rule_imports.
+  if (!(await database.schema.hasTable('firewall_rule_imports'))) {
+    await database.schema.createTable('firewall_rule_imports', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('import_run_id').unsigned().notNullable().references('id').inTable('import_runs').onDelete('CASCADE')
+      table.string('vendor', 100).nullable()
+      table.string('file_name', 260).notNullable()
+      table.string('format', 10).notNullable()
+      table.text('raw_content', 'longtext').notNullable()
+      table.string('content_hash', 64).notNullable()
+      table.integer('size_bytes').unsigned().notNullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.index(['content_hash'], 'idx_firewall_rule_imports_hash')
+    })
+  }
+
+  // Normalized, agent-parsed firewall rulesets — mirrors load_balancer_rulesets. Re-parsing an import
+  // adds a new version rather than overwriting, so prior analysis stays reproducible.
+  if (!(await database.schema.hasTable('firewall_rulesets'))) {
+    await database.schema.createTable('firewall_rulesets', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('import_id').unsigned().notNullable().references('id').inTable('firewall_rule_imports').onDelete('CASCADE')
+      table.integer('version').unsigned().notNullable()
+      table.string('vendor', 100).nullable()
+      table.string('status', 20).notNullable()
+      table.bigInteger('agent_endpoint_id').unsigned().nullable().references('id').inTable('agent_endpoints').onDelete('SET NULL')
+      table.integer('zone_count').unsigned().notNullable().defaultTo(0)
+      table.integer('address_object_count').unsigned().notNullable().defaultTo(0)
+      table.integer('service_object_count').unsigned().notNullable().defaultTo(0)
+      table.integer('rule_count').unsigned().notNullable().defaultTo(0)
+      table.integer('nat_rule_count').unsigned().notNullable().defaultTo(0)
+      table.json('warnings').nullable()
+      table.text('error_message').nullable()
+      // Full agent reply kept verbatim as a fidelity fallback in case the relational mapping below misses a field.
+      table.json('agent_response_json').nullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.unique(['import_id', 'version'], 'uq_firewall_rulesets_version')
+      table.index(['import_id'], 'idx_firewall_rulesets_import')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_zones'))) {
+    await database.schema.createTable('firewall_ruleset_zones', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_zones_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_address_objects'))) {
+    await database.schema.createTable('firewall_ruleset_address_objects', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      // host | range | subnet | fqdn | wildcard | group | any
+      table.string('type', 30).nullable()
+      table.string('value', 500).nullable()
+      table.json('members').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_address_objects_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_service_objects'))) {
+    await database.schema.createTable('firewall_ruleset_service_objects', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('protocol', 30).nullable()
+      table.string('port_range', 100).nullable()
+      table.json('members').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_service_objects_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_rules'))) {
+    await database.schema.createTable('firewall_ruleset_rules', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('rule_type', 30).nullable()
+      table.integer('sort_order').unsigned().notNullable().defaultTo(0)
+      // allow | deny | drop | reject | other vendor-specific verbs
+      table.string('action', 30).notNullable()
+      table.boolean('enabled').notNullable().defaultTo(true)
+      table.boolean('logging').notNullable().defaultTo(false)
+      table.text('description').nullable()
+      // Match criteria are simple name/CIDR lists (not a boolean condition tree) — this is how every major
+      // vendor's rule base actually models a security policy entry, unlike LB iRule/policy conditions.
+      table.json('source_zones').nullable()
+      table.json('destination_zones').nullable()
+      table.json('source_addresses').nullable()
+      table.json('destination_addresses').nullable()
+      table.json('services').nullable()
+      table.json('applications').nullable()
+      table.json('users').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_rules_ruleset')
+      table.index(['ruleset_id', 'sort_order'], 'idx_firewall_ruleset_rules_order')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_nat_rules'))) {
+    await database.schema.createTable('firewall_ruleset_nat_rules', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.integer('sort_order').unsigned().notNullable().defaultTo(0)
+      // source | destination | static | other vendor-specific NAT verbs
+      table.string('nat_type', 30).nullable()
+      table.string('source_zone', 200).nullable()
+      table.string('destination_zone', 200).nullable()
+      table.string('original_source', 300).nullable()
+      table.string('original_destination', 300).nullable()
+      table.string('original_service', 200).nullable()
+      table.string('translated_source', 300).nullable()
+      table.string('translated_destination', 300).nullable()
+      table.string('translated_service', 200).nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_nat_rules_ruleset')
+    })
+  }
+
   if (await database.schema.hasTable('target_landing_zones')) {
     // Replaced by the resource-group-only landing zone model.
     await database.schema.dropTable('target_landing_zones')

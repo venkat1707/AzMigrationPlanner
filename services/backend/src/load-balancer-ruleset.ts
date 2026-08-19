@@ -558,13 +558,31 @@ function parseJsonColumn<T>(value: unknown, fallback: T): T {
   try { return JSON.parse(value) as T } catch { return fallback }
 }
 
+function mapRulesetSummaryRow(row: Record<string, unknown>): LoadBalancerRulesetSummary {
+  return {
+    id: row.id as number, importId: row.import_id as number, version: row.version as number, vendor: row.vendor as string, status: row.status as LoadBalancerRulesetSummary['status'],
+    virtualServerCount: row.virtual_server_count as number, poolCount: row.pool_count as number, ruleCount: row.rule_count as number,
+    warnings: parseJsonColumn<string[]>(row.warnings, []), createdAt: row.created_at as string,
+  }
+}
+
 export async function listLoadBalancerRulesets(importId: number): Promise<LoadBalancerRulesetSummary[]> {
   const rows = await database('load_balancer_rulesets').where({ import_id: importId }).orderBy('version', 'desc')
-  return rows.map((row) => ({
-    id: row.id, importId: row.import_id, version: row.version, vendor: row.vendor, status: row.status,
-    virtualServerCount: row.virtual_server_count, poolCount: row.pool_count, ruleCount: row.rule_count,
-    warnings: parseJsonColumn<string[]>(row.warnings, []), createdAt: row.created_at,
-  }))
+  return rows.map(mapRulesetSummaryRow)
+}
+
+// One indexed `whereIn` query for every requested import instead of one round trip per import.
+export async function listLoadBalancerRulesetsBatch(importIds: number[]): Promise<Record<number, LoadBalancerRulesetSummary[]>> {
+  const result: Record<number, LoadBalancerRulesetSummary[]> = {}
+  if (importIds.length === 0) return result
+  const rows = await database('load_balancer_rulesets').whereIn('import_id', importIds).orderBy('version', 'desc')
+  for (const row of rows) {
+    const summary = mapRulesetSummaryRow(row)
+    const list = result[summary.importId] ?? []
+    list.push(summary)
+    result[summary.importId] = list
+  }
+  return result
 }
 
 export type LoadBalancerRulesetDetail = LoadBalancerRulesetSummary & { errorMessage: string | null; ruleset: NormalizedLoadBalancerRuleset }
