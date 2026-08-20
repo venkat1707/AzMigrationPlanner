@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Scale, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
+import { Activity, AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Scale, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
@@ -18,6 +18,7 @@ import ArtefactGeneration from './ArtefactGeneration'
 import VisualizeSprints from './VisualizeSprints'
 import ApplicationTreatmentPlanning from './ApplicationTreatmentPlanning'
 import CorelightImport from './CorelightImport'
+import SplunkImport from './SplunkImport'
 import LoadBalancerRulesImport from './LoadBalancerRulesImport'
 import LoadBalancerScale from './LoadBalancerScale'
 import FirewallRulesImport from './FirewallRulesImport'
@@ -58,7 +59,7 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'application-catalog' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'load-balancer-scale' | 'tasks' | 'imports' | 'corelight' | 'load-balancer-rules' | 'firewall-rule-imports' | 'cleanup' | 'admin' | 'agents'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'application-catalog' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'load-balancer-scale' | 'tasks' | 'imports' | 'corelight' | 'splunk' | 'load-balancer-rules' | 'firewall-rule-imports' | 'cleanup' | 'admin' | 'agents'
 type ImportKind = 'dependencies' | 'applications' | 'server-assessment' | 'application-mapping'
 const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   applications: 'application-mapping',
@@ -105,6 +106,7 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor discovery coverage and continue through the migration planning workflow.' },
   { page: 'imports', label: 'Imports', group: 'Discover & prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, dependency exports, and Corelight/Zeek flow logs.' },
   { page: 'corelight', label: 'Flow logs (Preview)', group: 'Discover & prepare', icon: Network, access: 'modify', eyebrow: 'Network telemetry', title: 'Import Corelight / Zeek flow logs', description: 'Import conn.log and dns.log to enrich dependency data for mapping, waves, firewall rules, and planning.' },
+  { page: 'splunk', label: 'Splunk logs (Preview)', group: 'Discover & prepare', icon: Activity, access: 'modify', eyebrow: 'Network telemetry', title: 'Import Splunk flow logs', description: 'Import CIM Network Traffic-shaped CSV exports from Splunk to enrich dependency data for mapping, waves, firewall rules, and planning.' },
   { page: 'load-balancer-rules', label: 'Load Balancer Rules (Preview)', group: 'Discover & prepare', icon: Waypoints, access: 'modify', eyebrow: 'Network configuration', title: 'Import load balancer rules', description: 'Store virtual server, pool, and rule configuration exported from any enterprise load balancer as-is for reference.' },
   { page: 'firewall-rule-imports', label: 'Firewall Rules Import (Preview)', group: 'Discover & prepare', icon: ShieldCheck, access: 'modify', eyebrow: 'Network configuration', title: 'Import firewall rules', description: 'Store zone, address object, service object, security rule, and NAT rule configuration exported from any enterprise firewall for later NSG and firewall rule generation.' },
   { page: 'core-infrastructure', label: 'Core Infrastructure', group: 'Discover & prepare', icon: Settings2, access: 'all', eyebrow: 'Infrastructure inputs', title: 'Maintain core infrastructure', description: 'Capture core server roles, IP addresses, and connected network ranges.' },
@@ -605,6 +607,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         </section>
         </div>}
         {activePage === 'corelight' && <CorelightImport />}
+        {activePage === 'splunk' && <SplunkImport />}
         {activePage === 'load-balancer-rules' && <LoadBalancerRulesImport />}
         {activePage === 'firewall-rule-imports' && <FirewallRulesImport />}
       </main>

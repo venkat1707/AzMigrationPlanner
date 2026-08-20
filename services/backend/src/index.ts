@@ -14,6 +14,7 @@ import { database } from './db.js'
 import { migrateSchema } from './migrate.js'
 import { DependencyImportCancelledError, importDependencyFile } from './dependency-import.js'
 import { convertConnLogToCsv, hostnameMapFromDns, parseDnsRecords, saveDnsRecords } from './corelight-import.js'
+import { convertSplunkExportToCsv, loadDnsHostnameMap } from './splunk-import.js'
 import {
   deleteLoadBalancerRuleImport, getLoadBalancerRuleImport, importLoadBalancerRuleFile, listLoadBalancerRuleImports,
 } from './load-balancer-rules-import.js'
@@ -101,6 +102,18 @@ const corelightUpload = multer({
     callback(null, ['.log', '.json', '.txt', '.gz', '.ndjson'].includes(extension))
   },
   limits: { files: 2, fileSize: 1024 * 1024 * 1024 },
+})
+
+const splunkUpload = multer({
+  storage: multer.diskStorage({
+    destination: tmpdir(),
+    filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase() || '.csv'}`),
+  }),
+  fileFilter: (_request, file, callback) => {
+    const extension = extname(file.originalname).toLowerCase()
+    callback(null, extension === '.csv')
+  },
+  limits: { files: 1, fileSize: 1024 * 1024 * 1024 },
 })
 
 const loadBalancerRuleUpload = multer({
@@ -1010,6 +1023,47 @@ app.post('/api/imports/corelight', corelightUpload.fields([{ name: 'conn', maxCo
     status: 'Accepted',
     fileName: canonicalName,
     message: 'Converting the flow log and importing it in the background. Track progress under Recent imports.',
+  })
+})
+
+app.post('/api/imports/splunk', splunkUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a Splunk flow log export (.csv).' })
+    return
+  }
+  const applianceName = String(request.body?.applianceName ?? '').trim() || 'Splunk'
+  const canonicalPath = resolve(tmpdir(), `${crypto.randomUUID()}.csv`)
+  const canonicalName = `Splunk-${sanitizeFileLabel(file.originalname.replace(/\.csv$/i, ''), 240)}.csv`
+  const generation = dependencyImportGeneration
+  // Reserve one queue slot; parsing/conversion runs off the request thread to avoid request timeouts on large exports.
+  pendingDependencyImportFiles += 1
+  dependencyImportQueue = dependencyImportQueue
+    .then(async () => {
+      if (generation !== dependencyImportGeneration) { pendingDependencyImportFiles -= 1; return }
+      try {
+        const hostnameByIp = await loadDnsHostnameMap()
+        const conversion = await convertSplunkExportToCsv(file.path, canonicalPath, hostnameByIp, { defaultApplianceName: applianceName })
+        if (conversion.dependencyRows === 0) {
+          pendingDependencyImportFiles -= 1
+          await unlink(canonicalPath).catch(() => undefined)
+          console.warn(`Splunk import produced no dependency rows from ${sanitizeFileLabel(file.originalname)}.`)
+          return
+        }
+        await processDependencyUploads([{ path: canonicalPath, originalname: canonicalName } as Express.Multer.File], generation)
+      } catch (error) {
+        pendingDependencyImportFiles -= 1
+        await unlink(canonicalPath).catch(() => undefined)
+        console.error('Splunk conversion/import failed.', error)
+      } finally {
+        await unlink(file.path).catch(() => undefined)
+      }
+    })
+    .catch((error) => console.error('Splunk import queue failed.', error))
+  response.status(202).json({
+    status: 'Accepted',
+    fileName: canonicalName,
+    message: 'Converting the flow log export and importing it in the background. Track progress under Recent imports.',
   })
 })
 
