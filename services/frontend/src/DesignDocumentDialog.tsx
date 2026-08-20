@@ -19,25 +19,39 @@ type Phase = 'working' | 'questions' | 'ready' | 'saving' | 'done' | 'error'
 type SaveFilePicker = (options?: {
   suggestedName?: string
   types?: Array<{ description?: string; accept: Record<string, string[]> }>
-}) => Promise<{ createWritable: () => Promise<{ write: (data: BufferSource | Blob) => Promise<void>; close: () => Promise<void> }> }>
+}) => Promise<{ createWritable: () => Promise<{ write: (data: BufferSource | Blob) => Promise<void>; truncate: (size: number) => Promise<void>; close: () => Promise<void> }> }>
 
-function base64ToBlob(base64: string, contentType: string): Blob {
+function decodeDocument(base64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length))
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-  return new Blob([bytes], { type: contentType })
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
+    throw new Error('The generated file is not a valid modern Office document. Generate it again before saving.')
+  }
+  return bytes
+}
+
+const wordContentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+const excelContentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+function filePickerType(contentType: string): { description: string; accept: Record<string, string[]> } {
+  if (contentType === excelContentType) return { description: 'Excel workbook', accept: { [excelContentType]: ['.xlsx'] } }
+  return { description: 'Word document', accept: { [wordContentType]: ['.docx'] } }
 }
 
 async function saveDocument(file: Completed): Promise<'saved' | 'downloaded'> {
-  const blob = base64ToBlob(file.contentBase64, file.contentType || 'application/octet-stream')
+  const bytes = decodeDocument(file.contentBase64)
+  const blob = new Blob([bytes], { type: file.contentType || wordContentType })
   const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker
   if (picker) {
     const handle = await picker({
       suggestedName: file.fileName,
-      types: [{ description: 'Word document', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }],
+      types: [filePickerType(file.contentType)],
     })
     const writable = await handle.createWritable()
-    await writable.write(blob)
+    await writable.truncate(0)
+    await writable.write(bytes)
+    await writable.truncate(bytes.byteLength)
     await writable.close()
     return 'saved'
   }
@@ -50,13 +64,16 @@ async function saveDocument(file: Completed): Promise<'saved' | 'downloaded'> {
   return 'downloaded'
 }
 
-export default function DesignDocumentDialog({ application, environment, onClose }: {
-  application: string
-  environment: string
+export default function DesignDocumentDialog({ application, environment, documentTitle = 'High-level design document', requestUrl = '/api/application-map/design-document', requestBody = {}, onClose }: {
+  application?: string
+  environment?: string
+  documentTitle?: string
+  requestUrl?: string
+  requestBody?: Record<string, unknown>
   onClose: () => void
 }) {
   const [phase, setPhase] = useState<Phase>('working')
-  const [statusText, setStatusText] = useState('Contacting the design agent and sharing the application map…')
+  const [statusText, setStatusText] = useState(`Contacting the Foundry agent to generate the ${documentTitle.toLowerCase()}…`)
   const [error, setError] = useState('')
   const [questions, setQuestions] = useState<DesignQuestion[]>([])
   const [message, setMessage] = useState<string | null>(null)
@@ -70,12 +87,12 @@ export default function DesignDocumentDialog({ application, environment, onClose
   const send = async (payloadAnswers: Array<{ id: string; response: string }>) => {
     setPhase('working')
     setError('')
-    setStatusText(payloadAnswers.length ? 'Sending your answers to the design agent…' : 'Contacting the design agent and sharing the application map…')
+    setStatusText(payloadAnswers.length ? 'Sending your answers to the Foundry agent…' : `Contacting the Foundry agent to generate the ${documentTitle.toLowerCase()}…`)
     try {
-      const response = await apiFetch('/api/application-map/design-document', {
+      const response = await apiFetch(requestUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ application, environment, conversationId: conversationId.current, answers: payloadAnswers }),
+        body: JSON.stringify({ application, environment, ...requestBody, conversationId: conversationId.current, answers: payloadAnswers }),
       })
       const data = await response.json() as DesignResponse
       if (!response.ok) throw new Error(('error' in data && data.error) || 'The design document request failed.')
@@ -131,7 +148,7 @@ export default function DesignDocumentDialog({ application, environment, onClose
     if (!readyFile) return
     setError('')
     setPhase('saving')
-    setStatusText('Choose where to save the Word document…')
+    setStatusText('Choose where to save the document…')
     try {
       const outcome = await saveDocument(readyFile)
       setSavedName(readyFile.fileName)
@@ -156,10 +173,10 @@ export default function DesignDocumentDialog({ application, environment, onClose
     })
   }
 
-  return <div className="design-dialog-overlay" role="dialog" aria-modal="true" aria-label="Create high-level design document">
+  return <div className="design-dialog-overlay" role="dialog" aria-modal="true" aria-label={`Create ${documentTitle}`}>
     <div className="design-dialog">
       <header className="design-dialog-head">
-        <div><span className="design-dialog-icon"><FileText size={18} /></span><div><strong>High-level design document</strong><small>{application} · {environment} · hosted on Azure</small></div></div>
+        <div><span className="design-dialog-icon"><FileText size={18} /></span><div><strong>{documentTitle}</strong><small>{application && environment ? `${application} · ${environment} · hosted on Azure` : 'Generated from the current migration plan'}</small></div></div>
         <button type="button" className="design-dialog-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
       </header>
 
@@ -201,7 +218,7 @@ export default function DesignDocumentDialog({ application, environment, onClose
         {phase === 'ready'
           ? <div className="design-dialog-status success">
             <CheckCircle2 size={30} />
-            <p>The high-level design document is ready.</p>
+            <p>The {documentTitle.toLowerCase()} is ready.</p>
             <small>{readyFile?.fileName}</small>
             {error ? <p className="design-dialog-error">{error}</p> : null}
             <div className="design-dialog-actions">
@@ -214,7 +231,7 @@ export default function DesignDocumentDialog({ application, environment, onClose
         {phase === 'done'
           ? <div className="design-dialog-status success">
             <CheckCircle2 size={30} />
-            <p>{saveMode === 'saved' ? 'The high-level design document was saved.' : 'The high-level design document was downloaded.'}</p>
+            <p>{saveMode === 'saved' ? `The ${documentTitle.toLowerCase()} was saved.` : `The ${documentTitle.toLowerCase()} was downloaded.`}</p>
             <small>{savedName}</small>
             <div className="design-dialog-actions"><button type="button" onClick={onClose}>Done</button></div>
           </div>

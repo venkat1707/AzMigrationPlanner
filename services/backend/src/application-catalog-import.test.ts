@@ -27,7 +27,7 @@ test('application catalog maps singular and plural description headers', async (
       await writeFile(filePath, `Application,${header}\nBilling,Billing and invoicing\n`)
       const report = await inspectApplicationCatalogFile(filePath)
       assert.equal(report.rowCount, 1, header)
-      assert.doesNotMatch(report.warnings.join(' '), /Ignored unknown columns|Missing optional columns/, header)
+      assert.doesNotMatch(report.warnings.join(' '), /Ignored unknown columns/, header)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -53,6 +53,19 @@ test('application catalog rejects rows without an application name', async () =>
   try {
     await writeFile(filePath, 'Application,Description\n,Missing name\n')
     await assert.rejects(inspectApplicationCatalogFile(filePath), /APPLICATION is required at row 2/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('application catalog accepts optional contact columns with spaced headers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'application-catalog-'))
+  const filePath = join(directory, 'applications.csv')
+  try {
+    await writeFile(filePath, 'Application,First Name,Last Name,Email Address\nBilling,Ada,Lovelace,ada@example.test\n')
+    const report = await inspectApplicationCatalogFile(filePath)
+    assert.equal(report.rowCount, 1)
+    assert.doesNotMatch(report.warnings.join(' '), /Ignored unknown columns/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

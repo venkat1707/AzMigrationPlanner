@@ -5,6 +5,31 @@ import { seedDatabaseServerEvidence } from './database-server-evidence.js'
 import { refreshDependencyDirections } from './dependency-direction.js'
 import { refreshDependencySummary } from './dependency-summary.js'
 
+export const requiredDependencyIndexNames = [
+  'idx_dependencies_import_run',
+  'idx_dependencies_server_pair',
+  'idx_dependencies_port',
+  'idx_dependencies_inbound_map',
+  'idx_dependencies_outbound_map',
+  'idx_dependencies_inbound_fw',
+  'idx_dependencies_outbound_fw',
+] as const
+
+export const redundantDependencyIndexNames = [
+  'idx_dependencies_source_server',
+  'idx_dependencies_destination_server',
+  'idx_dependencies_inbound_topology',
+  'idx_dependencies_outbound_topology',
+  'idx_dependencies_destination_ip',
+  'idx_dependencies_observed_date',
+  'idx_dependencies_destination_process',
+  'idx_dependencies_server_port',
+  'idx_dependencies_server_process',
+  'idx_dependencies_ip_port',
+  'idx_dependencies_ip_process',
+  'idx_dependencies_direction',
+] as const
+
 export async function migrateSchema(): Promise<void> {
   if (!(await database.schema.hasTable('app_auth_settings'))) {
     await database.schema.createTable('app_auth_settings', (table) => {
@@ -122,12 +147,12 @@ export async function migrateSchema(): Promise<void> {
       table.index(['source_server_name', 'destination_server_name'], 'idx_dependencies_server_pair')
       table.index(['destination_port'], 'idx_dependencies_port')
       table.index(
-        ['destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip'],
-        'idx_dependencies_inbound_topology',
+        ['destination_server_name', 'source_server_name', 'destination_port'],
+        'idx_dependencies_inbound_map',
       )
       table.index(
-        ['source_server_name', 'destination_ip', 'destination_port', 'destination_server_name'],
-        'idx_dependencies_outbound_topology',
+        ['source_server_name', 'destination_server_name', 'destination_port'],
+        'idx_dependencies_outbound_map',
       )
       table.index(
         ['destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip', 'connection_count'],
@@ -147,8 +172,44 @@ export async function migrateSchema(): Promise<void> {
     await refreshDependencyDirections()
   }
 
+  if (!(await database.schema.hasColumn('dependency_records', 'protocol'))) {
+    await database.schema.alterTable('dependency_records', (table) => {
+      table.string('protocol', 10).nullable()
+    })
+  }
+
   if (!(await database.schema.hasColumn('dependency_records', 'source_ip'))) {
     throw new Error('dependency_records is missing source_ip')
+  }
+
+  if (!(await database.schema.hasTable('dns_records'))) {
+    await database.schema.createTable('dns_records', (table) => {
+      table.bigIncrements('id').primary()
+      table.string('query', 300).notNullable()
+      table.string('ip_address', 64).notNullable()
+      table.date('observed_date').nullable()
+      table.string('source', 30).notNullable().defaultTo('Corelight')
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+      table.unique(['query', 'ip_address'], 'uq_dns_records_query_ip')
+      table.index(['ip_address'], 'idx_dns_records_ip')
+    })
+  }
+
+  // Vendor exports (F5, Citrix ADC, AWS ELB, Azure LB, NGINX, HAProxy, Kemp, ...) differ in schema, so the
+  // original JSON/XML/CSV document is kept verbatim in raw_content rather than normalized into columns.
+  if (!(await database.schema.hasTable('load_balancer_rule_imports'))) {
+    await database.schema.createTable('load_balancer_rule_imports', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('import_run_id').unsigned().notNullable().references('id').inTable('import_runs').onDelete('CASCADE')
+      table.string('vendor', 100).nullable()
+      table.string('file_name', 260).notNullable()
+      table.string('format', 10).notNullable()
+      table.text('raw_content', 'longtext').notNullable()
+      table.string('content_hash', 64).notNullable()
+      table.integer('size_bytes').unsigned().notNullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.index(['content_hash'], 'idx_load_balancer_rule_imports_hash')
+    })
   }
 
   const dependencyIndexes = await database('information_schema.statistics')
@@ -166,19 +227,19 @@ export async function migrateSchema(): Promise<void> {
       table.index(['source_server_name', 'destination_server_name'], 'idx_dependencies_server_pair')
     })
   }
-  if (!dependencyIndexNames.has('idx_dependencies_inbound_topology')) {
+  if (!dependencyIndexNames.has('idx_dependencies_inbound_map')) {
     await database.schema.alterTable('dependency_records', (table) => {
       table.index(
-        ['destination_server_name', 'destination_ip', 'destination_port', 'source_server_name', 'source_ip'],
-        'idx_dependencies_inbound_topology',
+        ['destination_server_name', 'source_server_name', 'destination_port'],
+        'idx_dependencies_inbound_map',
       )
     })
   }
-  if (!dependencyIndexNames.has('idx_dependencies_outbound_topology')) {
+  if (!dependencyIndexNames.has('idx_dependencies_outbound_map')) {
     await database.schema.alterTable('dependency_records', (table) => {
       table.index(
-        ['source_server_name', 'destination_ip', 'destination_port', 'destination_server_name'],
-        'idx_dependencies_outbound_topology',
+        ['source_server_name', 'destination_server_name', 'destination_port'],
+        'idx_dependencies_outbound_map',
       )
     })
   }
@@ -198,37 +259,6 @@ export async function migrateSchema(): Promise<void> {
       )
     })
   }
-  if (!dependencyIndexNames.has('idx_dependencies_destination_process')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_process'], 'idx_dependencies_destination_process')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_destination_ip')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_ip'], 'idx_dependencies_destination_ip')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_server_port')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_server_name', 'destination_port'], 'idx_dependencies_server_port')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_server_process')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_server_name', 'destination_process'], 'idx_dependencies_server_process')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_ip_port')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_ip', 'destination_port'], 'idx_dependencies_ip_port')
-    })
-  }
-  if (!dependencyIndexNames.has('idx_dependencies_ip_process')) {
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.index(['destination_ip', 'destination_process'], 'idx_dependencies_ip_process')
-    })
-  }
-
   if (!(await database.schema.hasTable('database_server_evidence'))) {
     await database.schema.createTable('database_server_evidence', (table) => {
       table.string('evidence_type', 10).notNullable()
@@ -237,23 +267,10 @@ export async function migrateSchema(): Promise<void> {
     })
     await seedDatabaseServerEvidence()
   }
-  const redundantDependencyIndexes = [
-    'idx_dependencies_source_server',
-    'idx_dependencies_destination_server',
-    'idx_dependencies_destination_ip',
-    'idx_dependencies_observed_date',
-    'idx_dependencies_destination_process',
-    'idx_dependencies_server_port',
-    'idx_dependencies_server_process',
-    'idx_dependencies_ip_port',
-    'idx_dependencies_ip_process',
-    'idx_dependencies_direction',
-  ]
-  for (const indexName of redundantDependencyIndexes) {
-    if (!dependencyIndexNames.has(indexName)) continue
-    await database.schema.alterTable('dependency_records', (table) => {
-      table.dropIndex([], indexName)
-    })
+  const existingRedundantIndexes = redundantDependencyIndexNames.filter((indexName) => dependencyIndexNames.has(indexName))
+  if (existingRedundantIndexes.length > 0) {
+    const clauses = existingRedundantIndexes.map(() => 'DROP INDEX ??').join(', ')
+    await database.raw(`ALTER TABLE dependency_records ${clauses}`, existingRedundantIndexes)
   }
 
   if (await database.schema.hasTable('application_inventory')) {
@@ -264,6 +281,9 @@ export async function migrateSchema(): Promise<void> {
     await database.schema.createTable('applications', (table) => {
       table.string('name', 500).primary()
       table.text('description').nullable()
+      table.string('first_name', 100).nullable()
+      table.string('last_name', 100).nullable()
+      table.string('email_address', 254).nullable()
       table.string('treatment_plan', 20).nullable()
       table.string('source', 30).notNullable().defaultTo('Derived')
       table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
@@ -274,6 +294,21 @@ export async function migrateSchema(): Promise<void> {
   if (!(await database.schema.hasColumn('applications', 'treatment_plan'))) {
     await database.schema.alterTable('applications', (table) => {
       table.string('treatment_plan', 20).nullable()
+    })
+  }
+  if (!(await database.schema.hasColumn('applications', 'first_name'))) {
+    await database.schema.alterTable('applications', (table) => {
+      table.string('first_name', 100).nullable()
+    })
+  }
+  if (!(await database.schema.hasColumn('applications', 'last_name'))) {
+    await database.schema.alterTable('applications', (table) => {
+      table.string('last_name', 100).nullable()
+    })
+  }
+  if (!(await database.schema.hasColumn('applications', 'email_address'))) {
+    await database.schema.alterTable('applications', (table) => {
+      table.string('email_address', 254).nullable()
     })
   }
 
@@ -593,6 +628,269 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  // Normalized, agent-parsed load balancer rulesets — the single source of truth for rule analysis,
+  // kept separate from load_balancer_rule_imports (which only stores the raw document). Re-parsing an
+  // import adds a new version rather than overwriting, so prior analysis stays reproducible.
+  if (!(await database.schema.hasTable('load_balancer_rulesets'))) {
+    await database.schema.createTable('load_balancer_rulesets', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('import_id').unsigned().notNullable().references('id').inTable('load_balancer_rule_imports').onDelete('CASCADE')
+      table.integer('version').unsigned().notNullable()
+      table.string('vendor', 100).nullable()
+      table.string('status', 20).notNullable()
+      table.bigInteger('agent_endpoint_id').unsigned().nullable().references('id').inTable('agent_endpoints').onDelete('SET NULL')
+      table.integer('virtual_server_count').unsigned().notNullable().defaultTo(0)
+      table.integer('pool_count').unsigned().notNullable().defaultTo(0)
+      table.integer('rule_count').unsigned().notNullable().defaultTo(0)
+      table.json('warnings').nullable()
+      table.text('error_message').nullable()
+      // Full agent reply kept verbatim as a fidelity fallback in case the relational mapping below misses a field.
+      table.json('agent_response_json').nullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.unique(['import_id', 'version'], 'uq_load_balancer_rulesets_version')
+      table.index(['import_id'], 'idx_load_balancer_rulesets_import')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_pools'))) {
+    await database.schema.createTable('lb_ruleset_pools', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('load_balancer_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('load_balancing_method', 100).nullable()
+      table.json('monitor_external_ids').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_lb_ruleset_pools_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_pool_members'))) {
+    await database.schema.createTable('lb_ruleset_pool_members', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('pool_id').unsigned().notNullable().references('id').inTable('lb_ruleset_pools').onDelete('CASCADE')
+      table.string('ip_address', 64).nullable()
+      table.integer('port').unsigned().nullable()
+      table.integer('weight').unsigned().nullable()
+      table.integer('priority_group').unsigned().nullable()
+      table.string('state', 30).nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['pool_id'], 'idx_lb_ruleset_pool_members_pool')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_monitors'))) {
+    await database.schema.createTable('lb_ruleset_monitors', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('load_balancer_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('type', 50).nullable()
+      table.integer('interval_seconds').unsigned().nullable()
+      table.integer('timeout_seconds').unsigned().nullable()
+      table.text('send_string').nullable()
+      table.text('receive_string').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_lb_ruleset_monitors_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_virtual_servers'))) {
+    await database.schema.createTable('lb_ruleset_virtual_servers', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('load_balancer_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('ip_address', 64).nullable()
+      table.integer('port').unsigned().nullable()
+      table.string('protocol', 30).nullable()
+      table.bigInteger('pool_id').unsigned().nullable().references('id').inTable('lb_ruleset_pools').onDelete('SET NULL')
+      table.string('ssl_profile', 200).nullable()
+      table.string('persistence', 100).nullable()
+      table.boolean('enabled').notNullable().defaultTo(true)
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_lb_ruleset_virtual_servers_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_rules'))) {
+    await database.schema.createTable('lb_ruleset_rules', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('load_balancer_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.bigInteger('virtual_server_id').unsigned().nullable().references('id').inTable('lb_ruleset_virtual_servers').onDelete('SET NULL')
+      table.integer('priority').nullable()
+      table.text('description').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_lb_ruleset_rules_ruleset')
+    })
+  }
+
+  // Adjacency list so arbitrarily nested AND/OR/NOT condition trees (F5 iRule logic, NetScaler
+  // compound expressions, Zscaler policy criteria) can be stored and rebuilt without a fixed depth limit.
+  if (!(await database.schema.hasTable('lb_ruleset_rule_conditions'))) {
+    await database.schema.createTable('lb_ruleset_rule_conditions', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('rule_id').unsigned().notNullable().references('id').inTable('lb_ruleset_rules').onDelete('CASCADE')
+      table.bigInteger('parent_condition_id').unsigned().nullable().references('id').inTable('lb_ruleset_rule_conditions').onDelete('CASCADE')
+      table.string('operator', 10).notNullable()
+      table.string('field', 300).nullable()
+      table.string('comparator', 30).nullable()
+      table.json('value').nullable()
+      table.boolean('negate').notNullable().defaultTo(false)
+      table.integer('sort_order').unsigned().notNullable().defaultTo(0)
+      table.index(['rule_id'], 'idx_lb_ruleset_rule_conditions_rule')
+      table.index(['parent_condition_id'], 'idx_lb_ruleset_rule_conditions_parent')
+    })
+  }
+
+  if (!(await database.schema.hasTable('lb_ruleset_rule_actions'))) {
+    await database.schema.createTable('lb_ruleset_rule_actions', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('rule_id').unsigned().notNullable().references('id').inTable('lb_ruleset_rules').onDelete('CASCADE')
+      table.integer('sort_order').unsigned().notNullable().defaultTo(0)
+      table.string('action_type', 100).notNullable()
+      table.string('target', 300).nullable()
+      table.json('parameters').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['rule_id'], 'idx_lb_ruleset_rule_actions_rule')
+    })
+  }
+
+  // Vendor exports (Palo Alto, Fortigate, Cisco ASA/IOS/Firepower, AWS Security Groups/NACLs, Check Point, ...)
+  // differ in schema, so the original JSON/XML/CSV/Conf document is kept verbatim in raw_content rather than
+  // normalized into columns. Mirrors load_balancer_rule_imports.
+  if (!(await database.schema.hasTable('firewall_rule_imports'))) {
+    await database.schema.createTable('firewall_rule_imports', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('import_run_id').unsigned().notNullable().references('id').inTable('import_runs').onDelete('CASCADE')
+      table.string('vendor', 100).nullable()
+      table.string('file_name', 260).notNullable()
+      table.string('format', 10).notNullable()
+      table.text('raw_content', 'longtext').notNullable()
+      table.string('content_hash', 64).notNullable()
+      table.integer('size_bytes').unsigned().notNullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.index(['content_hash'], 'idx_firewall_rule_imports_hash')
+    })
+  }
+
+  // Normalized, agent-parsed firewall rulesets — mirrors load_balancer_rulesets. Re-parsing an import
+  // adds a new version rather than overwriting, so prior analysis stays reproducible.
+  if (!(await database.schema.hasTable('firewall_rulesets'))) {
+    await database.schema.createTable('firewall_rulesets', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('import_id').unsigned().notNullable().references('id').inTable('firewall_rule_imports').onDelete('CASCADE')
+      table.integer('version').unsigned().notNullable()
+      table.string('vendor', 100).nullable()
+      table.string('status', 20).notNullable()
+      table.bigInteger('agent_endpoint_id').unsigned().nullable().references('id').inTable('agent_endpoints').onDelete('SET NULL')
+      table.integer('zone_count').unsigned().notNullable().defaultTo(0)
+      table.integer('address_object_count').unsigned().notNullable().defaultTo(0)
+      table.integer('service_object_count').unsigned().notNullable().defaultTo(0)
+      table.integer('rule_count').unsigned().notNullable().defaultTo(0)
+      table.integer('nat_rule_count').unsigned().notNullable().defaultTo(0)
+      table.json('warnings').nullable()
+      table.text('error_message').nullable()
+      // Full agent reply kept verbatim as a fidelity fallback in case the relational mapping below misses a field.
+      table.json('agent_response_json').nullable()
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.unique(['import_id', 'version'], 'uq_firewall_rulesets_version')
+      table.index(['import_id'], 'idx_firewall_rulesets_import')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_zones'))) {
+    await database.schema.createTable('firewall_ruleset_zones', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_zones_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_address_objects'))) {
+    await database.schema.createTable('firewall_ruleset_address_objects', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      // host | range | subnet | fqdn | wildcard | group | any
+      table.string('type', 30).nullable()
+      table.string('value', 500).nullable()
+      table.json('members').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_address_objects_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_service_objects'))) {
+    await database.schema.createTable('firewall_ruleset_service_objects', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('protocol', 30).nullable()
+      table.string('port_range', 100).nullable()
+      table.json('members').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_service_objects_ruleset')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_rules'))) {
+    await database.schema.createTable('firewall_ruleset_rules', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.string('rule_type', 30).nullable()
+      table.integer('sort_order').unsigned().notNullable().defaultTo(0)
+      // allow | deny | drop | reject | other vendor-specific verbs
+      table.string('action', 30).notNullable()
+      table.boolean('enabled').notNullable().defaultTo(true)
+      table.boolean('logging').notNullable().defaultTo(false)
+      table.text('description').nullable()
+      // Match criteria are simple name/CIDR lists (not a boolean condition tree) — this is how every major
+      // vendor's rule base actually models a security policy entry, unlike LB iRule/policy conditions.
+      table.json('source_zones').nullable()
+      table.json('destination_zones').nullable()
+      table.json('source_addresses').nullable()
+      table.json('destination_addresses').nullable()
+      table.json('services').nullable()
+      table.json('applications').nullable()
+      table.json('users').nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_rules_ruleset')
+      table.index(['ruleset_id', 'sort_order'], 'idx_firewall_ruleset_rules_order')
+    })
+  }
+
+  if (!(await database.schema.hasTable('firewall_ruleset_nat_rules'))) {
+    await database.schema.createTable('firewall_ruleset_nat_rules', (table) => {
+      table.bigIncrements('id').primary()
+      table.bigInteger('ruleset_id').unsigned().notNullable().references('id').inTable('firewall_rulesets').onDelete('CASCADE')
+      table.string('external_id', 200).notNullable()
+      table.string('name', 200).notNullable()
+      table.integer('sort_order').unsigned().notNullable().defaultTo(0)
+      // source | destination | static | other vendor-specific NAT verbs
+      table.string('nat_type', 30).nullable()
+      table.string('source_zone', 200).nullable()
+      table.string('destination_zone', 200).nullable()
+      table.string('original_source', 300).nullable()
+      table.string('original_destination', 300).nullable()
+      table.string('original_service', 200).nullable()
+      table.string('translated_source', 300).nullable()
+      table.string('translated_destination', 300).nullable()
+      table.string('translated_service', 200).nullable()
+      table.json('extra_attributes').nullable()
+      table.index(['ruleset_id'], 'idx_firewall_ruleset_nat_rules_ruleset')
+    })
+  }
+
   if (await database.schema.hasTable('target_landing_zones')) {
     // Replaced by the resource-group-only landing zone model.
     await database.schema.dropTable('target_landing_zones')
@@ -601,11 +899,17 @@ export async function migrateSchema(): Promise<void> {
     await database.schema.createTable('landing_zone_resource_groups', (table) => {
       table.bigIncrements('id').primary()
       table.string('subscription_id', 64).notNullable()
+      table.string('subscription_name', 200).notNullable().defaultTo('')
       table.string('resource_group_name', 90).notNullable()
       table.text('resource_group_id').notNullable()
       table.string('resource_group_id_hash', 64).notNullable().unique()
       table.string('source', 20).notNullable().defaultTo('Manual')
       table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+    })
+  }
+  if (!(await database.schema.hasColumn('landing_zone_resource_groups', 'subscription_name'))) {
+    await database.schema.alterTable('landing_zone_resource_groups', (table) => {
+      table.string('subscription_name', 200).notNullable().defaultTo('')
     })
   }
 
@@ -624,6 +928,38 @@ export async function migrateSchema(): Promise<void> {
       table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
     })
   }
+
+  if (!(await database.schema.hasTable('sprint_server_landing_zone_mappings'))) {
+    await database.schema.createTable('sprint_server_landing_zone_mappings', (table) => {
+      table.bigIncrements('id').primary()
+      table.string('server_name', 300).notNullable().unique('uq_sprint_server_landing_zone_mapping_server')
+      table.integer('sprint_sequence').unsigned().notNullable()
+      table.string('subscription_id', 64).nullable()
+      table.string('subscription_name', 200).nullable()
+      table.text('resource_group_id').nullable()
+      table.string('network_resource_group', 90).nullable()
+      table.string('virtual_network', 80).nullable()
+      table.string('subnet', 80).nullable()
+      table.string('network_security_group', 80).nullable()
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+      table.index(['sprint_sequence'], 'idx_sprint_server_landing_zone_mapping_sprint')
+    })
+  }
+
+  const mappingColumns = await database('information_schema.columns')
+    .whereRaw('table_schema = DATABASE()')
+    .where('table_name', 'sprint_server_landing_zone_mappings')
+    .select({ name: 'column_name', nullable: 'is_nullable' }) as Array<{ name: string; nullable: string }>
+  const nonNullableMappingColumns = new Set(mappingColumns.filter((column) => column.nullable === 'NO').map((column) => column.name))
+  for (const [column, length] of [['subscription_id', 64], ['subscription_name', 200], ['network_resource_group', 90], ['virtual_network', 80], ['subnet', 80], ['network_security_group', 80]] as const) {
+    if (!nonNullableMappingColumns.has(column)) continue
+    await database.schema.alterTable('sprint_server_landing_zone_mappings', (table) => {
+      table.string(column, length).nullable().alter()
+    })
+  }
+  if (nonNullableMappingColumns.has('resource_group_id')) await database.schema.alterTable('sprint_server_landing_zone_mappings', (table) => {
+    table.text('resource_group_id').nullable().alter()
+  })
 
   if (!(await database.schema.hasTable('landing_zone_platform'))) {
     await database.schema.createTable('landing_zone_platform', (table) => {

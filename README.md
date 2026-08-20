@@ -59,13 +59,13 @@ The client secret and identity tokens are never returned to the browser or store
 ```powershell
 npm install
 npm run migrate
-npm run import -- ".\DependencyExport-RWS-original (1).csv"
+npm run import -- ".\DependencyExport.csv"
 ```
 
 Validate the entire CSV without connecting to MySQL:
 
 ```powershell
-npm run import -- ".\DependencyExport-RWS-original (1).csv" --validate-only
+npm run import -- ".\DependencyExport.csv" --validate-only
 ```
 
 ## Synthetic migration dataset
@@ -79,11 +79,15 @@ npm run generate:dataset
 The command streams its output to `data/generated/` and creates:
 
 - `ServerAssessment-Synthetic-624.csv`: an import-ready Server Assessment containing exactly 624 uniquely named and sized servers.
+- `ApplicationServerMapping-Synthetic.csv`: an import-ready application-to-server mapping with application, server, IP address, and description columns. Database servers used by multiple applications are assigned to `Shared DB`.
 - `DependencyExport-Synthetic-01.csv` through `DependencyExport-Synthetic-04.csv`: four import-ready files containing 500,000 dependency observations each.
-- `ApplicationCatalog-Synthetic-96.csv`: a reference catalog of 96 meaningful applications, environments, owners, and sensitivity classifications.
+- `ApplicationCatalog-Synthetic.csv`: an import-ready catalog of 96 meaningful applications plus the `Shared DB` application and owner details.
 - `SharedDatabaseInventory-Synthetic.csv`: every shared database host, its engine and environment, and the applications consuming it.
 - `CoreInfrastructure-Synthetic.csv`: 86 core infrastructure assignments plus eight private load-balancer IPs, ready for the Core Infrastructure upload.
-- `NetworkRanges-Synthetic.csv`: corporate and isolated CIDR ranges for Dev, Test, Pre-prod, and Prod, labeled as Office and VPN networks for entry in Core Infrastructure.
+- `LoadBalancers-Synthetic.csv`, `OfficeNetworks-Synthetic.csv`, and `VPNNetworks-Synthetic.csv`: separate network-edge inventories with correlated sample endpoints.
+- `NetworkRanges-Synthetic.csv`: Office and VPN CIDR ranges for Dev, Test, Pre-prod, and Prod, ready for entry in Core Infrastructure.
+- `LandingZoneResourceGroups-Synthetic.csv` and `LandingZoneNetworks-Synthetic.csv`: import-ready, correlated landing-zone resources spanning non-production, pre-production, and production subscriptions.
+- `Corelight-Logs-Synthetic.zip`: Corelight/Zeek newline-delimited JSON `conn.log` and `dns.log` records covering a complete calendar month. The unpacked logs are also available under `corelight/`.
 - `dataset-manifest.json`: generated counts and pass/fail assertions for server roles, database engines, environments, isolation, and dependency totals.
 
 The topology includes private load-balancer IP traffic to optional web tiers and dedicated application servers, then application/report traffic to database tiers. Applications also connect to Active Directory/DNS, proxy, print, file, backup, monitoring, management, and Configuration Manager services. Every one of the 352 application/environment deployments has its own application server. Database sharing is assigned deliberately between application cohorts within the same environment, and every shared host uses `Shared DB` as its Server Assessment application name. Web, application, report, and database servers are never shared across Dev, Test, Pre-prod, and Prod; generation fails if a tier server or tier dependency crosses an environment boundary. Twelve highly sensitive applications use isolated private address ranges and dedicated management servers. Pre-prod is generated for 64 applications with the same logical connection profile and sizing as Prod. Dev and Test use proportionally smaller compute, memory, and storage recommendations.
@@ -95,6 +99,14 @@ Upload `ServerAssessment-Synthetic-624.csv` as Server Assessment data, upload `C
 ```powershell
 npm run generate:dataset -- --output-dir=data/generated/sample --dependency-count=10000 --rows-per-file=5000
 ```
+
+Use `--start-date=YYYY-MM-01` to choose the month represented by the Corelight logs. For example:
+
+```powershell
+npm run generate:dataset -- --output-dir=data/generated/january-sample --dependency-count=10000 --rows-per-file=5000 --start-date=2026-01-01
+```
+
+`dependency-count` controls both the Azure Migrate dependency row count and the Corelight `conn.log` row count so the two observations are generated from the same repeating connection profiles. Corelight DNS transactions use the same `uid` as their corresponding port 53 connection. Office clients, VPN clients, and load balancers are represented in Azure Migrate dependencies and both Corelight logs. The generator streams CSV and Corelight output and creates the ZIP without loading the full dataset into memory.
 
 Imports are recorded in `import_runs`. Failed runs retain their imported-row count and error message. Re-running an export creates another import run; it does not replace previous data.
 
@@ -193,6 +205,14 @@ After hard environment, capacity, and data-heavy constraints, minimizing cross-s
 `GET /api/imports` returns the 20 most recent import runs.
 
 `POST /api/imports` accepts up to 20 CSV/XLSX files in the multipart `files` field and returns a result for every file.
+
+The Load Balancer Rules workspace (Discover & prepare) imports virtual server, pool, and rule configuration exported from any enterprise load balancer (F5, Citrix ADC, AWS, Azure, NGINX, HAProxy, Kemp, and others) as JSON, XML, CSV, or Conf (F5 `bigip.conf` tmsh config, Citrix ADC/NetScaler `ns.conf` CLI script, or similar vendor CLI/DSL config dumps). The original document is stored verbatim in the `load_balancer_rule_imports` table (MySQL `LONGTEXT`, not a BLOB or external blob store, since all formats are text) alongside its format, an optional vendor label, a SHA-256 content hash, and byte size; a linked `import_runs` row makes it appear in the same recent-imports history as other imports. `GET /api/load-balancer-rules` lists imported rule sets (metadata only). `POST /api/load-balancer-rules/import` accepts one file in the multipart `file` field (up to 50 MB) plus an optional `vendor` text field; the file's format is detected from its extension (`.json`, `.xml`, `.csv`, `.conf`/`.cfg`) or, failing that, by content sniffing (JSON/XML markers, then common F5/NetScaler CLI keywords, otherwise CSV) and validated for well-formedness (JSON.parse, XML validation, or CSV parsing; Conf/CLI dumps have no single schema and are only checked for being non-empty) before being stored. `GET /api/load-balancer-rules/:id` returns the full stored document for viewing or download. `DELETE /api/load-balancer-rules/:id` removes a stored rule set.
+
+Because the raw import is stored verbatim (one opaque row per upload, regardless of vendor or file type), it is not directly queryable for cross-server rule analysis. A second, agent-assisted workflow parses a stored import into a normalized relational ruleset. An administrator first registers an external agent (for example, an Azure AI Foundry agent) as an `agent_endpoints` row with `purpose: 'load-balancer-ruleset'` (Admin page → Foundry agents), the same Managed Identity/Entra pattern used by the design-document and firewall-rules agents. From the Load Balancer Rules workspace, clicking **Parse with agent** on a stored import calls `POST /api/load-balancer-rules/:id/parse`, which loads the raw content, sends it to the configured agent together with a fixed system contract (see `loadBalancerRulesetAgentInstructions` in `services/backend/src/load-balancer-ruleset.ts`), normalizes the agent's JSON reply, and persists it transactionally as a new version under that import (`GET /api/load-balancer-rules/:id/rulesets` lists versions; `GET /api/load-balancer-rules/rulesets/:rulesetId` returns one version's full normalized detail, including nested condition trees). Re-parsing an import never overwrites a prior version; each parse attempt is inserted as `version = previous max + 1`, and failed agent calls are still recorded (`status: 'Failed'`, with `error_message`) so parsing history is auditable.
+
+**Agent contract.** The agent receives the raw file content, its detected format, and any vendor hint, and must reply with a single JSON object shaped as either `{"status":"failed","message":"..."}` or `{"status":"completed","ruleset":{"vendor":..., "virtualServers":[...], "pools":[...], "monitors":[...], "rules":[...]},"warnings":[...]}`. Every entity (pool, monitor, virtual server, rule) carries a stable `externalId` used to link related entities (e.g. a virtual server's `poolExternalId`, a pool's `monitorExternalIds`) and an `extraAttributes` object for any vendor-specific field that doesn't map to a first-class column, so no information from the source file is dropped during translation. Each rule's conditions are expressed as a recursive `conditionGroup` tree of nodes shaped `{"operator":"AND"|"OR"|"NOT"|"LEAF","children":[...],"field":...,"comparator":...,"value":...,"negate":...}`, supporting arbitrarily deep nested boolean logic. The backend is defensive against loosely-typed agent replies: it fills in sensible defaults for missing fields, renames duplicate `externalId`s (`-dup2`, `-dup3`, ...) instead of silently overwriting entities, drops empty condition groups, and records every correction as a warning surfaced back to the user rather than failing the parse outright.
+
+**Persistence model.** A parse produces one `load_balancer_rulesets` header row (per import, versioned) plus normalized child rows in `lb_ruleset_pools`, `lb_ruleset_pool_members`, `lb_ruleset_monitors`, `lb_ruleset_virtual_servers`, `lb_ruleset_rules`, `lb_ruleset_rule_actions`, and `lb_ruleset_rule_conditions`. Nested condition trees of unlimited depth are stored as an adjacency list in `lb_ruleset_rule_conditions` (`parent_condition_id` self-references the same table) and are flattened/rebuilt losslessly by `flattenConditionTree`/`buildConditionTree`. As a fidelity fallback, the full unmodified agent JSON reply is also kept in `load_balancer_rulesets.agent_response_json`, and every entity table has an `extra_attributes` JSON column for fields with no dedicated column — together these ensure the relational tables are the source of truth for analysis while nothing from the agent's response is ever lost. The workspace UI lists every parsed version per import with status, entity counts, and warnings, and can expand a version to view its full normalized ruleset as JSON.
 
 `POST /api/application-server-mappings/sheets` accepts one XLSX file in the multipart `file` field and lists its worksheet names. `POST /api/application-server-mappings/import` accepts one CSV or XLSX file in `file`; XLSX requests also require `sheetName`. A successful import returns inserted, updated, discarded, and imported row counts plus validation warnings.
 

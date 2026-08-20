@@ -39,6 +39,17 @@ test('Dependency CSV preflight accepts reordered aliases and reports extra and o
   })
 })
 
+test('Dependency CSV preflight stops when the import is cancelled', async () => {
+  await withCsv([
+    'Date,Source Server Name,Destination Server Name',
+    '2026-08-05,source-01,destination-01',
+  ].join('\n'), async (filePath) => {
+    const controller = new AbortController()
+    controller.abort()
+    await assert.rejects(inspectDependencyFile(filePath, controller.signal), { name: 'DependencyImportCancelledError' })
+  })
+})
+
 test('Dependency CSV preflight defaults a missing Connection Count to one', async () => {
   await withCsv([
     'Date,Source Appliance Name,Source Machine ARM ID,Source Server Name,Source IP,Source Application,Source Process,Destination Machine ARM ID,Destination Server Name,Destination IP,Destination Application,Destination Process,Destination Port',

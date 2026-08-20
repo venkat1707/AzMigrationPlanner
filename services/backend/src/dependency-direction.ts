@@ -47,7 +47,6 @@ export async function refreshDependencyDirections(importRunId?: number): Promise
 }
 
 async function refreshImportedDependencyDirections(importRunId: number): Promise<void> {
-  await database('dependency_records').where({ import_run_id: importRunId }).update({ direction: 'Outbound' })
   await database.raw(`
     CREATE TEMPORARY TABLE bidirectional_import_pairs (
       source_server_name VARCHAR(300) NOT NULL,

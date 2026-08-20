@@ -12,7 +12,23 @@ import multer from 'multer'
 import { port } from './config.js'
 import { database } from './db.js'
 import { migrateSchema } from './migrate.js'
-import { importDependencyFile } from './dependency-import.js'
+import { DependencyImportCancelledError, importDependencyFile } from './dependency-import.js'
+import { convertConnLogToCsv, hostnameMapFromDns, parseDnsRecords, saveDnsRecords } from './corelight-import.js'
+import { convertSplunkExportToCsv, loadDnsHostnameMap } from './splunk-import.js'
+import {
+  deleteLoadBalancerRuleImport, getLoadBalancerRuleImport, importLoadBalancerRuleFile, listLoadBalancerRuleImports,
+} from './load-balancer-rules-import.js'
+import {
+  LoadBalancerRulesetError, getLoadBalancerRulesetDetail, listLoadBalancerRulesets, listLoadBalancerRulesetsBatch, listRulesetRulesPaged,
+  listRulesetVirtualServersPaged, startLoadBalancerRulesetParse,
+} from './load-balancer-ruleset.js'
+import {
+  deleteFirewallRuleImport, getFirewallRuleImport, importFirewallRuleFile, listFirewallRuleImports,
+} from './firewall-rules-import.js'
+import {
+  FirewallRulesetError, getFirewallRulesetDetail, listFirewallRulesetRulesPaged, listFirewallRulesets, listFirewallRulesetsBatch,
+  startFirewallRulesetParse,
+} from './firewall-ruleset.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
@@ -24,13 +40,17 @@ import { getCleanupStatus, startDataCleanup } from './data-cleanup.js'
 import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
 import { buildApplicationMap, listApplicationEnvironments } from './application-map.js'
 import { requestDesignDocument, DesignDocumentError, diagnoseAgentIdentity, type DesignAnswer } from './design-document.js'
+import { requestLoadBalancerScaleDocument, LoadBalancerScaleError, type ScaleAnswer } from './load-balancer-scale.js'
+import { requestMigrationRunsheetWorkbook, MigrationRunsheetError, type RunsheetAnswer } from './migration-runsheet.js'
 import { createMigrationWavePlan, defaultMigrationWaveOptions, loadDependencyPairs, type MigrationWaveOptions } from './migration-wave-planning.js'
 import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
 import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
 import { deriveResourceGroup, parseResourceGroupFile, type LandingZoneResourceGroupInput, type DerivedLandingZoneResourceGroup } from './target-landing-zone.js'
 import { deriveNetwork, networkKey, parseNetworkFile, type LandingZoneNetworkInput, type DerivedLandingZoneNetwork } from './landing-zone-network.js'
+import { createSprintMappingWorkbook, parseSprintMappingWorkbook, saveSprintMappings, validateSprintMappings, type LandingZoneNetworkOption, type LandingZoneResourceGroupOption, type SprintMappingInput } from './sprint-landing-zone-workbook.js'
 import { identifyServerEnvironments, validateEnvironmentRules, type AssessmentIdentity, type EnvironmentRuleInput } from './environment-identification.js'
 import { registerAuthentication, requireAdmin } from './auth.js'
+import { saveApplicationTreatmentPlans } from './application-treatment-plans.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -70,11 +90,68 @@ const workbookUpload = multer({
   limits: { files: 1, fileSize: 100 * 1024 * 1024 },
 })
 
+const corelightUpload = multer({
+  storage: multer.diskStorage({
+    destination: tmpdir(),
+    filename: (_request, file, callback) => {
+      const extension = extname(file.originalname).toLowerCase()
+      callback(null, `${crypto.randomUUID()}${extension === '.gz' ? '.log.gz' : extension || '.log'}`)
+    },
+  }),
+  fileFilter: (_request, file, callback) => {
+    const extension = extname(file.originalname).toLowerCase()
+    callback(null, ['.log', '.json', '.txt', '.gz', '.ndjson'].includes(extension))
+  },
+  limits: { files: 2, fileSize: 1024 * 1024 * 1024 },
+})
+
+const splunkUpload = multer({
+  storage: multer.diskStorage({
+    destination: tmpdir(),
+    filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase() || '.csv'}`),
+  }),
+  fileFilter: (_request, file, callback) => {
+    const extension = extname(file.originalname).toLowerCase()
+    callback(null, extension === '.csv')
+  },
+  limits: { files: 1, fileSize: 1024 * 1024 * 1024 },
+})
+
+const loadBalancerRuleUpload = multer({
+  storage: multer.diskStorage({
+    destination: tmpdir(),
+    filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase()}`),
+  }),
+  fileFilter: (_request, file, callback) => {
+    const extension = extname(file.originalname).toLowerCase()
+    callback(null, ['.json', '.xml', '.csv', '.conf', '.cfg'].includes(extension))
+  },
+  limits: { files: 1, fileSize: 50 * 1024 * 1024 },
+})
+
+const firewallRuleUpload = multer({
+  storage: multer.diskStorage({
+    destination: tmpdir(),
+    filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase()}`),
+  }),
+  fileFilter: (_request, file, callback) => {
+    const extension = extname(file.originalname).toLowerCase()
+    callback(null, ['.json', '.xml', '.csv', '.conf', '.cfg'].includes(extension))
+  },
+  limits: { files: 1, fileSize: 50 * 1024 * 1024 },
+})
+
 function safeImportError(error: unknown, fallback: string): string {
   console.error(error)
   if (!(error instanceof Error)) return fallback
   const message = error.message.trim()
   return /^(?:Row \d+|Missing required|Duplicate|Unknown column|The (?:CSV|Excel|workbook)|Select )/i.test(message) ? message.slice(0, 500) : fallback
+}
+
+// Strips control characters (CR/LF/etc.) from user-supplied filenames before they reach logs or storage, preventing log-line forging and keeping stored names within column limits.
+function sanitizeFileLabel(value: string, maxLength = 200): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, maxLength)
 }
 
 app.get('/api/health', async (_request, response) => {
@@ -98,7 +175,7 @@ type PlanServer = {
 }
 type PlanSprintTask = {
   sprint: number; sequence: number; name: string; taskCreated?: boolean; comment?: string; task?: PlanTaskAssignment; applications?: string[]
-  targetedStartDate?: string; targetedEndDate?: string
+  targetedStartDate?: string; targetedEndDate?: string; status?: string
   servers: PlanServer[]; serverCount: number; complexityPoints: number; totalStorageGb: number
   dataHeavyServerCount: number; environments: string[]; readiness: { ready: number; conditional: number }
   groupingRationale: string[]; exceptions: string[]
@@ -829,7 +906,62 @@ app.get('/api/imports', async (_request, response) => {
     })
     .orderBy('id', 'desc')
     .limit(20)
-  response.json({ items: imports })
+  response.json({ items: imports, active: pendingDependencyImportFiles > 0 })
+})
+
+let dependencyImportQueue = Promise.resolve()
+let dependencyImportGeneration = 0
+let pendingDependencyImportFiles = 0
+let activeDependencyImportController: AbortController | null = null
+let activeDependencyImportRunId: number | null = null
+
+async function processDependencyUploads(files: Express.Multer.File[], generation: number): Promise<void> {
+  if (generation !== dependencyImportGeneration) {
+    await Promise.all(files.map((file) => unlink(file.path).catch(() => undefined)))
+    pendingDependencyImportFiles -= files.length
+    return
+  }
+  const controller = new AbortController()
+  activeDependencyImportController = controller
+  let processed = 0
+  try {
+    for (const file of files) {
+      if (generation !== dependencyImportGeneration || controller.signal.aborted) break
+      try {
+        await importDependencyFile(file.path, file.originalname, {
+          signal: controller.signal,
+          onImportRunCreated: (importRunId) => { activeDependencyImportRunId = importRunId },
+        })
+      } catch (error) {
+        if (!(error instanceof DependencyImportCancelledError)) console.error(`Queued dependency import failed for ${sanitizeFileLabel(file.originalname)}`, error)
+      } finally {
+        activeDependencyImportRunId = null
+        await unlink(file.path).catch(() => undefined)
+        pendingDependencyImportFiles -= 1
+        processed += 1
+      }
+    }
+  } finally {
+    const skippedFiles = files.slice(processed)
+    await Promise.all(skippedFiles.map((file) => unlink(file.path).catch(() => undefined)))
+    pendingDependencyImportFiles -= skippedFiles.length
+    if (activeDependencyImportController === controller) activeDependencyImportController = null
+  }
+}
+
+app.post('/api/imports/cancel', async (_request, response) => {
+  dependencyImportGeneration += 1
+  activeDependencyImportController?.abort()
+  if (activeDependencyImportRunId !== null) {
+    await database('import_runs').where({ id: activeDependencyImportRunId, status: 'Running' }).update({
+      status: 'Cancelling', error_message: 'Cancelling import operation and rolling back database transactions.',
+    }).catch(() => undefined)
+  }
+  response.status(202).json({
+    message: pendingDependencyImportFiles > 0
+      ? 'Cancelling import operation and rolling back database transactions.'
+      : 'No dependency import operation is currently running.',
+  })
 })
 
 app.post('/api/imports', dependencyUpload.array('files', 8), async (request, response) => {
@@ -838,27 +970,370 @@ app.post('/api/imports', dependencyUpload.array('files', 8), async (request, res
     response.status(400).json({ error: 'Select at least one CSV or XLSX file.' })
     return
   }
-  const results: Array<{ fileName: string; status: 'Completed' | 'Failed'; rowsImported?: number; warnings?: string[]; error?: string }> = []
-  for (const file of files) {
-    try {
-      const result = await importDependencyFile(file.path, file.originalname)
-      results.push({
-        fileName: file.originalname,
-        status: 'Completed',
-        rowsImported: result.rowsImported,
-        warnings: result.warnings,
-      })
-    } catch (error) {
-      results.push({
-        fileName: file.originalname,
-        status: 'Failed',
-        error: safeImportError(error, 'Import failed. Review the server log using the import run identifier.'),
-      })
-    } finally {
-      await unlink(file.path).catch(() => undefined)
-    }
+  const generation = dependencyImportGeneration
+  pendingDependencyImportFiles += files.length
+  dependencyImportQueue = dependencyImportQueue
+    .then(() => processDependencyUploads(files, generation))
+    .catch((error) => console.error('Dependency import queue failed.', error))
+  response.status(202).json({
+    results: files.map((file) => ({ fileName: file.originalname, status: 'Accepted' })),
+  })
+})
+
+app.post('/api/imports/corelight', corelightUpload.fields([{ name: 'conn', maxCount: 1 }, { name: 'dns', maxCount: 1 }]), async (request, response) => {
+  const files = request.files as Record<string, Express.Multer.File[]> | undefined
+  const connFile = files?.conn?.[0]
+  const dnsFile = files?.dns?.[0]
+  if (!connFile) {
+    if (dnsFile) await unlink(dnsFile.path).catch(() => undefined)
+    response.status(400).json({ error: 'Select a Corelight or Zeek conn.log file (.log, .json, .ndjson, or .gz).' })
+    return
   }
-  response.status(results.some((result) => result.status === 'Failed') ? 207 : 201).json({ results })
+  const appliance = String(request.body?.appliance ?? '').trim() || 'Corelight'
+  const allowIpFallback = String(request.body?.allowIpFallback ?? 'true') !== 'false'
+  const canonicalPath = resolve(tmpdir(), `${crypto.randomUUID()}.csv`)
+  const canonicalName = `Corelight-${sanitizeFileLabel(connFile.originalname.replace(/\.(gz|log|json|ndjson|txt)$/i, ''), 240)}.csv`
+  const generation = dependencyImportGeneration
+  // Reserve one queue slot; parsing/conversion runs off the request thread to avoid request timeouts on large logs.
+  pendingDependencyImportFiles += 1
+  dependencyImportQueue = dependencyImportQueue
+    .then(async () => {
+      if (generation !== dependencyImportGeneration) { pendingDependencyImportFiles -= 1; return }
+      try {
+        const dnsRecords = dnsFile ? await parseDnsRecords(dnsFile.path) : []
+        if (dnsRecords.length) await saveDnsRecords(database, dnsRecords)
+        const conversion = await convertConnLogToCsv(connFile.path, canonicalPath, hostnameMapFromDns(dnsRecords), { appliance, allowIpFallback })
+        if (conversion.dependencyRows === 0) {
+          pendingDependencyImportFiles -= 1
+          await unlink(canonicalPath).catch(() => undefined)
+          console.warn(`Corelight import produced no dependency rows from ${sanitizeFileLabel(connFile.originalname)}.`)
+          return
+        }
+        await processDependencyUploads([{ path: canonicalPath, originalname: canonicalName } as Express.Multer.File], generation)
+      } catch (error) {
+        pendingDependencyImportFiles -= 1
+        await unlink(canonicalPath).catch(() => undefined)
+        console.error('Corelight conversion/import failed.', error)
+      } finally {
+        await unlink(connFile.path).catch(() => undefined)
+        if (dnsFile) await unlink(dnsFile.path).catch(() => undefined)
+      }
+    })
+    .catch((error) => console.error('Corelight import queue failed.', error))
+  response.status(202).json({
+    status: 'Accepted',
+    fileName: canonicalName,
+    message: 'Converting the flow log and importing it in the background. Track progress under Recent imports.',
+  })
+})
+
+app.post('/api/imports/splunk', splunkUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a Splunk flow log export (.csv).' })
+    return
+  }
+  const applianceName = String(request.body?.applianceName ?? '').trim() || 'Splunk'
+  const canonicalPath = resolve(tmpdir(), `${crypto.randomUUID()}.csv`)
+  const canonicalName = `Splunk-${sanitizeFileLabel(file.originalname.replace(/\.csv$/i, ''), 240)}.csv`
+  const generation = dependencyImportGeneration
+  // Reserve one queue slot; parsing/conversion runs off the request thread to avoid request timeouts on large exports.
+  pendingDependencyImportFiles += 1
+  dependencyImportQueue = dependencyImportQueue
+    .then(async () => {
+      if (generation !== dependencyImportGeneration) { pendingDependencyImportFiles -= 1; return }
+      try {
+        const hostnameByIp = await loadDnsHostnameMap()
+        const conversion = await convertSplunkExportToCsv(file.path, canonicalPath, hostnameByIp, { defaultApplianceName: applianceName })
+        if (conversion.dependencyRows === 0) {
+          pendingDependencyImportFiles -= 1
+          await unlink(canonicalPath).catch(() => undefined)
+          console.warn(`Splunk import produced no dependency rows from ${sanitizeFileLabel(file.originalname)}.`)
+          return
+        }
+        await processDependencyUploads([{ path: canonicalPath, originalname: canonicalName } as Express.Multer.File], generation)
+      } catch (error) {
+        pendingDependencyImportFiles -= 1
+        await unlink(canonicalPath).catch(() => undefined)
+        console.error('Splunk conversion/import failed.', error)
+      } finally {
+        await unlink(file.path).catch(() => undefined)
+      }
+    })
+    .catch((error) => console.error('Splunk import queue failed.', error))
+  response.status(202).json({
+    status: 'Accepted',
+    fileName: canonicalName,
+    message: 'Converting the flow log export and importing it in the background. Track progress under Recent imports.',
+  })
+})
+
+app.get('/api/load-balancer-rules', async (_request, response) => {
+  response.json({ items: await listLoadBalancerRuleImports() })
+})
+
+// Registered ahead of the /:id route below so the literal "rulesets" segment isn't swallowed by :id.
+app.get('/api/load-balancer-rules/rulesets', async (request, response) => {
+  const raw = typeof request.query.importIds === 'string' ? request.query.importIds : ''
+  const importIds = raw.split(',').map((value) => Number(value.trim())).filter((value) => Number.isInteger(value))
+  response.json({ itemsByImportId: await listLoadBalancerRulesetsBatch(importIds) })
+})
+
+app.get('/api/load-balancer-rules/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  const item = Number.isInteger(id) ? await getLoadBalancerRuleImport(id) : undefined
+  if (!item) {
+    response.status(404).json({ error: 'Load balancer rule import not found.' })
+    return
+  }
+  response.json({ item })
+})
+
+app.post('/api/load-balancer-rules/import', loadBalancerRuleUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a JSON, XML, CSV, or Conf load balancer rules file.' })
+    return
+  }
+  try {
+    const vendor = String(request.body?.vendor ?? '').trim() || null
+    const result = await importLoadBalancerRuleFile(file.path, file.originalname, vendor)
+    // Kick off parsing automatically once the import itself has succeeded; a parse failure is
+    // reported alongside the import result rather than failing the (already-successful) import.
+    let parseResult: Awaited<ReturnType<typeof startLoadBalancerRulesetParse>> | undefined
+    let parseError: string | undefined
+    try {
+      parseResult = await startLoadBalancerRulesetParse(result.id)
+    } catch (error) {
+      parseError = error instanceof LoadBalancerRulesetError ? error.message : 'The load balancer ruleset could not be parsed automatically.'
+    }
+    response.status(201).json({ result, parseResult, parseError })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Load balancer rules import failed.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.delete('/api/load-balancer-rules/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  const deleted = Number.isInteger(id) && await deleteLoadBalancerRuleImport(id)
+  if (!deleted) {
+    response.status(404).json({ error: 'Load balancer rule import not found.' })
+    return
+  }
+  response.status(204).end()
+})
+
+app.post('/api/load-balancer-rules/:id/parse', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id)) {
+    response.status(400).json({ error: 'Invalid load balancer rule import ID.' })
+    return
+  }
+  try {
+    response.status(202).json({ result: await startLoadBalancerRulesetParse(id) })
+  } catch (error) {
+    if (error instanceof LoadBalancerRulesetError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    response.status(502).json({ error: 'The load balancer ruleset could not be parsed.' })
+  }
+})
+
+app.get('/api/load-balancer-rules/:id/rulesets', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id)) {
+    response.status(400).json({ error: 'Invalid load balancer rule import ID.' })
+    return
+  }
+  response.json({ items: await listLoadBalancerRulesets(id) })
+})
+
+app.get('/api/load-balancer-rules/rulesets/:rulesetId', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  const item = Number.isInteger(rulesetId) ? await getLoadBalancerRulesetDetail(rulesetId) : undefined
+  if (!item) {
+    response.status(404).json({ error: 'Load balancer ruleset not found.' })
+    return
+  }
+  response.json({ item })
+})
+
+app.get('/api/load-balancer-rules/rulesets/:rulesetId/virtual-servers', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  if (!Number.isInteger(rulesetId)) {
+    response.status(400).json({ error: 'Invalid load balancer ruleset ID.' })
+    return
+  }
+  const enabledParam = String(request.query.enabled ?? '')
+  const result = await listRulesetVirtualServersPaged(rulesetId, {
+    page: Number(request.query.page) || 1,
+    pageSize: Number(request.query.pageSize) || 25,
+    search: String(request.query.search ?? '').trim() || undefined,
+    name: String(request.query.name ?? '').trim() || undefined,
+    ipAddress: String(request.query.ipAddress ?? '').trim() || undefined,
+    protocol: String(request.query.protocol ?? '').trim() || undefined,
+    enabled: enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined,
+    application: String(request.query.application ?? '').trim() || undefined,
+  })
+  response.json(result)
+})
+
+app.get('/api/load-balancer-rules/rulesets/:rulesetId/rules', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  if (!Number.isInteger(rulesetId)) {
+    response.status(400).json({ error: 'Invalid load balancer ruleset ID.' })
+    return
+  }
+  const virtualServerId = Number(request.query.virtualServerId)
+  const result = await listRulesetRulesPaged(rulesetId, {
+    page: Number(request.query.page) || 1,
+    pageSize: Number(request.query.pageSize) || 25,
+    search: String(request.query.search ?? '').trim() || undefined,
+    virtualServerId: Number.isInteger(virtualServerId) && virtualServerId > 0 ? virtualServerId : undefined,
+    actionType: String(request.query.actionType ?? '').trim() || undefined,
+  })
+  response.json(result)
+})
+
+app.post('/api/load-balancer-rules/rulesets/:rulesetId/virtual-servers/:virtualServerId/scale-document', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  const virtualServerId = Number(request.params.virtualServerId)
+  if (!Number.isInteger(rulesetId) || !Number.isInteger(virtualServerId)) {
+    response.status(400).json({ error: 'Invalid load balancer ruleset or virtual server ID.' })
+    return
+  }
+  const conversationId = request.body?.conversationId ? String(request.body.conversationId) : null
+  const answers: ScaleAnswer[] = Array.isArray(request.body?.answers)
+    ? request.body.answers.map((entry: unknown) => {
+        const record = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+        return { id: String(record.id ?? '').trim(), response: String(record.response ?? '').trim() }
+      }).filter((answer: ScaleAnswer) => answer.id)
+    : []
+  try {
+    const result = await requestLoadBalancerScaleDocument({ rulesetId, virtualServerId, conversationId, answers })
+    response.json(result)
+  } catch (error) {
+    if (error instanceof LoadBalancerScaleError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    console.error('Failed to generate load balancer scale document:', error)
+    response.status(502).json({ error: 'The Azure load balancing recommendation could not be generated.' })
+  }
+})
+
+app.get('/api/firewall-rule-imports', async (_request, response) => {
+  response.json({ items: await listFirewallRuleImports() })
+})
+
+// Registered ahead of the /:id route below so the literal "rulesets" segment isn't swallowed by :id.
+app.get('/api/firewall-rule-imports/rulesets', async (request, response) => {
+  const raw = typeof request.query.importIds === 'string' ? request.query.importIds : ''
+  const importIds = raw.split(',').map((value) => Number(value.trim())).filter((value) => Number.isInteger(value))
+  response.json({ itemsByImportId: await listFirewallRulesetsBatch(importIds) })
+})
+
+app.get('/api/firewall-rule-imports/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  const item = Number.isInteger(id) ? await getFirewallRuleImport(id) : undefined
+  if (!item) {
+    response.status(404).json({ error: 'Firewall rule import not found.' })
+    return
+  }
+  response.json({ item })
+})
+
+app.post('/api/firewall-rule-imports/import', firewallRuleUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a JSON, XML, CSV, or Conf firewall rules file.' })
+    return
+  }
+  try {
+    const vendor = String(request.body?.vendor ?? '').trim() || null
+    const result = await importFirewallRuleFile(file.path, file.originalname, vendor)
+    // Kick off parsing automatically once the import itself has succeeded; a parse failure is
+    // reported alongside the import result rather than failing the (already-successful) import.
+    let parseResult: Awaited<ReturnType<typeof startFirewallRulesetParse>> | undefined
+    let parseError: string | undefined
+    try {
+      parseResult = await startFirewallRulesetParse(result.id)
+    } catch (error) {
+      parseError = error instanceof FirewallRulesetError ? error.message : 'The firewall ruleset could not be parsed automatically.'
+    }
+    response.status(201).json({ result, parseResult, parseError })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Firewall rules import failed.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.delete('/api/firewall-rule-imports/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  const deleted = Number.isInteger(id) && await deleteFirewallRuleImport(id)
+  if (!deleted) {
+    response.status(404).json({ error: 'Firewall rule import not found.' })
+    return
+  }
+  response.status(204).end()
+})
+
+app.post('/api/firewall-rule-imports/:id/parse', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id)) {
+    response.status(400).json({ error: 'Invalid firewall rule import ID.' })
+    return
+  }
+  try {
+    response.status(202).json({ result: await startFirewallRulesetParse(id) })
+  } catch (error) {
+    if (error instanceof FirewallRulesetError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    response.status(502).json({ error: 'The firewall ruleset could not be parsed.' })
+  }
+})
+
+app.get('/api/firewall-rule-imports/:id/rulesets', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id)) {
+    response.status(400).json({ error: 'Invalid firewall rule import ID.' })
+    return
+  }
+  response.json({ items: await listFirewallRulesets(id) })
+})
+
+app.get('/api/firewall-rule-imports/rulesets/:rulesetId', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  const item = Number.isInteger(rulesetId) ? await getFirewallRulesetDetail(rulesetId) : undefined
+  if (!item) {
+    response.status(404).json({ error: 'Firewall ruleset not found.' })
+    return
+  }
+  response.json({ item })
+})
+
+app.get('/api/firewall-rule-imports/rulesets/:rulesetId/rules', async (request, response) => {
+  const rulesetId = Number(request.params.rulesetId)
+  if (!Number.isInteger(rulesetId)) {
+    response.status(400).json({ error: 'Invalid firewall ruleset ID.' })
+    return
+  }
+  const enabledParam = String(request.query.enabled ?? '')
+  const result = await listFirewallRulesetRulesPaged(rulesetId, {
+    page: Number(request.query.page) || 1,
+    pageSize: Number(request.query.pageSize) || 25,
+    search: String(request.query.search ?? '').trim() || undefined,
+    action: String(request.query.action ?? '').trim() || undefined,
+    zone: String(request.query.zone ?? '').trim() || undefined,
+    enabled: enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined,
+  })
+  response.json(result)
 })
 
 app.post('/api/server-assessments/sheets', workbookUpload.single('file'), async (request, response) => {
@@ -914,14 +1389,38 @@ app.post('/api/server-assessments/import', workbookUpload.single('file'), async 
   }
 })
 
+const applicationTreatmentPlans = new Set(['Rehost', 'Replatform', 'Refactor', 'Rearchitect', 'Retire', 'Retain', 'Replace'])
+
 app.get('/api/applications', async (_request, response) => {
   const items = await database('applications')
-    .select({ name: 'name', description: 'description', treatmentPlan: 'treatment_plan', source: 'source', updatedAt: 'updated_at' })
+    .select({ name: 'name', description: 'description', firstName: 'first_name', lastName: 'last_name', emailAddress: 'email_address', treatmentPlan: 'treatment_plan', source: 'source', updatedAt: 'updated_at' })
     .orderBy('name')
   response.json({ items })
 })
 
-const applicationTreatmentPlans = new Set(['Rehost', 'Replatform', 'Refactor', 'Rearchitect', 'Retire', 'Retain', 'Replace'])
+function applicationCatalogInput(value: unknown): { name: string; description: string | null; firstName: string | null; lastName: string | null; emailAddress: string | null; treatmentPlan: string | null } {
+  const input = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const text = (key: string, limit: number) => {
+    const result = String(input[key] ?? '').trim()
+    if (result.length > limit) throw new Error(`${key} exceeds ${limit} characters.`)
+    return result || null
+  }
+  const name = text('name', 500)
+  if (!name) throw new Error('Application name is required.')
+  const treatmentPlan = text('treatmentPlan', 20)
+  if (treatmentPlan && !applicationTreatmentPlans.has(treatmentPlan)) throw new Error('Treatment plan is not valid.')
+  return { name, description: text('description', 10_000), firstName: text('firstName', 100), lastName: text('lastName', 100), emailAddress: text('emailAddress', 254), treatmentPlan }
+}
+
+app.post('/api/applications', async (request, response) => {
+  try {
+    const item = applicationCatalogInput(request.body)
+    await database('applications').insert({ name: item.name, description: item.description, first_name: item.firstName, last_name: item.lastName, email_address: item.emailAddress, treatment_plan: item.treatmentPlan, source: 'Manual' })
+    response.status(201).json({ item: { ...item, source: 'Manual' } })
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to add application.' })
+  }
+})
 
 app.put('/api/applications/treatment-plans', async (request, response) => {
   const requestedItems = Array.isArray(request.body?.items) ? request.body.items : []
@@ -944,17 +1443,53 @@ app.put('/api/applications/treatment-plans', async (request, response) => {
     items.push({ name, treatmentPlan })
   }
   try {
-    await database.transaction(async (transaction) => {
-      const existingNames = new Set((await transaction('applications').whereIn('name', items.map(({ name }) => name)).pluck('name')) as string[])
-      if (existingNames.size !== items.length) throw new Error('One or more applications no longer exist.')
-      for (const item of items) {
-        await transaction('applications').where({ name: item.name }).update({ treatment_plan: item.treatmentPlan, updated_at: database.fn.now() })
-      }
-    })
-    response.json({ updated: items.length })
+    response.json({ updated: await saveApplicationTreatmentPlans(database, items) })
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to save application treatment plans.' })
   }
+})
+
+app.put('/api/applications/:name', async (request, response) => {
+  try {
+    const item = applicationCatalogInput(request.body)
+    if (item.name !== request.params.name) throw new Error('Application name cannot be changed. Delete and add a replacement application instead.')
+    const updated = await database('applications').where({ name: request.params.name }).update({ description: item.description, first_name: item.firstName, last_name: item.lastName, email_address: item.emailAddress, treatment_plan: item.treatmentPlan, source: 'Manual', updated_at: database.fn.now() })
+    if (updated === 0) {
+      response.status(404).json({ error: 'The application was not found.' })
+      return
+    }
+    response.json({ item: { ...item, source: 'Manual' } })
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to update application.' })
+  }
+})
+
+app.delete('/api/applications/:name', async (request, response) => {
+  const name = String(request.params.name ?? '').trim()
+  if (!name) {
+    response.status(400).json({ error: 'Application name is required.' })
+    return
+  }
+  const existing = await database('applications').where({ name }).first('name')
+  if (!existing) {
+    response.status(404).json({ error: 'The application was not found.' })
+    return
+  }
+  await database.transaction(async (transaction) => {
+    await transaction('server_assessments').where({ application: name }).update({ application: null })
+    await transaction('applications').where({ name }).delete()
+  })
+  response.json({ deleted: 1 })
+})
+
+app.delete('/api/applications', async (_request, response) => {
+  const result = await database('applications').count<{ count: number }>({ count: 'name' }).first()
+  const deleted = Number(result?.count ?? 0)
+  await database.transaction(async (transaction) => {
+    await transaction('server_assessments').whereNotNull('application').update({ application: null })
+    await transaction('applications').delete()
+  })
+  response.json({ deleted })
 })
 
 app.get('/api/server-coverage', async (_request, response) => {
@@ -1145,7 +1680,7 @@ app.post('/api/application-server-mappings/import', workbookUpload.single('file'
       return
     }
     const result = await importApplicationServerMappingFile(file.path, file.originalname, sheetName)
-    response.status(201).json({ result })
+    response.status(201).json({ result: { ...result, status: 'Completed' } })
   } catch (error) {
     response.status(400).json({ error: safeImportError(error, 'Application to Server Mapping import failed.') })
   } finally {
@@ -1322,6 +1857,7 @@ function isValidCidr(value: string) {
 const resourceGroupColumns = {
   id: 'id',
   subscriptionId: 'subscription_id',
+  subscriptionName: 'subscription_name',
   resourceGroupName: 'resource_group_name',
   resourceGroupId: 'resource_group_id',
   source: 'source',
@@ -1332,6 +1868,7 @@ const resourceGroupIdHash = (resourceGroupId: string) => createHash('sha256').up
 
 const resourceGroupRow = (group: DerivedLandingZoneResourceGroup, source: 'Manual' | 'Upload', transaction: Knex.Transaction) => ({
   subscription_id: group.subscriptionId,
+  subscription_name: group.subscriptionName,
   resource_group_name: group.resourceGroupName,
   resource_group_id: group.resourceGroupId,
   resource_group_id_hash: resourceGroupIdHash(group.resourceGroupId),
@@ -1341,6 +1878,7 @@ const resourceGroupRow = (group: DerivedLandingZoneResourceGroup, source: 'Manua
 
 const resourceGroupMerge = (source: 'Manual' | 'Upload', transaction: Knex.Transaction) => ({
   subscription_id: transaction.raw('VALUES(subscription_id)'),
+  subscription_name: transaction.raw('VALUES(subscription_name)'),
   resource_group_name: transaction.raw('VALUES(resource_group_name)'),
   resource_group_id: transaction.raw('VALUES(resource_group_id)'),
   source,
@@ -1364,7 +1902,10 @@ app.put('/api/landing-zone-resource-groups', async (request, response) => {
   }
   const inputs: LandingZoneResourceGroupInput[] = requested.map((item: unknown) => {
     const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
-    return { resourceGroupId: String(value.resourceGroupId ?? '').trim() }
+    return {
+      subscriptionName: String(value.subscriptionName ?? '').trim(),
+      resourceGroupId: String(value.resourceGroupId ?? '').trim(),
+    }
   })
   const derived: DerivedLandingZoneResourceGroup[] = []
   const seenIds = new Set<string>()
@@ -1426,6 +1967,11 @@ app.delete('/api/landing-zone-resource-groups/:id', async (request, response) =>
     response.status(404).json({ error: 'The resource group was not found.' })
     return
   }
+  response.json({ deleted })
+})
+
+app.delete('/api/landing-zone-resource-groups', async (_request, response) => {
+  const deleted = await database('landing_zone_resource_groups').delete()
   response.json({ deleted })
 })
 
@@ -1539,6 +2085,11 @@ app.post('/api/landing-zone-networks/upload', workbookUpload.single('file'), asy
   }
 })
 
+app.delete('/api/landing-zone-networks', async (_request, response) => {
+  const deleted = await database('landing_zone_networks').delete()
+  response.json({ deleted })
+})
+
 app.delete('/api/landing-zone-networks/:id', async (request, response) => {
   const id = Number(request.params.id)
   if (!Number.isInteger(id) || id <= 0) {
@@ -1551,6 +2102,137 @@ app.delete('/api/landing-zone-networks/:id', async (request, response) => {
     return
   }
   response.json({ deleted })
+})
+
+app.get('/api/sprint-landing-zone-mappings', async (_request, response) => {
+  const [saved, resourceGroups, networks, mappingRows] = await Promise.all([
+    loadSavedTaskPlan(),
+    database('landing_zone_resource_groups').select({ subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', resourceGroupName: 'resource_group_name' }).orderBy(['subscription_name', 'resource_group_name']),
+    database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }).orderBy(['network_resource_group', 'virtual_network', 'subnet']),
+    database('sprint_server_landing_zone_mappings').select({ serverName: 'server_name', sprintSequence: 'sprint_sequence', subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }),
+  ])
+  const mappings = new Map(mappingRows.map((mapping) => [String(mapping.serverName).trim().toLowerCase(), {
+    ...mapping,
+    subscriptionId: mapping.subscriptionId ?? '',
+    subscriptionName: mapping.subscriptionName ?? '',
+    resourceGroupId: mapping.resourceGroupId ?? '',
+    networkResourceGroup: mapping.networkResourceGroup ?? '',
+    virtualNetwork: mapping.virtualNetwork ?? '',
+    subnet: mapping.subnet ?? '',
+    networkSecurityGroup: mapping.networkSecurityGroup ?? '',
+  }]))
+  const sprints = saved?.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
+    sequence: sprint.sequence,
+    name: sprint.name,
+    wave: wave.wave,
+    environment: wave.environment,
+    servers: sprint.servers.map((server) => ({ serverName: server.name, mapping: mappings.get(server.name.trim().toLowerCase()) ?? null })).sort((left, right) => left.serverName.localeCompare(right.serverName)),
+  }))) ?? []
+  response.json({ sprints, resourceGroups, networks })
+})
+
+app.post('/api/sprint-landing-zone-mappings/export', async (request, response) => {
+  const sprintSequence = Number(request.body?.sprintSequence)
+  const requestedMappings = Array.isArray(request.body?.mappings) ? request.body.mappings : []
+  if (!Number.isInteger(sprintSequence) || sprintSequence <= 0 || requestedMappings.length === 0 || requestedMappings.length > 500) {
+    response.status(400).json({ error: 'Provide a sprint and between 1 and 500 filtered server mappings.' })
+    return
+  }
+  const [saved, resourceGroups, networks] = await Promise.all([
+    loadSavedTaskPlan(),
+    database('landing_zone_resource_groups').select({ subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', resourceGroupName: 'resource_group_name' }) as Promise<LandingZoneResourceGroupOption[]>,
+    database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }) as Promise<LandingZoneNetworkOption[]>,
+  ])
+  const wave = saved?.plan.waves.find((candidate) => candidate.sprints.some((sprint) => sprint.sequence === sprintSequence))
+  const sprint = wave?.sprints.find((candidate) => candidate.sequence === sprintSequence)
+  if (!wave || !sprint) {
+    response.status(400).json({ error: 'Select a valid saved sprint before exporting mappings.' })
+    return
+  }
+  const mappings = requestedMappings.map((item: unknown): SprintMappingInput => {
+    const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    return {
+      serverName: String(value.serverName ?? '').trim(), subscriptionId: String(value.subscriptionId ?? '').trim(), subscriptionName: String(value.subscriptionName ?? '').trim(),
+      resourceGroupId: String(value.resourceGroupId ?? '').trim(), networkResourceGroup: String(value.networkResourceGroup ?? '').trim(), virtualNetwork: String(value.virtualNetwork ?? '').trim(),
+      subnet: String(value.subnet ?? '').trim(), networkSecurityGroup: String(value.networkSecurityGroup ?? '').trim(),
+    }
+  })
+  try {
+    const allowedServers = new Set(sprint.servers.map((server) => server.name.trim().toLowerCase()))
+    const rows = validateSprintMappings(mappings, allowedServers, resourceGroups, networks).map((mapping) => ({
+      ...mapping, sprintSequence, sprintName: sprint.name, wave: wave.wave, environment: wave.environment,
+    }))
+    const workbook = await createSprintMappingWorkbook(rows, resourceGroups, networks)
+    response.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').attachment(`sprint-${sprintSequence}-landing-zone-mappings.xlsx`).send(workbook)
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to export sprint landing-zone mappings.' })
+  }
+})
+
+app.post('/api/sprint-landing-zone-mappings/import', workbookUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select an Excel mapping workbook.' })
+    return
+  }
+  try {
+    if (extname(file.originalname).toLowerCase() !== '.xlsx') throw new Error('Upload an XLSX mapping workbook.')
+    const [saved, resourceGroups, networks] = await Promise.all([
+      loadSavedTaskPlan(),
+      database('landing_zone_resource_groups').select({ subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', resourceGroupName: 'resource_group_name' }) as Promise<LandingZoneResourceGroupOption[]>,
+      database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }) as Promise<LandingZoneNetworkOption[]>,
+    ])
+    const parsed = await parseSprintMappingWorkbook(file.path, resourceGroups, networks)
+    const sprint = saved?.plan.waves.flatMap((wave) => wave.sprints).find((item) => item.sequence === parsed.sprintSequence)
+    if (!sprint) throw new Error('The workbook sprint no longer exists in the saved plan.')
+    const allowedServers = new Set(sprint.servers.map((server) => server.name.trim().toLowerCase()))
+    const mappings = validateSprintMappings(parsed.mappings, allowedServers, resourceGroups, networks)
+    response.json({ saved: await saveSprintMappings(database, parsed.sprintSequence, mappings), sprintSequence: parsed.sprintSequence })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Unable to import sprint landing-zone mappings.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
+})
+
+app.put('/api/sprint-landing-zone-mappings', async (request, response) => {
+  const sprintSequence = Number(request.body?.sprintSequence)
+  const requestedMappings = Array.isArray(request.body?.mappings) ? request.body.mappings : []
+  if (!Number.isInteger(sprintSequence) || sprintSequence <= 0 || requestedMappings.length === 0 || requestedMappings.length > 500) {
+    response.status(400).json({ error: 'Provide a sprint and between 1 and 500 server mappings.' })
+    return
+  }
+  const saved = await loadSavedTaskPlan()
+  const sprint = saved?.plan.waves.flatMap((wave) => wave.sprints).find((item) => item.sequence === sprintSequence)
+  if (!sprint) {
+    response.status(400).json({ error: 'The selected sprint no longer exists.' })
+    return
+  }
+  const allowedServers = new Set(sprint.servers.map((server) => server.name.trim().toLowerCase()))
+  const mappings: SprintMappingInput[] = []
+  for (const item of requestedMappings) {
+    const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    const mapping = {
+      serverName: String(value.serverName ?? '').trim(),
+      subscriptionId: String(value.subscriptionId ?? '').trim(),
+      subscriptionName: String(value.subscriptionName ?? '').trim(),
+      resourceGroupId: String(value.resourceGroupId ?? '').trim(),
+      networkResourceGroup: String(value.networkResourceGroup ?? '').trim(),
+      virtualNetwork: String(value.virtualNetwork ?? '').trim(),
+      subnet: String(value.subnet ?? '').trim(),
+      networkSecurityGroup: String(value.networkSecurityGroup ?? '').trim(),
+    }
+    mappings.push(mapping)
+  }
+  try {
+    const [resourceGroups, networks] = await Promise.all([
+      database('landing_zone_resource_groups').select({ subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', resourceGroupName: 'resource_group_name' }) as Promise<LandingZoneResourceGroupOption[]>,
+      database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }) as Promise<LandingZoneNetworkOption[]>,
+    ])
+    response.json({ saved: await saveSprintMappings(database, sprintSequence, validateSprintMappings(mappings, allowedServers, resourceGroups, networks)) })
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : 'Unable to save sprint landing-zone mappings.' })
+  }
 })
 
 const platformFields = [
@@ -1635,7 +2317,7 @@ app.post('/api/application-map/design-document', async (request, response) => {
         .filter((answer: DesignAnswer) => answer.id)
     : []
   try {
-    const result = await requestDesignDocument(database, { application, environment, conversationId, answers })
+    const result = await requestDesignDocument(database, { artifactType: 'design-document', application, environment, conversationId, answers })
     response.json(result)
   } catch (error) {
     if (error instanceof DesignDocumentError) {
@@ -1643,6 +2325,51 @@ app.post('/api/application-map/design-document', async (request, response) => {
       return
     }
     response.status(502).json({ error: 'The design document could not be generated.' })
+  }
+})
+
+app.post('/api/artefacts/document', async (request, response) => {
+  const artifactType = String(request.body?.artifactType ?? '') as 'migration-plan'
+  if (artifactType !== 'migration-plan') {
+    response.status(400).json({ error: 'Choose a migration plan artefact.' })
+    return
+  }
+  const conversationId = request.body?.conversationId ? String(request.body.conversationId) : null
+  const answers: DesignAnswer[] = Array.isArray(request.body?.answers) ? request.body.answers.map((entry: unknown) => {
+    const record = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+    return { id: String(record.id ?? '').trim(), response: String(record.response ?? '').trim() }
+  }).filter((answer: DesignAnswer) => answer.id) : []
+  try {
+    response.json(await requestDesignDocument(database, { artifactType, conversationId, answers }))
+  } catch (error) {
+    if (error instanceof DesignDocumentError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    response.status(502).json({ error: 'The artefact could not be generated.' })
+  }
+})
+
+app.post('/api/artefacts/migration-runsheet-workbook', async (request, response) => {
+  const sprintSequence = Number(request.body?.sprintSequence)
+  if (!Number.isInteger(sprintSequence) || sprintSequence <= 0) {
+    response.status(400).json({ error: 'Select a valid sprint before generating a migration runsheet.' })
+    return
+  }
+  const conversationId = request.body?.conversationId ? String(request.body.conversationId) : null
+  const answers: RunsheetAnswer[] = Array.isArray(request.body?.answers) ? request.body.answers.map((entry: unknown) => {
+    const record = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+    return { id: String(record.id ?? '').trim(), response: String(record.response ?? '').trim() }
+  }).filter((answer: RunsheetAnswer) => answer.id) : []
+  try {
+    response.json(await requestMigrationRunsheetWorkbook(database, { sprintSequence, conversationId, answers }))
+  } catch (error) {
+    if (error instanceof MigrationRunsheetError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    console.error('Unexpected error generating migration runsheet:', error)
+    response.status(502).json({ error: 'The migration runsheet could not be generated.' })
   }
 })
 
@@ -1869,7 +2596,15 @@ function migrationPlanTasksAreValid(plan: Record<string, unknown>): boolean {
   return true
 }
 
-app.get('/api/migration-wave-plan', async (_request, response) => {
+app.get('/api/migration-wave-plan', async (request, response) => {
+  if (request.query.planOnly === 'true') {
+    const saved = await database('migration_wave_plans').where({ id: 1 }).first({ planJson: 'plan_json', savedAt: 'saved_at' }) as SavedMigrationWavePlanRow | undefined
+    response.json(saved ? {
+      plan: typeof saved.planJson === 'string' ? JSON.parse(saved.planJson) : saved.planJson,
+      savedAt: saved.savedAt,
+    } : { plan: null, savedAt: null })
+    return
+  }
   const [saved, savedFilters, environments] = await Promise.all([
     database('migration_wave_plans').where({ id: 1 }).first({ planJson: 'plan_json', savedAt: 'saved_at' }) as Promise<SavedMigrationWavePlanRow | undefined>,
     database('migration_wave_plan_filters').where({ id: 1 }).first({ filterJson: 'filter_json', consideredServersJson: 'considered_servers_json' }) as Promise<SavedPlanFiltersRow | undefined>,
@@ -1957,6 +2692,7 @@ app.put('/api/sprint-schedule', async (request, response) => {
     const sprint = sprintsBySequence.get(schedule.sequence)!
     sprint.targetedStartDate = schedule.targetedStartDate
     sprint.targetedEndDate = schedule.targetedEndDate
+    sprint.status = schedule.status
   }
   const savedAt = new Date()
   await database('migration_wave_plans').where({ id: 1 }).update({

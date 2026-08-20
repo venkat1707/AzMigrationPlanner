@@ -50,13 +50,18 @@ export default function LandingZoneNetwork() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [copyMessage, setCopyMessage] = useState('')
+  const [importMessage, setImportMessage] = useState('')
+  const [tableMessage, setTableMessage] = useState('')
+  const [tableMessageIsError, setTableMessageIsError] = useState(false)
 
   const copyQuery = async () => {
+    setCopyMessage('')
     try {
       await navigator.clipboard.writeText(resourceGraphQuery)
-      setMessage('Resource Graph query copied to the clipboard.')
+      setCopyMessage('Query copied.')
     } catch {
-      setError('Unable to copy the query to the clipboard.')
+      setCopyMessage('Unable to copy query.')
     }
   }
 
@@ -110,36 +115,53 @@ export default function LandingZoneNetwork() {
     if (!uploadFile) return
     setUploading(true)
     setError('')
-    setMessage('')
+    setImportMessage('')
     try {
       const body = new FormData()
       body.append('file', uploadFile)
       const response = await apiFetch('/api/landing-zone-networks/upload', { method: 'POST', body })
       const payload = await response.json() as { saved?: number; error?: string }
       if (!response.ok) throw new Error(payload.error ?? 'Unable to import networks.')
-      setMessage(`Imported ${payload.saved ?? 0} network${payload.saved === 1 ? '' : 's'}.`)
+      setImportMessage(`Imported ${payload.saved ?? 0} network${payload.saved === 1 ? '' : 's'}.`)
       setUploadFile(null)
       await load()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Unable to import networks.')
+      setImportMessage(reason instanceof Error ? reason.message : 'Unable to import networks.')
     } finally {
       setUploading(false)
     }
   }
 
   const deleteNetwork = async (network: SavedNetwork) => {
-    setError('')
-    setMessage('')
+    setTableMessage('')
+    setTableMessageIsError(false)
     try {
       const response = await apiFetch(`/api/landing-zone-networks/${network.id}`, { method: 'DELETE' })
       if (!response.ok) {
         const payload = await response.json().catch(() => ({})) as { error?: string }
         throw new Error(payload.error ?? 'Unable to remove the network.')
       }
-      setMessage(`Removed subnet "${network.virtualNetwork}/${network.subnet}".`)
+      setTableMessage(`Removed subnet "${network.virtualNetwork}/${network.subnet}".`)
       await load()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Unable to remove the network.')
+      setTableMessageIsError(true)
+      setTableMessage(reason instanceof Error ? reason.message : 'Unable to remove the network.')
+    }
+  }
+
+  const deleteAllNetworks = async () => {
+    if (!window.confirm(`Delete all ${savedNetworks.length} landing zone network${savedNetworks.length === 1 ? '' : 's'}? This cannot be undone.`)) return
+    setTableMessage('')
+    setTableMessageIsError(false)
+    try {
+      const response = await apiFetch('/api/landing-zone-networks', { method: 'DELETE' })
+      const payload = await response.json() as { deleted?: number; error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Unable to delete networks.')
+      setTableMessage(`Deleted ${payload.deleted ?? 0} network${payload.deleted === 1 ? '' : 's'}.`)
+      await load()
+    } catch (reason) {
+      setTableMessageIsError(true)
+      setTableMessage(reason instanceof Error ? reason.message : 'Unable to delete networks.')
     }
   }
 
@@ -148,11 +170,11 @@ export default function LandingZoneNetwork() {
       <section className="core-upload-section">
         <span className="core-upload-icon"><FileSpreadsheet size={20} /></span><div><strong>Import landing zone networks</strong><small>CSV or XLSX columns: subscription_id, network_resource_group, virtual_network, virtual_network_ip_segment, subnet, subnet_ip_segment, network_security_group (NSG optional). IP segments must be CIDR, e.g. 10.50.1.0/24.</small></div>
         <label className="core-file-picker"><Upload size={14} />{uploadFile ? uploadFile.name : 'Choose file'}<input type="file" accept=".csv,.xlsx" onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)} /></label>
-        <button type="button" className="secondary-command" disabled={!uploadFile || uploading} onClick={() => void uploadNetworks()}>{uploading ? <RefreshCw className="spin" size={14} /> : <Upload size={14} />}{uploading ? 'Importing...' : 'Import'}</button>
+        <div className="landing-zone-control"><button type="button" className="secondary-command" disabled={!uploadFile || uploading} onClick={() => void uploadNetworks()}>{uploading ? <RefreshCw className="spin" size={14} /> : <Upload size={14} />}{uploading ? 'Importing...' : 'Import'}</button>{importMessage && <small className={importMessage.startsWith('Imported') ? 'success' : 'error'}>{importMessage}</small>}</div>
       </section>
 
       <section className="landing-zone-query">
-        <div className="landing-zone-query-head"><div><strong>Fetch networks from Azure Resource Graph</strong><small>Run this query in the Azure portal (Resource Graph Explorer) or with <code>az graph query</code>, then export the results to CSV/XLSX and import them above.</small></div><button type="button" className="secondary-command" onClick={() => void copyQuery()}><Copy size={14} />Copy query</button></div>
+        <div className="landing-zone-query-head"><div><strong>Fetch networks from Azure Resource Graph</strong><small>Run this query in the Azure portal (Resource Graph Explorer) or with <code>az graph query</code>, then export the results to CSV/XLSX and import them above.</small></div><div className="landing-zone-control"><button type="button" className="secondary-command" onClick={() => void copyQuery()}><Copy size={14} />Copy query</button>{copyMessage && <small className={copyMessage === 'Query copied.' ? 'success' : 'error'}>{copyMessage}</small>}</div></div>
         <pre><code>{resourceGraphQuery}</code></pre>
       </section>
 
@@ -182,7 +204,7 @@ export default function LandingZoneNetwork() {
     </form>
 
     <section className="saved-core-infrastructure">
-      <header><div><p>Target inventory</p><h2>Saved networks</h2><small>{savedNetworks.length} network{savedNetworks.length === 1 ? '' : 's'} from manual entry and imports</small></div><div className="saved-report-actions"><button type="button" title="Export saved networks" aria-label="Export saved networks" disabled={savedNetworks.length === 0} onClick={() => exportNetworks(savedNetworks)}><Download size={15} /></button><button type="button" title="Refresh saved networks" aria-label="Refresh saved networks" onClick={() => void load()}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button></div></header>
+      <header><div><p>Target inventory</p><h2>Saved networks</h2><small>{savedNetworks.length} network{savedNetworks.length === 1 ? '' : 's'} from manual entry and imports</small>{tableMessage && <small className={`landing-zone-table-message${tableMessageIsError ? ' error' : ''}`}>{tableMessage}</small>}</div><div className="saved-report-actions"><button type="button" title="Export saved networks" aria-label="Export saved networks" disabled={savedNetworks.length === 0} onClick={() => exportNetworks(savedNetworks)}><Download size={15} /></button><button type="button" className="table-delete-all" title="Delete all saved networks" aria-label="Delete all saved networks" disabled={savedNetworks.length === 0} onClick={() => void deleteAllNetworks()}><Trash2 size={15} /></button><button type="button" title="Refresh saved networks" aria-label="Refresh saved networks" onClick={() => void load()}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button></div></header>
       <div className="table-wrap"><table><thead><tr><th>Virtual network</th><th>Subnet</th><th>Subscription</th><th>Network RG</th><th>vNet segment</th><th>Subnet segment</th><th>NSG</th><th>Source</th><th>Last updated</th><th aria-label="Actions"></th></tr></thead><tbody>
         {loading ? <tr><td colSpan={10} className="empty-state">Loading networks...</td></tr> : savedNetworks.length === 0 ? <tr><td colSpan={10} className="empty-state">No landing zone networks are stored.</td></tr> : savedNetworks.map((network) => <tr key={network.id}>
           <td><strong>{network.virtualNetwork}</strong></td>

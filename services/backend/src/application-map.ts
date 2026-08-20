@@ -122,6 +122,7 @@ export async function buildApplicationMap(
   const outboundRows = [...applicationOutboundRows, ...sharedDatabaseOutboundRows]
   const inboundRows = [...applicationInboundRows, ...sharedDatabaseInboundRows]
   const localNameSet = new Set([...localNames, ...sharedDatabaseNames])
+  const hostnameByIp = await loadDnsHostnames(connection, [...outboundRows, ...inboundRows])
   const nodes = new Map<string, Record<string, unknown>>()
   const edges = new Map<string, EdgeAggregate>()
 
@@ -157,6 +158,18 @@ export async function buildApplicationMap(
     return id
   }
 
+  // dns_records resolves an otherwise-unmapped IP endpoint to the hostname seen in DNS answers
+  const resolvedHostname = (serverName: string | null, ipAddress: string | null) => {
+    const candidate = normalizedIp(ipAddress) ?? normalizedIp(serverName)
+    return candidate ? hostnameByIp.get(candidate) ?? null : null
+  }
+
+  const addResolvedHostNode = (serverName: string | null, ipAddress: string | null, hostname: string) => {
+    const id = nodeId('application', hostname)
+    nodes.set(id, { id, type: 'application', label: hostname, ipAddress: normalizedIp(ipAddress) ?? normalizedIp(serverName), resolvedFromDns: true })
+    return id
+  }
+
   const addSharedDatabaseNode = (serverName: string) => {
     const assessment = assessmentsByServer.get(serverName)
     const id = nodeId('shared-database', serverName)
@@ -184,7 +197,13 @@ export async function buildApplicationMap(
   const addPeerNode = (serverName: string | null, reportedApplication: string | null, ipAddress: string | null) => {
     if (serverName && assessmentsByServer.get(serverName)?.application === 'Shared DB') return addSharedDatabaseNode(serverName)
     if (serverName && assessmentsByServer.has(serverName)) return addExternalNode(peerApplication(serverName, reportedApplication))
-    return addInfrastructureEndpoint(ipAddress) ?? addExternalNode(peerApplication(serverName, reportedApplication))
+    const infrastructureId = addInfrastructureEndpoint(ipAddress)
+    if (infrastructureId) return infrastructureId
+    if (!reportedApplication?.trim()) {
+      const hostname = resolvedHostname(serverName, ipAddress)
+      if (hostname) return addResolvedHostNode(serverName, ipAddress, hostname)
+    }
+    return addExternalNode(peerApplication(serverName, reportedApplication))
   }
 
   const peerApplication = (serverName: string | null, reportedApplication: string | null) => {
@@ -287,6 +306,34 @@ async function loadDependencies(
     ) as DependencyRow[]
 
   return [...groupedRows.map((row) => ({ ...row, sourceIp: null, destinationIp: null })), ...infrastructureRows]
+}
+
+async function loadDnsHostnames(
+  connection: Knex | Knex.Transaction,
+  rows: DependencyRow[],
+): Promise<Map<string, string>> {
+  const candidates = new Set<string>()
+  for (const row of rows) {
+    for (const value of [row.sourceServerName, row.sourceIp, row.destinationServerName, row.destinationIp]) {
+      const raw = value?.toString().trim()
+      if (!raw) continue
+      const normalized = normalizedIp(raw)
+      if (!normalized) continue
+      candidates.add(raw)
+      candidates.add(normalized)
+    }
+  }
+  const hostnameByIp = new Map<string, string>()
+  if (!candidates.size) return hostnameByIp
+  const dnsRows = await connection('dns_records')
+    .whereIn('ip_address', [...candidates])
+    .orderBy('updated_at', 'desc')
+    .select({ ipAddress: 'ip_address', query: 'query' }) as Array<{ ipAddress: string; query: string }>
+  for (const record of dnsRows) {
+    const normalized = normalizedIp(record.ipAddress)
+    if (normalized && !hostnameByIp.has(normalized)) hostnameByIp.set(normalized, record.query)
+  }
+  return hostnameByIp
 }
 
 function cidrBounds(address: ipaddr.IPv4 | ipaddr.IPv6, prefix: number) {

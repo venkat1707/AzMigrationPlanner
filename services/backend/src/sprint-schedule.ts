@@ -1,13 +1,18 @@
+export const sprintStatuses = ['Scheduled', 'In Progress', 'At Risk', 'Blocked', 'Closed'] as const
+export type SprintStatus = typeof sprintStatuses[number]
+
 export type SprintScheduleInput = {
   sequence: number
   targetedStartDate: string
   targetedEndDate?: string | null
+  status?: string | null
 }
 
 export type SprintSchedule = {
   sequence: number
   targetedStartDate: string
   targetedEndDate: string
+  status: SprintStatus
 }
 
 const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/
@@ -34,5 +39,7 @@ export function normalizeSprintSchedule(input: SprintScheduleInput): SprintSched
   const targetedEndDate = String(input.targetedEndDate ?? '').trim() || addDays(targetedStartDate, 21)
   const end = parseIsoDate(targetedEndDate, 'Targeted end date')
   if (end < start) throw new Error('Targeted end date cannot be before the targeted start date.')
-  return { sequence: input.sequence, targetedStartDate, targetedEndDate }
+  const status = String(input.status ?? '').trim() || 'Scheduled'
+  if (!sprintStatuses.includes(status as SprintStatus)) throw new Error('Sprint status is not valid.')
+  return { sequence: input.sequence, targetedStartDate, targetedEndDate, status: status as SprintStatus }
 }

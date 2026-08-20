@@ -10,13 +10,14 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/migrate.ts",
     "import": "tsx src/import-csv.ts",
-    "test": "npm run build && node --test dist/application-catalog-import.test.js dist/core-infrastructure-networks.test.js dist/environment-identification.test.js dist/firewall-rules.test.js dist/import-schema.test.js dist/import-files.test.js dist/migration-wave-planning.test.js dist/sprint-schedule.test.js dist/target-landing-zone.test.js dist/landing-zone-network.test.js",
+    "test": "npm run build && node --test dist/application-catalog-import.test.js dist/application-treatment-plans.test.js dist/core-infrastructure-networks.test.js dist/corelight-import.test.js dist/dependency-indexes.test.js dist/design-document-context.test.js dist/environment-identification.test.js dist/firewall-rules.test.js dist/import-schema.test.js dist/import-files.test.js dist/load-balancer-rules-import.test.js dist/load-balancer-ruleset.test.js dist/migration-runsheet.test.js dist/migration-wave-planning.test.js dist/sprint-schedule.test.js dist/sprint-landing-zone-workbook.test.js dist/target-landing-zone.test.js dist/landing-zone-network.test.js dist/splunk-import.test.js",
     "start": "node dist/index.js"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1",
     "@azure/msal-node": "^5.4.3",
     "csv-parse": "^6.1.0",
+    "docx": "^9.7.1",
     "dotenv": "^17.2.3",
     "exceljs": "^4.4.0",
     "express": "^5.1.0",
@@ -26,7 +27,8 @@
     "knex": "^3.1.0",
     "multer": "^2.2.0",
     "mysql2": "^3.15.3",
-    "pptxgenjs": "^4.0.1"
+    "pptxgenjs": "^4.0.1",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.5",

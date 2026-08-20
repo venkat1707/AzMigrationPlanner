@@ -2,6 +2,7 @@ import { createWriteStream } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
 import { resolve } from 'node:path'
+import archiver from 'archiver'
 
 const assessmentHeaders = [
   'APPLICATION', 'SERVER_NAME', 'MIGRATION_READINESS', 'SECURITY_READINESS', 'OS_SUPPORT_STATUS',
@@ -80,6 +81,12 @@ const databaseCodes = new Set(['SQL', 'ORA', 'MYQ', 'PGQ'])
 const sensitiveApplicationCount = 12
 const defaultDependencyCount = 2_000_000
 const defaultRowsPerFile = 500_000
+const defaultStartDate = '2026-07-01'
+const subscriptions = [
+  { id: '11111111-1111-4111-8111-111111111111', name: 'Migration Non-Production' },
+  { id: '22222222-2222-4222-8222-222222222222', name: 'Migration Pre-Production' },
+  { id: '33333333-3333-4333-8333-333333333333', name: 'Migration Production' },
+]
 
 function parseArguments() {
   const values = Object.fromEntries(process.argv.slice(2).map((argument) => {
@@ -90,6 +97,7 @@ function parseArguments() {
     outputDirectory: resolve(values['output-dir'] ?? 'data/generated'),
     dependencyCount: Number(values['dependency-count'] ?? defaultDependencyCount),
     rowsPerFile: Number(values['rows-per-file'] ?? defaultRowsPerFile),
+    startDate: values['start-date'] ?? defaultStartDate,
   }
 }
 
@@ -265,7 +273,7 @@ function roleProcess(server, destination = false) {
     if (linuxProcesses[server.roleCode]) return linuxProcesses[server.roleCode]
   }
   const processes = {
-    LB: 'haproxy', DC: destination ? 'dns.exe' : 'lsass.exe', PXY: 'squid.exe', PRT: 'spoolsv.exe', FIL: 'System',
+    LB: 'haproxy', OFFICE: 'browser', VPN: 'vpn-client', DC: destination ? 'dns.exe' : 'lsass.exe', PXY: 'squid.exe', PRT: 'spoolsv.exe', FIL: 'System',
     BAK: 'backup-agent.exe', MON: 'monitor-agent.exe', MGT: 'winrm.exe', CFG: 'ccmexec.exe',
     WEB: 'haproxy.exe', APP: 'dotnet.exe', SQL: 'sqlservr.exe', ORA: 'oracle.exe',
     MYQ: 'mysqld.exe', PGQ: 'postgres.exe', RPT: 'reportserver.exe',
@@ -328,6 +336,25 @@ function buildLoadBalancers() {
   }))
 }
 
+function networkRange(environment, type) {
+  const environmentIndex = environments.indexOf(environment)
+  const secondOctet = type === 'Office' ? 16 + environmentIndex : 24 + environmentIndex
+  return `172.${secondOctet}.0.0/16`
+}
+
+function buildNetworkSources() {
+  return environments.flatMap((environment) => ['Office', 'VPN'].map((type, typeIndex) => {
+    const secondOctet = Number(networkRange(environment, type).split('.')[1])
+    return {
+      id: 20_000 + environment.secondOctet + typeIndex,
+      name: `${type.toUpperCase()}-${environment.code}-CLIENT-01`, ip: `172.${secondOctet}.10.10`,
+      role: `${type} Network`, roleCode: type.toUpperCase(), environment: environment.name,
+      environmentCode: environment.code, application: `${type} Network`, applicationCode: type.toUpperCase(),
+      isolated: type === 'VPN', armId: '', osFamily: 'Client',
+    }
+  }))
+}
+
 function loadBalancerForDeployment(deployment, loadBalancers) {
   return loadBalancers.find(({ environment, isolated }) => (
     environment === deployment.environment.name && isolated === deployment.application.sensitive
@@ -356,7 +383,7 @@ function registerTierConsumer(server, environment) {
   server.consumerEnvironments.add(environment)
 }
 
-function buildConnectionProfiles(applications, deployments, servers, loadBalancers) {
+function buildConnectionProfiles(applications, deployments, servers, loadBalancers, networkSources) {
   const profiles = []
   for (const deployment of deployments) {
     const { application, environment } = deployment
@@ -369,6 +396,10 @@ function buildConnectionProfiles(applications, deployments, servers, loadBalance
     database.consumerApplications ??= new Set()
     database.consumerApplications.add(application.name)
     const appName = `${application.name} (${environment.name})`
+    const networkSource = networkSources.find(({ environment: sourceEnvironment, roleCode }) => (
+      sourceEnvironment === environment.name && roleCode === (application.sensitive ? 'VPN' : 'OFFICE')
+    ))
+    addProfile(profiles, networkSource, loadBalancer, `${networkSource.application} (${environment.name})`, `${application.name} Load Balancer`, application.id, environment.name)
     if (web) {
       addProfile(profiles, loadBalancer, web, `${application.name} Load Balancer`, `${application.name} Web`, application.id, environment.name)
       addProfile(profiles, web, app, `${application.name} Web`, `${application.name} Application`, application.id, environment.name)
@@ -389,6 +420,10 @@ function buildConnectionProfiles(applications, deployments, servers, loadBalance
       addProfile(profiles, app, report, `${application.name} Application`, `${application.name} Reporting`, 0, environment.name)
       addProfile(profiles, report, database, `${application.name} Reporting`, `${application.name} Database`, 0, environment.name)
     }
+  }
+  for (const source of [...networkSources, ...loadBalancers]) {
+    const dnsServer = infrastructureServer(servers, 'DC', source.id, { sensitive: source.isolated, name: source.application })
+    addProfile(profiles, source, dnsServer, `${source.application} (${source.environment})`, 'Domain Name Service', 1, source.environment)
   }
   return profiles
 }
@@ -460,6 +495,20 @@ async function writeAssessments(outputDirectory, servers) {
   return path
 }
 
+async function writeApplicationMappings(outputDirectory, servers) {
+  const path = resolve(outputDirectory, 'ApplicationServerMapping-Synthetic.csv')
+  const stream = createWriteStream(path, { encoding: 'utf8' })
+  await writeChunk(stream, csvRow(['APPLICATION', 'SERVER_NAME', 'IP_ADDRESS', 'APPLICATION_DESCRIPTION']))
+  for (const server of servers.filter(({ roleCode }) => !infrastructureCodes.has(roleCode))) {
+    const description = server.application === 'Shared DB'
+      ? `Shared ${server.role} serving multiple applications in ${server.environment}`
+      : `${server.application} ${server.role} in ${server.environment}`
+    await writeChunk(stream, csvRow([server.application, server.name, server.ip, description]))
+  }
+  await closeStream(stream)
+  return path
+}
+
 async function writeCoreInfrastructure(outputDirectory, servers, loadBalancers) {
   const path = resolve(outputDirectory, 'CoreInfrastructure-Synthetic.csv')
   const stream = createWriteStream(path, { encoding: 'utf8' })
@@ -472,33 +521,56 @@ async function writeCoreInfrastructure(outputDirectory, servers, loadBalancers) 
   return path
 }
 
+async function writeLoadBalancers(outputDirectory, loadBalancers) {
+  const path = resolve(outputDirectory, 'LoadBalancers-Synthetic.csv')
+  const stream = createWriteStream(path, { encoding: 'utf8' })
+  await writeChunk(stream, csvRow(['load_balancer_ip', 'name', 'environment', 'network_zone']))
+  for (const loadBalancer of loadBalancers) {
+    await writeChunk(stream, csvRow([loadBalancer.ip, loadBalancer.name, loadBalancer.environment, loadBalancer.isolated ? 'Isolated' : 'Corporate']))
+  }
+  await closeStream(stream)
+  return path
+}
+
+async function writeNetworkDataset(outputDirectory, type, networkSources) {
+  const path = resolve(outputDirectory, `${type}Networks-Synthetic.csv`)
+  const stream = createWriteStream(path, { encoding: 'utf8' })
+  await writeChunk(stream, csvRow(['network_type', 'ip_range', 'environment', 'sample_client_name', 'sample_client_ip', 'description']))
+  for (const environment of environments) {
+    const source = networkSources.find(({ environment: sourceEnvironment, roleCode }) => sourceEnvironment === environment.name && roleCode === type.toUpperCase())
+    await writeChunk(stream, csvRow([type, networkRange(environment, type), environment.name, source.name, source.ip, `${environment.name} ${type.toLowerCase()} client network`]))
+  }
+  await closeStream(stream)
+  return path
+}
+
 async function writeNetworkRanges(outputDirectory) {
   const path = resolve(outputDirectory, 'NetworkRanges-Synthetic.csv')
   const stream = createWriteStream(path, { encoding: 'utf8' })
   await writeChunk(stream, csvRow(['network_type', 'ip_range', 'environment', 'description']))
   for (const environment of environments) {
-    const isolatedOctet = 90 + (environment.secondOctet / 10 - 2)
-    await writeChunk(stream, csvRow(['Office', `10.${environment.secondOctet}.0.0/16`, environment.name, `${environment.name} corporate application network`]))
-    await writeChunk(stream, csvRow(['VPN', `10.${isolatedOctet}.0.0/16`, environment.name, `${environment.name} isolated sensitive-application network`]))
+    await writeChunk(stream, csvRow(['Office', networkRange(environment, 'Office'), environment.name, `${environment.name} office client network`]))
+    await writeChunk(stream, csvRow(['VPN', networkRange(environment, 'VPN'), environment.name, `${environment.name} VPN client network`]))
   }
   await closeStream(stream)
   return path
 }
 
 async function writeApplicationCatalog(outputDirectory, applications, deployments, servers) {
-  const path = resolve(outputDirectory, 'ApplicationCatalog-Synthetic-96.csv')
+  const path = resolve(outputDirectory, 'ApplicationCatalog-Synthetic.csv')
   const stream = createWriteStream(path, { encoding: 'utf8' })
-  const headers = ['Application ID', 'Application Name', 'Application Code', 'Business Owner', 'Highly Sensitive', 'Network Zone', 'Environments', 'Pre-prod Mirrors Prod', 'Server Count']
+  const headers = ['APPLICATION', 'DESCRIPTION', 'FIRST_NAME', 'LAST_NAME', 'EMAIL_ADDRESS']
   await writeChunk(stream, csvRow(headers))
   for (const application of applications) {
     const appDeployments = deployments.filter((deployment) => deployment.application === application)
     const serverCount = servers.filter((server) => server.application === application.name).length
     await writeChunk(stream, csvRow([
-      application.id, application.name, application.code, application.businessOwner, application.sensitive ? 'Yes' : 'No',
-      application.sensitive ? 'Isolated' : 'Corporate', appDeployments.map(({ environment }) => environment.name).join('|'),
-      application.hasPreProd ? 'Yes' : 'Not applicable', serverCount,
+      application.name,
+      `${application.businessOwner} application across ${appDeployments.map(({ environment }) => environment.name).join(', ')}; ${serverCount} directly assigned servers; ${application.sensitive ? 'highly sensitive isolated network' : 'standard corporate network'}`,
+      'Synthetic', 'Owner', `owner.${application.code.toLowerCase()}@example.com`,
     ]))
   }
+  await writeChunk(stream, csvRow(['Shared DB', 'Database servers consumed by more than one application', 'Database', 'Operations', 'database.operations@example.com']))
   await closeStream(stream)
   return path
 }
@@ -519,6 +591,62 @@ async function writeSharedDatabaseInventory(outputDirectory, servers) {
   }
   await closeStream(stream)
   return { path, sharedDatabases }
+}
+
+function subscriptionForEnvironment(environment) {
+  if (environment.name === 'Prod') return subscriptions[2]
+  if (environment.name === 'Pre-prod') return subscriptions[1]
+  return subscriptions[0]
+}
+
+function landingZoneModel() {
+  const resourceGroups = []
+  const networks = []
+  for (const environment of environments) {
+    const subscription = subscriptionForEnvironment(environment)
+    const suffix = environment.code.toLowerCase()
+    const networkResourceGroup = `rg-migration-${suffix}-network`
+    for (const purpose of ['network', 'application', 'data']) {
+      const name = `rg-migration-${suffix}-${purpose}`
+      resourceGroups.push({
+        subscriptionName: subscription.name, subscriptionId: subscription.id, resourceGroupName: name,
+        resourceGroupId: `/subscriptions/${subscription.id}/resourceGroups/${name}`,
+      })
+    }
+    const vnetOctet = 120 + environments.indexOf(environment) * 10
+    for (const [index, purpose] of ['application', 'data', 'management'].entries()) {
+      networks.push({
+        subscriptionId: subscription.id, networkResourceGroup,
+        virtualNetwork: `vnet-migration-${suffix}`, virtualNetworkIpSegment: `10.${vnetOctet}.0.0/16`,
+        subnet: `snet-${purpose}`, subnetIpSegment: `10.${vnetOctet}.${index + 1}.0/24`,
+        networkSecurityGroup: `nsg-migration-${suffix}-${purpose}`,
+      })
+    }
+  }
+  return { resourceGroups, networks }
+}
+
+async function writeLandingZoneResourceGroups(outputDirectory, resourceGroups) {
+  const path = resolve(outputDirectory, 'LandingZoneResourceGroups-Synthetic.csv')
+  const stream = createWriteStream(path, { encoding: 'utf8' })
+  await writeChunk(stream, csvRow(['subscription_name', 'resource_group_id']))
+  for (const resourceGroup of resourceGroups) await writeChunk(stream, csvRow([resourceGroup.subscriptionName, resourceGroup.resourceGroupId]))
+  await closeStream(stream)
+  return path
+}
+
+async function writeLandingZoneNetworks(outputDirectory, networks) {
+  const path = resolve(outputDirectory, 'LandingZoneNetworks-Synthetic.csv')
+  const stream = createWriteStream(path, { encoding: 'utf8' })
+  await writeChunk(stream, csvRow(['subscription_id', 'network_resource_group', 'virtual_network', 'virtual_network_ip_segment', 'subnet', 'subnet_ip_segment', 'network_security_group']))
+  for (const network of networks) {
+    await writeChunk(stream, csvRow([
+      network.subscriptionId, network.networkResourceGroup, network.virtualNetwork, network.virtualNetworkIpSegment,
+      network.subnet, network.subnetIpSegment, network.networkSecurityGroup,
+    ]))
+  }
+  await closeStream(stream)
+  return path
 }
 
 function dependencyValues(profile, rowIndex) {
@@ -554,11 +682,88 @@ async function writeDependencies(outputDirectory, profiles, dependencyCount, row
   return files
 }
 
+function corelightTimestamp(startDate, rowIndex) {
+  const start = new Date(`${startDate}T00:00:00.000Z`)
+  const daysInMonth = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate()
+  const day = rowIndex % daysInMonth
+  const second = (rowIndex * 37) % 86_400
+  return (start.getTime() + day * 86_400_000 + second * 1000 + rowIndex % 1000) / 1000
+}
+
+function corelightUid(rowIndex) {
+  return `CMF${rowIndex.toString(36).toUpperCase().padStart(13, '0')}`
+}
+
+function corelightService(port) {
+  if (port === 53) return 'dns'
+  if ([443, 636, 8443].includes(port)) return 'ssl'
+  if (port === 445) return 'smb'
+  return '-'
+}
+
+async function createZip(zipPath, files) {
+  const output = createWriteStream(zipPath)
+  const archive = archiver('zip', { zlib: { level: 9 } })
+  const completed = new Promise((resolveArchive, rejectArchive) => {
+    output.on('close', resolveArchive)
+    output.on('error', rejectArchive)
+    archive.on('error', rejectArchive)
+  })
+  archive.pipe(output)
+  for (const file of files) archive.file(file.path, { name: file.name })
+  await archive.finalize()
+  await completed
+}
+
+async function writeCorelightLogs(outputDirectory, profiles, dependencyCount, startDate, hostnameTargets) {
+  const corelightDirectory = resolve(outputDirectory, 'corelight')
+  await mkdir(corelightDirectory, { recursive: true })
+  const connPath = resolve(corelightDirectory, 'conn.log')
+  const dnsPath = resolve(corelightDirectory, 'dns.log')
+  const zipPath = resolve(outputDirectory, 'Corelight-Logs-Synthetic.zip')
+  const connStream = createWriteStream(connPath, { encoding: 'utf8', highWaterMark: 1024 * 1024 })
+  const dnsStream = createWriteStream(dnsPath, { encoding: 'utf8', highWaterMark: 1024 * 1024 })
+  let dnsRecords = 0
+  for (let rowIndex = 0; rowIndex < dependencyCount; rowIndex++) {
+    const profile = profiles[rowIndex % profiles.length]
+    const uid = corelightUid(rowIndex)
+    const ts = corelightTimestamp(startDate, rowIndex)
+    const protocol = profile.port === 53 ? 'udp' : 'tcp'
+    const duration = Number((0.005 + (rowIndex % 5000) / 1000).toFixed(6))
+    const origBytes = 80 + (rowIndex * 17) % 20000
+    const respBytes = 120 + (rowIndex * 29) % 40000
+    const origPkts = 2 + rowIndex % 30
+    const respPkts = 2 + rowIndex % 40
+    await writeChunk(connStream, `${JSON.stringify({
+      ts, uid, 'id.orig_h': profile.source.ip, 'id.orig_p': 49152 + rowIndex % 16000,
+      'id.resp_h': profile.destination.ip, 'id.resp_p': profile.port, proto: protocol,
+      service: corelightService(profile.port), duration, orig_bytes: origBytes, resp_bytes: respBytes,
+      conn_state: 'SF', local_orig: true, local_resp: true, missed_bytes: 0, history: protocol === 'udp' ? 'Dd' : 'ShADadFf',
+      orig_pkts: origPkts, orig_ip_bytes: origBytes + origPkts * 40,
+      resp_pkts: respPkts, resp_ip_bytes: respBytes + respPkts * 40, tunnel_parents: [],
+    })}\n`)
+    if (profile.port === 53) {
+      const target = hostnameTargets[rowIndex % hostnameTargets.length]
+      await writeChunk(dnsStream, `${JSON.stringify({
+        ts, uid, 'id.orig_h': profile.source.ip, 'id.orig_p': 49152 + rowIndex % 16000,
+        'id.resp_h': profile.destination.ip, 'id.resp_p': 53, proto: 'udp', trans_id: rowIndex % 65536,
+        rtt: Number((0.001 + (rowIndex % 100) / 10000).toFixed(6)), query: `${target.name.toLowerCase()}.synthetic.local`,
+        qclass: 1, qclass_name: 'C_INTERNET', qtype: 1, qtype_name: 'A', rcode: 0, rcode_name: 'NOERROR',
+        AA: false, TC: false, RD: true, RA: true, Z: 0, answers: [target.ip], TTLs: [300 + rowIndex % 3300], rejected: false,
+      })}\n`)
+      dnsRecords++
+    }
+  }
+  await Promise.all([closeStream(connStream), closeStream(dnsStream)])
+  await createZip(zipPath, [{ path: connPath, name: 'conn.log' }, { path: dnsPath, name: 'dns.log' }])
+  return { connPath, dnsPath, zipPath, connRecords: dependencyCount, dnsRecords, startDate }
+}
+
 function countBy(values, selector) {
   return Object.fromEntries([...new Set(values.map(selector))].map((key) => [key, values.filter((value) => selector(value) === key).length]))
 }
 
-function validateModel(applications, deployments, servers, loadBalancers, profiles, dependencyCount) {
+function validateModel(applications, deployments, servers, loadBalancers, networkSources, profiles, dependencyCount) {
   const roleCounts = countBy(servers, ({ role }) => role)
   const expectedRoleCounts = Object.fromEntries(roleSpecs.map(({ role, count }) => [role, count]))
   const uniqueNames = new Set(servers.map(({ name }) => name))
@@ -615,7 +820,16 @@ function validateModel(applications, deployments, servers, loadBalancers, profil
     serverNamingConvention: servers.every(({ name, environmentCode, roleCode }) => name.includes(`-${environmentCode}-${roleCode}-`) && roleCodes.has(roleCode)),
     privateIpAddresses: servers.every(({ ip }) => ip.startsWith('10.')) && loadBalancers.every(({ ip }) => ip.startsWith('10.')),
     loadBalancerCount: loadBalancers.length === environments.length * 2,
-    loadBalancerTopologyCoverage: profiles.filter(({ source }) => source.roleCode === 'LB').length === deployments.length,
+    loadBalancerTopologyCoverage: profiles.filter(({ source, destination }) => source.roleCode === 'LB' && destination.roleCode !== 'DC').length === deployments.length,
+    officeNetworkTopologyCoverage: environments.every(({ name }) => profiles.some(({ source }) => source.roleCode === 'OFFICE' && source.environment === name)),
+    vpnNetworkTopologyCoverage: environments.every(({ name }) => profiles.some(({ source }) => source.roleCode === 'VPN' && source.environment === name)),
+    networkSourcesUseDeclaredRanges: networkSources.every((source) => {
+      const environment = environments.find(({ name }) => name === source.environment)
+      const type = source.roleCode === 'OFFICE' ? 'Office' : 'VPN'
+      const secondOctet = Number(networkRange(environment, type).split('.')[1])
+      return source.ip.startsWith(`172.${secondOctet}.`)
+    }),
+    corelightDnsProfileCoverage: ['LB', 'OFFICE', 'VPN'].every((roleCode) => profiles.some(({ source, port }) => source.roleCode === roleCode && port === 53)),
     coreServiceTopologyCoverage: [...infrastructureCodes].every((code) => destinationCoreRoles.has(code)),
     sensitiveDedicatedManagement: applications.filter(({ sensitive }) => sensitive).every((application) => servers.some(({ roleCode, application: serverApplication, isolated }) => (
       roleCode === 'MGT' && serverApplication === application.name && isolated
@@ -657,20 +871,34 @@ async function main() {
   const options = parseArguments()
   if (!Number.isInteger(options.dependencyCount) || options.dependencyCount < 1) throw new Error('dependency-count must be a positive integer')
   if (!Number.isInteger(options.rowsPerFile) || options.rowsPerFile < 1) throw new Error('rows-per-file must be a positive integer')
+  if (!/^\d{4}-\d{2}-01$/.test(options.startDate) || Number.isNaN(new Date(`${options.startDate}T00:00:00.000Z`).getTime())) throw new Error('start-date must be the first day of a valid month in YYYY-MM-01 format')
   await mkdir(options.outputDirectory, { recursive: true })
   const applications = buildApplications()
   const deployments = buildDeployments(applications)
   const servers = buildServers(applications, deployments)
   const loadBalancers = buildLoadBalancers()
-  const profiles = buildConnectionProfiles(applications, deployments, servers, loadBalancers)
+  const networkSources = buildNetworkSources()
+  const profiles = buildConnectionProfiles(applications, deployments, servers, loadBalancers, networkSources)
   classifySharedDatabases(servers)
-  const validation = validateModel(applications, deployments, servers, loadBalancers, profiles, options.dependencyCount)
+  const validation = validateModel(applications, deployments, servers, loadBalancers, networkSources, profiles, options.dependencyCount)
+  const landingZone = landingZoneModel()
+  const landingZoneCorrelated = landingZone.networks.every((network) => landingZone.resourceGroups.some((resourceGroup) => (
+    resourceGroup.subscriptionId === network.subscriptionId && resourceGroup.resourceGroupName === network.networkResourceGroup
+  )))
+  if (!landingZoneCorrelated || new Set(landingZone.resourceGroups.map(({ subscriptionId }) => subscriptionId)).size < 2) throw new Error('Landing-zone model validation failed')
   const assessmentPath = await writeAssessments(options.outputDirectory, servers)
+  const applicationMappingPath = await writeApplicationMappings(options.outputDirectory, servers)
   const coreInfrastructurePath = await writeCoreInfrastructure(options.outputDirectory, servers, loadBalancers)
+  const loadBalancerPath = await writeLoadBalancers(options.outputDirectory, loadBalancers)
+  const officeNetworkPath = await writeNetworkDataset(options.outputDirectory, 'Office', networkSources)
+  const vpnNetworkPath = await writeNetworkDataset(options.outputDirectory, 'VPN', networkSources)
   const networkRangesPath = await writeNetworkRanges(options.outputDirectory)
   const catalogPath = await writeApplicationCatalog(options.outputDirectory, applications, deployments, servers)
   const sharedDatabaseInventory = await writeSharedDatabaseInventory(options.outputDirectory, servers)
+  const landingZoneResourceGroupsPath = await writeLandingZoneResourceGroups(options.outputDirectory, landingZone.resourceGroups)
+  const landingZoneNetworksPath = await writeLandingZoneNetworks(options.outputDirectory, landingZone.networks)
   const dependencyFiles = await writeDependencies(options.outputDirectory, profiles, options.dependencyCount, options.rowsPerFile)
+  const corelightFiles = await writeCorelightLogs(options.outputDirectory, profiles, options.dependencyCount, options.startDate, [...servers, ...loadBalancers])
   const manifest = {
     generatedAt: new Date().toISOString(), seed: 'migration-factory-v1', syntheticData: true,
     counts: {
@@ -679,6 +907,13 @@ async function main() {
       highlySensitiveApplications: applications.filter(({ sensitive }) => sensitive).length,
       isolatedServers: servers.filter(({ isolated }) => isolated).length,
       loadBalancerIps: loadBalancers.length,
+      officeNetworks: networkSources.filter(({ roleCode }) => roleCode === 'OFFICE').length,
+      vpnNetworks: networkSources.filter(({ roleCode }) => roleCode === 'VPN').length,
+      landingZoneSubscriptions: new Set(landingZone.resourceGroups.map(({ subscriptionId }) => subscriptionId)).size,
+      landingZoneResourceGroups: landingZone.resourceGroups.length,
+      landingZoneNetworks: landingZone.networks.length,
+      corelightConnRecords: corelightFiles.connRecords,
+      corelightDnsRecords: corelightFiles.dnsRecords,
       sharedDatabaseServers: sharedDatabaseInventory.sharedDatabases.length,
       applicationsUsingSharedDatabases: new Set(sharedDatabaseInventory.sharedDatabases.flatMap((server) => [...server.consumerApplications])).size,
     },
@@ -690,13 +925,15 @@ async function main() {
     },
     operatingSystems: validation.operatingSystems,
     reportServerPercentage: Number((validation.roleCounts.Report / servers.length * 100).toFixed(2)),
-    validation: validation.assertions,
+    validation: { ...validation.assertions, landingZoneResourceGroupNetworkCorrelation: landingZoneCorrelated },
     sharedDatabasesByEnvironment: countBy(sharedDatabaseInventory.sharedDatabases, ({ environment }) => environment),
     sharedDatabasesByEngine: countBy(sharedDatabaseInventory.sharedDatabases, ({ role }) => role),
     files: {
-      assessment: assessmentPath, applicationCatalog: catalogPath,
+      assessment: assessmentPath, applicationCatalog: catalogPath, applicationServerMapping: applicationMappingPath,
       sharedDatabaseInventory: sharedDatabaseInventory.path, coreInfrastructure: coreInfrastructurePath,
-      networkRanges: networkRangesPath, dependencies: dependencyFiles,
+      loadBalancers: loadBalancerPath, officeNetworks: officeNetworkPath, vpnNetworks: vpnNetworkPath,
+      networkRanges: networkRangesPath, landingZoneResourceGroups: landingZoneResourceGroupsPath,
+      landingZoneNetworks: landingZoneNetworksPath, dependencies: dependencyFiles, corelight: corelightFiles,
     },
   }
   const manifestPath = resolve(options.outputDirectory, 'dataset-manifest.json')
