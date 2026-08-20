@@ -19,6 +19,16 @@ test('normalizeRunsheetTasks maps phase synonyms and defaults scope to per-serve
   assert.equal(tasks[2]!.estimatedEffort, '1 day')
 })
 
+test('normalizeRunsheetTasks drops source backup/snapshot tasks in pre-migration and cutover but keeps them post-migration', () => {
+  const tasks = normalizeRunsheetTasks([
+    { phase: 'pre-migration', task: 'Backup source servers', description: 'Take a restorable backup of each source server before replication begins.' },
+    { phase: 'cutover', task: 'Final backup before cutover', description: 'Take a final database export just before the delta sync.' },
+    { phase: 'post-migration', task: 'Backups on Azure', description: 'Enable Azure Backup for each new Azure VM.' },
+    { phase: 'pre-migration', task: 'Azure Migrate appliance health check', description: 'Verify the appliance is online and discovering servers.' },
+  ])
+  assert.deepEqual(tasks.map((task) => task.task), ['Backups on Azure', 'Azure Migrate appliance health check'])
+})
+
 test('expandRunsheetRows expands per-server tasks once per server and keeps once-tasks singular', () => {
   const servers: RunsheetServer[] = [{ name: 'srv-01', application: 'App A', environment: 'Prod' }, { name: 'srv-02', application: 'App A', environment: 'Prod' }]
   const rows = expandRunsheetRows([
