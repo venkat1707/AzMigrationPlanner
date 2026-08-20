@@ -2368,6 +2368,7 @@ app.post('/api/artefacts/migration-runsheet-workbook', async (request, response)
       response.status(error.statusCode).json({ error: error.message })
       return
     }
+    console.error('Unexpected error generating migration runsheet:', error)
     response.status(502).json({ error: 'The migration runsheet could not be generated.' })
   }
 })

@@ -400,8 +400,10 @@ export async function requestMigrationRunsheetWorkbook(connection: Knex, input: 
   if (!Number.isInteger(input.sprintSequence) || input.sprintSequence <= 0) {
     throw new MigrationRunsheetError('Select a valid sprint before generating a migration runsheet.', 400)
   }
-  const savedPlan = await connection('migration_wave_plans').where({ id: 1 }).first('plan_json') as { plan_json?: string } | undefined
-  const plan = savedPlan?.plan_json ? JSON.parse(savedPlan.plan_json) as {
+  const savedPlan = await connection('migration_wave_plans').where({ id: 1 }).first('plan_json') as { plan_json?: string | Record<string, unknown> } | undefined
+  // MySQL JSON columns come back already-parsed as an object via mysql2 in most driver configs, but a
+  // plain string is also possible depending on connection settings — handle both.
+  const plan = savedPlan?.plan_json ? (typeof savedPlan.plan_json === 'string' ? JSON.parse(savedPlan.plan_json) : savedPlan.plan_json) as {
     waves?: Array<{ wave?: number; environment?: string; sprints?: Array<{
       sequence?: number; sprint?: number; name?: string; targetedStartDate?: string; targetedEndDate?: string
       servers?: Array<{ name?: string; application?: string; environment?: string }>

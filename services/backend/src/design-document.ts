@@ -858,8 +858,10 @@ export async function requestDesignDocument(connection: Knex, input: RequestInpu
   const hldContext = map && input.application && input.environment
     ? await loadHldContext(connection, input.application, input.environment, map)
     : null
-  const savedPlan = input.artifactType === 'design-document' ? null : await connection('migration_wave_plans').where({ id: 1 }).first('plan_json') as { plan_json?: string } | undefined
-  const plan = savedPlan?.plan_json ? JSON.parse(savedPlan.plan_json) as { waves?: Array<{ sprints?: Array<{ sequence?: number }> }> } : null
+  const savedPlan = input.artifactType === 'design-document' ? null : await connection('migration_wave_plans').where({ id: 1 }).first('plan_json') as { plan_json?: string | Record<string, unknown> } | undefined
+  // MySQL JSON columns come back already-parsed as an object via mysql2 in most driver configs, but a
+  // plain string is also possible depending on connection settings — handle both.
+  const plan = savedPlan?.plan_json ? (typeof savedPlan.plan_json === 'string' ? JSON.parse(savedPlan.plan_json) : savedPlan.plan_json) as { waves?: Array<{ sprints?: Array<{ sequence?: number }> }> } : null
   if (input.artifactType !== 'design-document' && !plan) throw new DesignDocumentError('A saved migration wave plan is required before generating this artefact.', 404)
 
   const endpoint = new URL(agent.endpoint_url)
