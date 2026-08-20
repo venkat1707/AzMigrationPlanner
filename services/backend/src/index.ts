@@ -1117,6 +1117,8 @@ app.get('/api/load-balancer-rules/rulesets/:rulesetId/virtual-servers', async (r
     page: Number(request.query.page) || 1,
     pageSize: Number(request.query.pageSize) || 25,
     search: String(request.query.search ?? '').trim() || undefined,
+    name: String(request.query.name ?? '').trim() || undefined,
+    ipAddress: String(request.query.ipAddress ?? '').trim() || undefined,
     protocol: String(request.query.protocol ?? '').trim() || undefined,
     enabled: enabledParam === 'true' || enabledParam === 'false' ? enabledParam : undefined,
     application: String(request.query.application ?? '').trim() || undefined,

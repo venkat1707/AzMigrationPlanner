@@ -151,11 +151,24 @@ button { letter-spacing: 0; }
 .ruleset-explorer-filters button { height: 32px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; color: white; background: var(--accent); border: 0; border-radius: 4px; font-size: 11px; font-weight: 700; cursor: pointer; }
 .ruleset-explorer-filters .icon-button { width: 32px; height: 32px; padding: 0; color: #526176; background: white; border: 1px solid #c4cfdf; }
 .ruleset-explorer-table-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-top: 0; }
-.ruleset-explorer-table-wrap table { font-size: 11px; }
+.ruleset-explorer-table-wrap table { width: 100%; font-size: 11px; }
 .ruleset-explorer-table-wrap th { position: sticky; top: 0; }
-.ruleset-explorer-table-wrap td { max-width: 260px; }
-.pool-members-list { margin: 4px 0 0; padding: 0; list-style: none; font-size: 10px; color: var(--muted); }
-.pool-members-list li { white-space: nowrap; }
+.ruleset-explorer-table-wrap td { max-width: 260px; overflow: hidden; overflow-wrap: anywhere; vertical-align: top; }
+.pool-members-list { max-height: 90px; margin: 4px 0 0; padding: 0; overflow-y: auto; list-style: none; font-size: 10px; color: var(--muted); }
+.pool-members-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The "Recommend Azure load balancing services" table adds an extra action-button column, so it
+   needs fixed, explicit column widths (unlike the shared class's other consumer) to keep the
+   overall table from growing wider/taller than its scroll container. */
+.load-balancer-scale-table-wrap table { table-layout: fixed; }
+.load-balancer-scale-table-wrap col.col-name { width: 16%; }
+.load-balancer-scale-table-wrap col.col-address { width: 11%; }
+.load-balancer-scale-table-wrap col.col-protocol { width: 7%; }
+.load-balancer-scale-table-wrap col.col-application { width: 11%; }
+.load-balancer-scale-table-wrap col.col-pool { width: 16%; }
+.load-balancer-scale-table-wrap col.col-ssl { width: 9%; }
+.load-balancer-scale-table-wrap col.col-persistence { width: 9%; }
+.load-balancer-scale-table-wrap col.col-state { width: 7%; }
+.load-balancer-scale-table-wrap col.col-action { width: 14%; }
 .ruleset-explorer .pagination { padding: 0 4px; border: 1px solid var(--line); border-top: 0; }
 .workspace { overflow: hidden; }
 .filters { padding: 18px; display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1fr) 100px auto auto; align-items: end; gap: 11px; background: #f8faff; border-bottom: 1px solid var(--line); }

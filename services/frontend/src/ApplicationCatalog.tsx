@@ -8,7 +8,13 @@ type ApplicationDraft = { name: string; description: string; firstName: string; 
 const emptyDraft: ApplicationDraft = { name: '', description: '', firstName: '', lastName: '', emailAddress: '', treatmentPlan: '' }
 const treatmentPlans = ['', 'Rehost', 'Replatform', 'Refactor', 'Rearchitect', 'Retire', 'Retain', 'Replace']
 
-function csvCell(value: string | null): string { return `"${(value ?? '').replace(/"/g, '""')}"` }
+// Prefixes values that would be interpreted as a spreadsheet formula (CSV/Excel formula injection)
+// with a single quote before quoting, matching the guard used by every other CSV export in the app.
+function csvCell(value: string | null): string {
+  const raw = value ?? ''
+  const safeValue = /^[=+\-@]/.test(raw) ? `'${raw}` : raw
+  return `"${safeValue.replace(/"/g, '""')}"`
+}
 
 export default function ApplicationCatalog({ canModify }: { canModify: boolean }) {
   const [applications, setApplications] = useState<Application[]>([])

@@ -14,8 +14,8 @@ const context = {
 
 test('HLD agent message includes all application and environment scoped design inputs', () => {
   const message = formatHldContextMessage(context)
-  assert.match(message, /^Task: Produce a design document\.\nHLD context \(JSON\):\n/)
-  const payload = JSON.parse(message.split('\n').slice(2).join('\n'))
+  assert.match(message, /^Task: Produce a design document\.\n[\s\S]*\n--- BEGIN HLD CONTEXT ---\n/)
+  const payload = JSON.parse(message.split('--- BEGIN HLD CONTEXT ---\n')[1]!.split('\n--- END HLD CONTEXT ---')[0]!)
   assert.deepEqual(payload, context)
   assert.equal(payload.applicationMap.application, 'Billing')
   assert.equal(payload.applicationTreatment.environment, 'Production')

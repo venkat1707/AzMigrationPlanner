@@ -45,8 +45,10 @@ export default function LoadBalancerScale() {
   const [rulesetId, setRulesetId] = useState<number | null>(null)
 
   const [page, setPage] = useState(1)
-  const [searchDraft, setSearchDraft] = useState('')
-  const [search, setSearch] = useState('')
+  const [nameDraft, setNameDraft] = useState('')
+  const [name, setName] = useState('')
+  const [ipDraft, setIpDraft] = useState('')
+  const [ipAddress, setIpAddress] = useState('')
   const [protocol, setProtocol] = useState('')
   const [enabled, setEnabled] = useState('')
   const [application, setApplication] = useState('')
@@ -94,7 +96,8 @@ export default function LoadBalancerScale() {
     let cancelled = false
     setTableLoading(true)
     const params = new URLSearchParams({ page: String(page), pageSize: String(tablePageSize) })
-    if (search) params.set('search', search)
+    if (name) params.set('name', name)
+    if (ipAddress) params.set('ipAddress', ipAddress)
     if (protocol) params.set('protocol', protocol)
     if (enabled) params.set('enabled', enabled)
     if (application) params.set('application', application)
@@ -103,7 +106,7 @@ export default function LoadBalancerScale() {
       .then((payload: RulesetVirtualServersPage) => { if (!cancelled) setData(payload) })
       .finally(() => { if (!cancelled) setTableLoading(false) })
     return () => { cancelled = true }
-  }, [rulesetId, page, search, protocol, enabled, application])
+  }, [rulesetId, page, name, ipAddress, protocol, enabled, application])
 
   const completedRulesets = importId ? (rulesetsByImport[importId] ?? []).filter((ruleset) => ruleset.status === 'Completed') : []
   const totalPages = Math.max(1, Math.ceil(data.total / tablePageSize))
@@ -147,8 +150,9 @@ export default function LoadBalancerScale() {
     {rulesetId && <section className="corelight-import" aria-labelledby="load-balancer-scale-table-heading">
       <div className="section-heading"><div><p className="eyebrow">Virtual servers</p><h2 id="load-balancer-scale-table-heading">Select a rule to scale to Azure</h2></div></div>
       <div className="ruleset-explorer">
-        <form className="ruleset-explorer-filters" onSubmit={(event) => { event.preventDefault(); setSearch(searchDraft.trim()); setPage(1) }}>
-          <input type="text" placeholder="Search name, id, IP, or pool member" value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} />
+        <form className="ruleset-explorer-filters" onSubmit={(event) => { event.preventDefault(); setName(nameDraft.trim()); setIpAddress(ipDraft.trim()); setPage(1) }}>
+          <input type="text" placeholder="Server name" value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} />
+          <input type="text" placeholder="Server IP" value={ipDraft} onChange={(event) => setIpDraft(event.target.value)} />
           <select value={protocol} onChange={(event) => { setProtocol(event.target.value); setPage(1) }}>
             <option value="">All protocols</option>
             {data.protocols.map((item) => <option key={item} value={item}>{item}</option>)}
@@ -163,10 +167,14 @@ export default function LoadBalancerScale() {
             {data.applications.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
           <button type="submit"><Search size={14} />Search</button>
-          <button type="button" className="icon-button" title="Reset filters" onClick={() => { setSearchDraft(''); setSearch(''); setProtocol(''); setEnabled(''); setApplication(''); setPage(1) }}><RefreshCw size={14} /></button>
+          <button type="button" className="icon-button" title="Reset filters" onClick={() => { setNameDraft(''); setName(''); setIpDraft(''); setIpAddress(''); setProtocol(''); setEnabled(''); setApplication(''); setPage(1) }}><RefreshCw size={14} /></button>
         </form>
-        <div className="ruleset-explorer-table-wrap">
+        <div className="ruleset-explorer-table-wrap load-balancer-scale-table-wrap">
           <table>
+            <colgroup>
+              <col className="col-name" /><col className="col-address" /><col className="col-protocol" /><col className="col-application" />
+              <col className="col-pool" /><col className="col-ssl" /><col className="col-persistence" /><col className="col-state" /><col className="col-action" />
+            </colgroup>
             <thead><tr><th>Name</th><th>Address</th><th>Protocol</th><th>Application</th><th>Pool</th><th>SSL profile</th><th>Persistence</th><th>State</th><th /></tr></thead>
             <tbody>
               {tableLoading ? <tr><td colSpan={9} className="empty-state">Loading…</td></tr>
