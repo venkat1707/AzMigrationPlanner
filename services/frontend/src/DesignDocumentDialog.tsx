@@ -26,19 +26,27 @@ function decodeDocument(base64: string): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(new ArrayBuffer(binary.length))
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
   if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
-    throw new Error('The generated file is not a valid modern Word document. Generate it again before saving.')
+    throw new Error('The generated file is not a valid modern Office document. Generate it again before saving.')
   }
   return bytes
 }
 
+const wordContentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+const excelContentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+function filePickerType(contentType: string): { description: string; accept: Record<string, string[]> } {
+  if (contentType === excelContentType) return { description: 'Excel workbook', accept: { [excelContentType]: ['.xlsx'] } }
+  return { description: 'Word document', accept: { [wordContentType]: ['.docx'] } }
+}
+
 async function saveDocument(file: Completed): Promise<'saved' | 'downloaded'> {
   const bytes = decodeDocument(file.contentBase64)
-  const blob = new Blob([bytes], { type: file.contentType || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+  const blob = new Blob([bytes], { type: file.contentType || wordContentType })
   const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker
   if (picker) {
     const handle = await picker({
       suggestedName: file.fileName,
-      types: [{ description: 'Word document', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }],
+      types: [filePickerType(file.contentType)],
     })
     const writable = await handle.createWritable()
     await writable.truncate(0)
@@ -140,7 +148,7 @@ export default function DesignDocumentDialog({ application, environment, documen
     if (!readyFile) return
     setError('')
     setPhase('saving')
-    setStatusText('Choose where to save the Word document…')
+    setStatusText('Choose where to save the document…')
     try {
       const outcome = await saveDocument(readyFile)
       setSavedName(readyFile.fileName)

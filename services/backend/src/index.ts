@@ -41,6 +41,7 @@ import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from '
 import { buildApplicationMap, listApplicationEnvironments } from './application-map.js'
 import { requestDesignDocument, DesignDocumentError, diagnoseAgentIdentity, type DesignAnswer } from './design-document.js'
 import { requestLoadBalancerScaleDocument, LoadBalancerScaleError, type ScaleAnswer } from './load-balancer-scale.js'
+import { requestMigrationRunsheetWorkbook, MigrationRunsheetError, type RunsheetAnswer } from './migration-runsheet.js'
 import { createMigrationWavePlan, defaultMigrationWaveOptions, loadDependencyPairs, type MigrationWaveOptions } from './migration-wave-planning.js'
 import { parseCoreInfrastructureFile } from './core-infrastructure-import.js'
 import { parseCoreNetworkRanges } from './core-infrastructure-networks.js'
@@ -2328,25 +2329,46 @@ app.post('/api/application-map/design-document', async (request, response) => {
 })
 
 app.post('/api/artefacts/document', async (request, response) => {
-  const artifactType = String(request.body?.artifactType ?? '') as 'migration-plan' | 'migration-runsheet'
-  if (artifactType !== 'migration-plan' && artifactType !== 'migration-runsheet') {
-    response.status(400).json({ error: 'Choose a migration plan or migration runsheet artefact.' })
+  const artifactType = String(request.body?.artifactType ?? '') as 'migration-plan'
+  if (artifactType !== 'migration-plan') {
+    response.status(400).json({ error: 'Choose a migration plan artefact.' })
     return
   }
-  const sprintSequence = request.body?.sprintSequence === undefined ? undefined : Number(request.body.sprintSequence)
   const conversationId = request.body?.conversationId ? String(request.body.conversationId) : null
   const answers: DesignAnswer[] = Array.isArray(request.body?.answers) ? request.body.answers.map((entry: unknown) => {
     const record = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
     return { id: String(record.id ?? '').trim(), response: String(record.response ?? '').trim() }
   }).filter((answer: DesignAnswer) => answer.id) : []
   try {
-    response.json(await requestDesignDocument(database, { artifactType, sprintSequence, conversationId, answers }))
+    response.json(await requestDesignDocument(database, { artifactType, conversationId, answers }))
   } catch (error) {
     if (error instanceof DesignDocumentError) {
       response.status(error.statusCode).json({ error: error.message })
       return
     }
     response.status(502).json({ error: 'The artefact could not be generated.' })
+  }
+})
+
+app.post('/api/artefacts/migration-runsheet-workbook', async (request, response) => {
+  const sprintSequence = Number(request.body?.sprintSequence)
+  if (!Number.isInteger(sprintSequence) || sprintSequence <= 0) {
+    response.status(400).json({ error: 'Select a valid sprint before generating a migration runsheet.' })
+    return
+  }
+  const conversationId = request.body?.conversationId ? String(request.body.conversationId) : null
+  const answers: RunsheetAnswer[] = Array.isArray(request.body?.answers) ? request.body.answers.map((entry: unknown) => {
+    const record = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+    return { id: String(record.id ?? '').trim(), response: String(record.response ?? '').trim() }
+  }).filter((answer: RunsheetAnswer) => answer.id) : []
+  try {
+    response.json(await requestMigrationRunsheetWorkbook(database, { sprintSequence, conversationId, answers }))
+  } catch (error) {
+    if (error instanceof MigrationRunsheetError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    response.status(502).json({ error: 'The migration runsheet could not be generated.' })
   }
 })
 
