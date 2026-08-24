@@ -2897,11 +2897,13 @@ app.get('/api/firewall-rules', async (request, response) => {
     response.status(404).json({ error: `Sprint sequence ${scope} was not found in the saved plan.`, sprints })
     return
   }
-  // The NSG target's page mirrors the Excel export's columns, so it needs the same projected priority/name/orientation/NSG name.
-  const rules = target === 'nsg'
+  // The NSG and Azure Firewall pages mirror their Excel export columns, so they need the same projected priority/name/orientation (NSG name only applies to NSG).
+  const rules = target === 'nsg' || target === 'azure-firewall'
     ? (() => {
+        const projected = projectRules(ruleSet)
+        if (target !== 'nsg') return projected
         const serverNsgNames = landingZoneNsgNamesByServer(ruleSet.landingZone)
-        return projectRules(ruleSet).map((rule) => ({ ...rule, nsgName: nsgNamesForRule(rule.localServers, serverNsgNames) }))
+        return projected.map((rule) => ({ ...rule, nsgName: nsgNamesForRule(rule.localServers, serverNsgNames) }))
       })()
     : ruleSet.rules
   response.json({

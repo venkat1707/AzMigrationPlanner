@@ -220,3 +220,21 @@ test('NSG Excel sheet mirrors the Azure portal rule columns and includes the map
   assert.equal(dataRow?.[6], 'Allow')
   assert.equal(dataRow?.[8], 'nsg-prod-web')
 })
+
+test('Azure Firewall Excel sheet mirrors the Azure portal rule columns', async () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'azure-firewall',
+    outbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: null, remoteIp: '203.0.113.9', port: 443, connections: 6 }],
+  }))
+  const buffer = await createFirewallRulesWorkbook(result)
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.load(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer)
+  const sheet = workbook.getWorksheet('Azure Firewall Rules')
+  assert.deepEqual((sheet?.getRow(1).values as ExcelJS.CellValue[])?.slice(1), [
+    'Priority', 'Name', 'Port', 'Protocol', 'Source', 'Destination', 'Action', 'Core Infrastructure',
+  ])
+  const dataRow = (sheet?.getRow(2).values as ExcelJS.CellValue[])?.slice(1)
+  assert.equal(dataRow?.[3], 'TCP')
+  assert.equal(dataRow?.[5], '203.0.113.9')
+  assert.equal(dataRow?.[6], 'Allow')
+})

@@ -456,28 +456,24 @@ function addNsgSheet(workbook: ExcelJS.Workbook, projected: ProjectedRule[], lan
 function addAzureFirewallSheet(workbook: ExcelJS.Workbook, projected: ProjectedRule[]): void {
   const firewall = workbook.addWorksheet('Azure Firewall Rules', { views: [{ state: 'frozen', ySplit: 1 }] })
   firewall.columns = [
-    { header: 'Collection Priority', key: 'collectionPriority' }, { header: 'Rule Name', key: 'name' }, { header: 'Action', key: 'action' },
-    { header: 'Protocols', key: 'protocols' }, { header: 'Source Addresses', key: 'source' }, { header: 'Destination Addresses', key: 'destination' },
-    { header: 'Destination Ports', key: 'ports' }, { header: 'Peer Server', key: 'peer' }, { header: 'Service', key: 'service' },
-    { header: 'Connections', key: 'connections' }, { header: 'Notes', key: 'notes' },
+    { header: 'Priority', key: 'priority' }, { header: 'Name', key: 'name' }, { header: 'Port', key: 'port' },
+    { header: 'Protocol', key: 'protocol' }, { header: 'Source', key: 'source' }, { header: 'Destination', key: 'destination' },
+    { header: 'Action', key: 'action' }, { header: 'Core Infrastructure', key: 'core' },
   ]
   for (const rule of projected.filter((entry) => entry.resolved)) {
     firewall.addRow({
-      collectionPriority: 300,
+      priority: rule.priority,
       name: rule.name,
-      action: 'Allow',
-      protocols: firewallProtocol(rule.protocol),
+      port: rule.portRange,
+      protocol: firewallProtocol(rule.protocol),
       source: rule.sourceAddresses.join(', ') || SPRINT_ADDRESS_FALLBACK,
       destination: rule.destinationAddresses.join(', ') || '',
-      ports: rule.portRange,
-      peer: rule.remoteName ?? '',
-      service: rule.service ?? '',
-      connections: rule.connections,
-      notes: rule.coreInfrastructure ? 'Core infrastructure destination' : '',
+      action: 'Allow',
+      core: rule.coreInfrastructure ? 'Yes' : 'No',
     })
   }
   styleHeader(firewall.getRow(1))
-  firewall.autoFilter = { from: 'A1', to: 'K1' }
+  firewall.autoFilter = { from: 'A1', to: 'H1' }
   fitColumns(firewall)
 }
 

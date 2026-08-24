@@ -20,11 +20,12 @@ type FirewallRule = {
   coreInfrastructure: boolean
   resolved: boolean
   peerKind: 'host' | 'server' | 'network'
-  // Only populated for the Azure NSG target, to mirror the Excel export's columns.
+  // Only populated for the Azure NSG and Azure Firewall targets, to mirror their Excel export columns.
   priority?: number
   name?: string
   sourceAddresses?: string[]
   destinationAddresses?: string[]
+  // Azure NSG target only.
   nsgName?: string
 }
 
@@ -260,6 +261,20 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
                 <td>{rule.nsgName || '—'}</td>
                 <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
                 <td>{rule.resolved ? '' : <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
+              </tr>)}
+            </tbody>
+          </> : target === 'azure-firewall' ? <>
+            <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Core</th></tr></thead>
+            <tbody>
+              {visibleRules.slice(0, 500).map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
+                <td>{rule.priority ?? ''}</td>
+                <td>{rule.name ?? ''}</td>
+                <td>{rule.port ?? 'Any'}</td>
+                <td>{rule.protocol === '*' ? 'Any' : rule.protocol}</td>
+                <td>{rule.sourceAddresses && rule.sourceAddresses.length > 0 ? rule.sourceAddresses.join(', ') : '(sprint address space)'}</td>
+                <td>{rule.destinationAddresses && rule.destinationAddresses.length > 0 ? rule.destinationAddresses.join(', ') : <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
+                <td>Allow</td>
+                <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
               </tr>)}
             </tbody>
           </> : <>
