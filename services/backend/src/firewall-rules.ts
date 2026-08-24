@@ -63,6 +63,10 @@ export type FirewallRule = {
   port: number | null
   remoteName: string | null
   remoteAddress: string | null
+  // Optional multi-value override of remoteAddress, used when a rule's remote side legitimately
+  // resolves to more than one address (e.g. an imported firewall rule with several source CIDRs).
+  // When present, orientRule() uses this instead of wrapping the singular remoteAddress.
+  remoteAddresses?: string[]
   localServers: string[]
   localAddresses: string[]
   connections: number
@@ -70,6 +74,9 @@ export type FirewallRule = {
   coreInfrastructure: boolean
   resolved: boolean
   peerKind: 'host' | 'server' | 'network'
+  // Optional pre-assigned name (e.g. an imported rule's own name). When set, projectRules() sanitizes
+  // and reuses it instead of synthesizing one from direction/protocol/port/peer.
+  name?: string
 }
 
 export type FirewallRuleSet = {
@@ -128,9 +135,10 @@ function matchNetwork(ip: string, networks: ParsedNetwork[]): ParsedNetwork | nu
 }
 
 // Resolve which side of a rule is the source vs destination for the given firewall perspective.
-export function orientRule(rule: Pick<FirewallRule, 'direction' | 'localServers' | 'localAddresses' | 'remoteName' | 'remoteAddress'>, target: FirewallTarget) {
+export function orientRule(rule: Pick<FirewallRule, 'direction' | 'localServers' | 'localAddresses' | 'remoteName' | 'remoteAddress' | 'remoteAddresses'>, target: FirewallTarget) {
   const local = { servers: rule.localServers, addresses: rule.localAddresses }
-  const remote = { servers: rule.remoteName ? [rule.remoteName] : [], addresses: rule.remoteAddress ? [rule.remoteAddress] : [] }
+  const remoteAddressList = rule.remoteAddresses && rule.remoteAddresses.length > 0 ? rule.remoteAddresses : (rule.remoteAddress ? [rule.remoteAddress] : [])
+  const remote = { servers: rule.remoteName ? [rule.remoteName] : [], addresses: remoteAddressList }
   const azureView = target !== 'on-prem'
   const sourceIsRemote = azureView ? rule.direction === 'Inbound' : rule.direction === 'Outbound'
   return sourceIsRemote ? { source: remote, destination: local } : { source: local, destination: remote }
@@ -353,7 +361,9 @@ export function projectRules(ruleSet: FirewallRuleSet): ProjectedRule[] {
   return ruleSet.rules.map((rule) => {
     const portRange = rule.port === null ? '*' : String(rule.port)
     const peer = rule.remoteAddress ?? rule.remoteName ?? 'unknown'
-    let name = `Allow_${rule.direction === 'Inbound' ? 'In' : 'Out'}_${rule.protocol === '*' ? 'Any' : rule.protocol}_${portRange === '*' ? 'Any' : portRange}_${sanitizeName(peer)}`
+    let name = rule.name
+      ? sanitizeName(rule.name)
+      : `Allow_${rule.direction === 'Inbound' ? 'In' : 'Out'}_${rule.protocol === '*' ? 'Any' : rule.protocol}_${portRange === '*' ? 'Any' : portRange}_${sanitizeName(peer)}`
     name = name.slice(0, 74)
     let candidate = name
     let suffix = 1
@@ -436,7 +446,7 @@ export function landingZoneNsgNamesByServer(landingZone: LandingZoneContext): Ma
 
 // Server name (lowercased) -> subnet key, from the sprint's Landing Zone Resource Groups/Network mapping.
 // Two servers share this key only when they are mapped to the exact same subscription/resource group/VNet/subnet.
-function landingZoneSubnetKeyByServer(landingZone: LandingZoneContext): Map<string, string> {
+export function landingZoneSubnetKeyByServer(landingZone: LandingZoneContext): Map<string, string> {
   const serverSubnetKeys = new Map<string, string>()
   for (const placement of landingZone.placements) {
     if (!placement.subnet) continue
@@ -545,6 +555,22 @@ export async function createFirewallRulesWorkbook(ruleSet: FirewallRuleSet): Pro
   if (ruleSet.target === 'nsg') addNsgSheet(workbook, projected, ruleSet.landingZone)
   else if (ruleSet.target === 'azure-firewall') addAzureFirewallSheet(workbook, projected)
   else addOnPremSheet(workbook, projected)
+
+  return Buffer.from(await workbook.xlsx.writeBuffer())
+}
+
+// Same as createFirewallRulesWorkbook, except the on-prem target reuses the Azure Firewall sheet
+// format instead of the on-prem-specific sheet, per the "Matching rules from imported firewall
+// configurations" table's requirement that its on-prem view match the Azure Firewall view.
+export async function createFirewallRulesWorkbookForImportedMatches(ruleSet: FirewallRuleSet): Promise<Buffer> {
+  const projected = projectRules(ruleSet)
+  const workbook = new ExcelJS.Workbook()
+  workbook.creator = 'Cloud Accelerate Factory'
+  workbook.created = new Date()
+
+  addOverviewSheet(workbook, ruleSet)
+  if (ruleSet.target === 'nsg') addNsgSheet(workbook, projected, ruleSet.landingZone)
+  else addAzureFirewallSheet(workbook, projected)
 
   return Buffer.from(await workbook.xlsx.writeBuffer())
 }

@@ -29,13 +29,13 @@ import {
   FirewallRulesetError, getFirewallRulesetDetail, listFirewallRulesetRulesPaged, listFirewallRulesets, listFirewallRulesetsBatch,
   loadLatestCompletedFirewallRulesetsForMatching, startFirewallRulesetParse,
 } from './firewall-ruleset.js'
-import { matchImportedFirewallRules, type ImportedFirewallMatchResult } from './firewall-rule-matching.js'
+import { buildImportedFirewallRuleSet } from './firewall-rule-matching.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
 import { normalizeSprintSchedule, type SprintSchedule, type SprintScheduleInput } from './sprint-schedule.js'
 import { buildSprintScheduleView, createSprintSchedulePresentation, createSprintScheduleWorkbook, type ScheduleAssessment } from './sprint-schedule-export.js'
-import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallRulesWorkbook, createFirewallTerraformArchive, landingZoneNsgNamesByServer, nsgNamesForRule, projectRules, type DependencyFlowRow, type FirewallRuleSet, type FirewallTarget, type LandingZoneContext, type LandingZonePlacement, type NetworkRange, type PortReference } from './firewall-rules.js'
+import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallRulesWorkbook, createFirewallRulesWorkbookForImportedMatches, createFirewallTerraformArchive, landingZoneNsgNamesByServer, nsgNamesForRule, projectRules, type DependencyFlowRow, type FirewallRuleSet, type FirewallTarget, type LandingZoneContext, type LandingZonePlacement, type NetworkRange, type PortReference } from './firewall-rules.js'
 import { refreshDatabaseServerFlags } from './database-server-classification.js'
 import { getCleanupStatus, startDataCleanup } from './data-cleanup.js'
 import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
@@ -2867,36 +2867,72 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
 
 // Cross-references already-imported firewall rulesets against the servers in scope for a sprint (or
 // all sprints), mirroring the sprint/scope resolution used by buildSprintFirewallRuleSet above.
-async function buildMatchedImportedFirewallRules(scope: 'all' | number, excludeCoreInfrastructure: boolean): Promise<{ result: ImportedFirewallMatchResult | null; scopeFound: boolean }> {
+async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: FirewallTarget, excludeCoreInfrastructure: boolean): Promise<{ ruleSet: FirewallRuleSet | null; scopeFound: boolean; rulesetsScanned: number; rulesScanned: number; nonAllowOrDisabledExcluded: number }> {
   const saved = await loadSavedTaskPlan()
-  if (!saved) return { result: null, scopeFound: false }
+  if (!saved) return { ruleSet: null, scopeFound: false, rulesetsScanned: 0, rulesScanned: 0, nonAllowOrDisabledExcluded: 0 }
   const sprints: SprintScopeOption[] = saved.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
     sequence: sprint.sequence, sprint: sprint.sprint, wave: wave.wave, environment: wave.environment, name: sprint.name, serverCount: sprint.serverCount,
   }))).sort((left, right) => left.sequence - right.sequence)
 
   const selectedSprints = scope === 'all' ? sprints : sprints.filter((sprint) => sprint.sequence === scope)
-  if (scope !== 'all' && selectedSprints.length === 0) return { result: null, scopeFound: false }
+  if (scope !== 'all' && selectedSprints.length === 0) return { ruleSet: null, scopeFound: false, rulesetsScanned: 0, rulesScanned: 0, nonAllowOrDisabledExcluded: 0 }
 
   const selectedSequences = new Set(selectedSprints.map((sprint) => sprint.sequence))
   const selectedSprintTasks = saved.plan.waves.flatMap((wave) => wave.sprints).filter((sprint) => selectedSequences.has(sprint.sequence))
-  const serverNames = [...new Set(selectedSprintTasks.flatMap((sprint) => sprint.servers.map((server) => server.name.trim()).filter(Boolean)))]
+  const sprintMembership = selectedSprintTasks.flatMap((sprint) => sprint.servers
+    .map((server) => ({ serverName: server.name.trim(), sprintSequence: sprint.sequence }))
+    .filter((entry) => entry.serverName.length > 0))
+  const serverNames = [...new Set(sprintMembership.map((entry) => entry.serverName))]
   const scopeLabel = scope === 'all'
     ? `All sprints (${serverNames.length} servers)`
     : `${selectedSprints[0]?.name ?? `Sprint ${scope}`} - Wave ${selectedSprints[0]?.wave ?? '?'} (${serverNames.length} servers)`
 
   if (serverNames.length === 0) {
-    return {
-      result: matchImportedFirewallRules({ scopeLabel, assessmentIps: [], coreInfrastructureIps: [], excludeCoreInfrastructure, rulesets: [] }),
-      scopeFound: true,
-    }
+    const { ruleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded } = buildImportedFirewallRuleSet({
+      scopeLabel, target, assessmentIps: [], coreInfrastructureIps: [], excludeCoreInfrastructure, sprintMembership: [], landingZone: { placements: [], unmapped: [] }, rulesets: [],
+    })
+    return { ruleSet, scopeFound: true, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded }
   }
 
-  const [coreServers, loadBalancerIps, assessmentRows, rulesets] = await Promise.all([
+  const [coreServers, loadBalancerIps, assessmentRows, rulesets, landingZoneMappingRows] = await Promise.all([
     database('core_infrastructure_servers').distinct({ ipAddress: 'ip_address' }) as Promise<Array<{ ipAddress: string | null }>>,
     database('core_infrastructure_load_balancer_ips').pluck('ip_address') as Promise<string[]>,
     database('server_assessments').whereIn('server_name', serverNames).whereNotNull('ip_address').select({ serverName: 'server_name', ipAddress: 'ip_address' }) as Promise<Array<{ serverName: string; ipAddress: string | null }>>,
     loadLatestCompletedFirewallRulesetsForMatching(),
+    database('sprint_server_landing_zone_mappings as m')
+      .whereIn('m.server_name', serverNames)
+      .leftJoin('landing_zone_resource_groups as rg', 'rg.resource_group_id', 'm.resource_group_id')
+      .leftJoin('landing_zone_networks as net', function joinNetwork() {
+        this.on('net.subscription_id', '=', 'm.subscription_id')
+          .andOn('net.network_resource_group', '=', 'm.network_resource_group')
+          .andOn('net.virtual_network', '=', 'm.virtual_network')
+          .andOn('net.subnet', '=', 'm.subnet')
+      })
+      .select({
+        serverName: 'm.server_name', subscriptionId: 'm.subscription_id', subscriptionName: 'm.subscription_name',
+        resourceGroupName: 'rg.resource_group_name', location: 'rg.location', virtualNetwork: 'm.virtual_network', subnet: 'm.subnet',
+        subnetIpSegment: 'net.subnet_ip_segment', networkSecurityGroup: 'm.network_security_group',
+      }) as Promise<Array<{ serverName: string; subscriptionId: string | null; subscriptionName: string | null; resourceGroupName: string | null; location: string | null; virtualNetwork: string | null; subnet: string | null; subnetIpSegment: string | null; networkSecurityGroup: string | null }>>,
   ])
+
+  const landingZonePlacementsByKey = new Map<string, LandingZonePlacement>()
+  for (const row of landingZoneMappingRows) {
+    const key = [row.subscriptionId, row.resourceGroupName, row.virtualNetwork, row.subnet, row.networkSecurityGroup].map((value) => (value ?? '').toLowerCase()).join('|')
+    const existing = landingZonePlacementsByKey.get(key)
+    if (existing) { existing.servers.push(row.serverName); continue }
+    landingZonePlacementsByKey.set(key, {
+      servers: [row.serverName],
+      subscriptionId: row.subscriptionId, subscriptionName: row.subscriptionName, resourceGroupName: row.resourceGroupName, location: row.location,
+      virtualNetwork: row.virtualNetwork, subnet: row.subnet, subnetIpSegment: row.subnetIpSegment, networkSecurityGroup: row.networkSecurityGroup,
+    })
+  }
+  const landingZoneMappedServers = new Set(landingZoneMappingRows.map((row) => row.serverName))
+  const landingZone: LandingZoneContext = {
+    placements: [...landingZonePlacementsByKey.values()]
+      .map((placement) => ({ ...placement, servers: placement.servers.sort() }))
+      .sort((left, right) => right.servers.length - left.servers.length),
+    unmapped: serverNames.filter((name) => !landingZoneMappedServers.has(name)).sort(),
+  }
 
   const coreInfrastructureIps = [...new Set([
     ...coreServers.flatMap((server) => parseIpList(server.ipAddress)),
@@ -2907,8 +2943,10 @@ async function buildMatchedImportedFirewallRules(scope: 'all' | number, excludeC
     return ip ? [{ serverName: row.serverName, ip }] : []
   })
 
-  const result = matchImportedFirewallRules({ scopeLabel, assessmentIps, coreInfrastructureIps, excludeCoreInfrastructure, rulesets })
-  return { result, scopeFound: true }
+  const { ruleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded } = buildImportedFirewallRuleSet({
+    scopeLabel, target, assessmentIps, coreInfrastructureIps, excludeCoreInfrastructure, sprintMembership, landingZone, rulesets,
+  })
+  return { ruleSet, scopeFound: true, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded }
 }
 
 function parseFirewallScope(value: unknown): 'all' | number | null {
@@ -2921,6 +2959,15 @@ function parseFirewallScope(value: unknown): 'all' | number | null {
 function parseFirewallTarget(value: unknown): FirewallTarget | null {
   const raw = String(value ?? '').trim().toLowerCase()
   return raw === 'nsg' || raw === 'azure-firewall' || raw === 'on-prem' ? raw : null
+}
+
+// The imported-matches table always uses the Priority/Name/Port/Protocol/Source/Destination/Action/
+// Direction(/NSG Name)/Core format (on-prem included, per its "same as Azure Firewall" requirement).
+function projectImportedRulesForResponse(ruleSet: FirewallRuleSet) {
+  const projected = projectRules(ruleSet)
+  if (ruleSet.target !== 'nsg') return projected
+  const serverNsgNames = landingZoneNsgNamesByServer(ruleSet.landingZone)
+  return projected.map((rule) => ({ ...rule, nsgName: nsgNamesForRule(rule.localServers, serverNsgNames) }))
 }
 
 app.get('/api/firewall-rules', async (request, response) => {
@@ -2953,7 +3000,18 @@ app.get('/api/firewall-rules', async (request, response) => {
         return projected.map((rule) => ({ ...rule, nsgName: nsgNamesForRule(rule.localServers, serverNsgNames) }))
       })()
     : ruleSet.rules
-  const { result: importedMatches } = await buildMatchedImportedFirewallRules(scope, excludeCoreInfrastructure)
+  const { ruleSet: importedRuleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure)
+  const importedMatches = importedRuleSet ? {
+    scopeLabel: importedRuleSet.scopeLabel,
+    target,
+    excludeCoreInfrastructure,
+    summary: importedRuleSet.summary,
+    truncated: importedRuleSet.truncated,
+    rulesetsScanned,
+    rulesScanned,
+    nonAllowOrDisabledExcluded,
+    rules: projectImportedRulesForResponse(importedRuleSet),
+  } : null
   response.json({
     scope: scope === 'all' ? 'all' : scope,
     target,
@@ -2967,6 +3025,7 @@ app.get('/api/firewall-rules', async (request, response) => {
     importedMatches,
   })
 })
+
 
 app.get('/api/firewall-rules/export', async (request, response) => {
   const format = String(request.query.format ?? '').toLowerCase()
@@ -3010,6 +3069,51 @@ app.get('/api/firewall-rules/export', async (request, response) => {
   response
     .type('application/zip')
     .attachment(`firewall-rules-${baseName}-${target}-${format}.zip`)
+    .send(archive)
+})
+
+app.get('/api/firewall-rules/imported-matches/export', async (request, response) => {
+  const format = String(request.query.format ?? '').toLowerCase()
+  if (format !== 'xlsx' && format !== 'terraform' && format !== 'bicep') {
+    response.status(400).json({ error: 'Choose xlsx, terraform, or bicep as the export format.' })
+    return
+  }
+  const scope = parseFirewallScope(request.query.sprint)
+  if (scope === null) {
+    response.status(400).json({ error: 'sprint must be "all" or a positive sprint sequence.' })
+    return
+  }
+  const target = parseFirewallTarget(request.query.target)
+  if (target === null) {
+    response.status(400).json({ error: 'target must be one of "nsg", "azure-firewall", or "on-prem".' })
+    return
+  }
+  if (target === 'on-prem' && format !== 'xlsx') {
+    response.status(400).json({ error: 'On-prem firewall rules can only be exported as an Excel workbook.' })
+    return
+  }
+  const excludeCoreInfrastructure = request.query.excludeCoreInfrastructure === 'true'
+  const { ruleSet, scopeFound } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure)
+  if (!scopeFound) {
+    response.status(404).json({ error: 'A saved migration wave plan is required, and the sprint sequence must exist in it.' })
+    return
+  }
+  if (!ruleSet) {
+    response.status(404).json({ error: `Sprint sequence ${scope} was not found in the saved plan.` })
+    return
+  }
+  const baseName = scope === 'all' ? 'all-sprints' : `sprint-${scope}`
+  if (format === 'xlsx') {
+    response
+      .type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      .attachment(`imported-firewall-rules-${baseName}-${target}.xlsx`)
+      .send(await createFirewallRulesWorkbookForImportedMatches(ruleSet))
+    return
+  }
+  const archive = format === 'terraform' ? await createFirewallTerraformArchive(ruleSet) : await createFirewallBicepArchive(ruleSet)
+  response
+    .type('application/zip')
+    .attachment(`imported-firewall-rules-${baseName}-${target}-${format}.zip`)
     .send(archive)
 })
 

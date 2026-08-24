@@ -614,6 +614,9 @@ export type ImportedFirewallRulesetForMatching = {
   addressObjects: Array<{
     rulesetId: number; externalId: string; name: string; type: string | null; value: string | null; members: string[]
   }>
+  serviceObjects: Array<{
+    rulesetId: number; externalId: string; name: string; protocol: string | null; portRange: string | null; members: string[]
+  }>
 }
 
 // Loads the most recently completed parse (highest version with status = 'Completed') for every
@@ -634,7 +637,7 @@ export async function loadLatestCompletedFirewallRulesetsForMatching(): Promise<
 
   const rulesetIds = latestRulesets.map((row) => row.rulesetId)
   const importIds = latestRulesets.map((row) => row.importId)
-  const [imports, ruleRows, addressObjectRows] = await Promise.all([
+  const [imports, ruleRows, addressObjectRows, serviceObjectRows] = await Promise.all([
     database('firewall_rule_imports').whereIn('id', importIds).select({ id: 'id', fileName: 'file_name' }) as Promise<Array<{ id: number; fileName: string }>>,
     database('firewall_ruleset_rules').whereIn('ruleset_id', rulesetIds).select({
       rulesetId: 'ruleset_id', id: 'id', externalId: 'external_id', name: 'name', action: 'action', enabled: 'enabled',
@@ -643,7 +646,11 @@ export async function loadLatestCompletedFirewallRulesetsForMatching(): Promise<
     database('firewall_ruleset_address_objects').whereIn('ruleset_id', rulesetIds).select({
       rulesetId: 'ruleset_id', externalId: 'external_id', name: 'name', type: 'type', value: 'value', members: 'members',
     }) as Promise<Array<Record<string, unknown>>>,
+    database('firewall_ruleset_service_objects').whereIn('ruleset_id', rulesetIds).select({
+      rulesetId: 'ruleset_id', externalId: 'external_id', name: 'name', protocol: 'protocol', portRange: 'port_range', members: 'members',
+    }) as Promise<Array<Record<string, unknown>>>,
   ])
+
 
   const fileNameByImportId = new Map(imports.map((row) => [row.id, row.fileName]))
   const rulesByRuleset = new Map<number, ImportedFirewallRulesetForMatching['rules']>()
@@ -669,6 +676,16 @@ export async function loadLatestCompletedFirewallRulesetsForMatching(): Promise<
     })
     addressObjectsByRuleset.set(rulesetId, list)
   }
+  const serviceObjectsByRuleset = new Map<number, ImportedFirewallRulesetForMatching['serviceObjects']>()
+  for (const row of serviceObjectRows) {
+    const rulesetId = row.rulesetId as number
+    const list = serviceObjectsByRuleset.get(rulesetId) ?? []
+    list.push({
+      rulesetId, externalId: row.externalId as string, name: row.name as string,
+      protocol: row.protocol as string | null, portRange: row.portRange as string | null, members: parseJsonColumn<string[]>(row.members, []),
+    })
+    serviceObjectsByRuleset.set(rulesetId, list)
+  }
 
   return latestRulesets.map((row) => ({
     rulesetId: row.rulesetId,
@@ -677,5 +694,6 @@ export async function loadLatestCompletedFirewallRulesetsForMatching(): Promise<
     fileName: fileNameByImportId.get(row.importId) ?? null,
     rules: rulesByRuleset.get(row.rulesetId) ?? [],
     addressObjects: addressObjectsByRuleset.get(row.rulesetId) ?? [],
+    serviceObjects: serviceObjectsByRuleset.get(row.rulesetId) ?? [],
   }))
 }

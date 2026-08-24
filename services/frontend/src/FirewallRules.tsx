@@ -41,36 +41,21 @@ type FirewallSummary = {
   sprintServers: number
 }
 
-type ImportedFirewallMatch = {
-  id: string
-  rulesetId: number
-  externalId: string
-  name: string | null
-  action: string
-  enabled: boolean
-  vendor: string | null
-  importFileName: string | null
-  sourceZones: string[]
-  destinationZones: string[]
-  sourceAddresses: string[]
-  destinationAddresses: string[]
-  services: string[]
-  matchedServers: string[]
-  matchedSide: 'source' | 'destination' | 'both'
-}
-
-type ImportedFirewallMatchResult = {
+type ImportedFirewallMatches = {
   scopeLabel: string
+  target: FirewallTarget
   excludeCoreInfrastructure: boolean
-  matches: ImportedFirewallMatch[]
-  summary: {
-    rulesetsScanned: number
-    rulesScanned: number
-    matched: number
-    coreInfrastructureExcluded: number
-    sprintServers: number
-  }
+  summary: FirewallSummary
   truncated: boolean
+  rulesetsScanned: number
+  rulesScanned: number
+  // Imported rules that were disabled, or whose action was not an allow/permit type, cannot be
+  // recreated as an Azure allow rule and are excluded from the table (counted here for transparency).
+  nonAllowOrDisabledExcluded: number
+  // Same shape as the dependency-based `rules` above — projected into the Azure NSG or Azure Firewall
+  // table format (on-prem imported matches also use the Azure Firewall format, per the on-prem table
+  // mirroring the Azure Firewall table).
+  rules: FirewallRule[]
 }
 
 type FirewallResponse = {
@@ -83,7 +68,7 @@ type FirewallResponse = {
   truncated: boolean
   sprintAddresses: string[]
   rules: FirewallRule[]
-  importedMatches: ImportedFirewallMatchResult | null
+  importedMatches: ImportedFirewallMatches | null
   error?: string
 }
 
@@ -109,6 +94,49 @@ const targetDisclaimers: Record<FirewallTarget, string> = {
 
 const formatNumber = new Intl.NumberFormat('en-US')
 
+// Shared row renderers so the dependency-based and imported-matches tables use identical Azure NSG /
+// Azure Firewall column layouts (on-prem reuses the Azure Firewall layout for imported matches).
+function NsgTableRows({ rules }: { rules: FirewallRule[] }) {
+  return <>
+    <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Direction</th><th>NSG Name</th><th>Core</th><th>Notes</th></tr></thead>
+    <tbody>
+      {rules.map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
+        <td>{rule.priority ?? ''}</td>
+        <td>{rule.name ?? ''}</td>
+        <td>{rule.port ?? 'Any'}</td>
+        <td>{rule.protocol === '*' ? 'Any' : rule.protocol}</td>
+        <td>{rule.sourceAddresses && rule.sourceAddresses.length > 0 ? rule.sourceAddresses.join(', ') : '(sprint address space)'}</td>
+        <td>{rule.destinationAddresses && rule.destinationAddresses.length > 0 ? rule.destinationAddresses.join(', ') : '(sprint address space)'}</td>
+        <td>Allow</td>
+        <td><span className={`firewall-direction ${rule.direction.toLowerCase()}`}>{rule.direction}</span></td>
+        <td>{rule.nsgName || '—'}</td>
+        <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
+        <td>{rule.resolved ? '' : <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
+      </tr>)}
+    </tbody>
+  </>
+}
+
+function AzureFirewallTableRows({ rules }: { rules: FirewallRule[] }) {
+  return <>
+    <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Direction</th><th>Core</th></tr></thead>
+    <tbody>
+      {rules.map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
+        <td>{rule.priority ?? ''}</td>
+        <td>{rule.name ?? ''}</td>
+        <td>{rule.port ?? 'Any'}</td>
+        <td>{rule.protocol === '*' ? 'Any' : rule.protocol}</td>
+        <td>{rule.sourceAddresses && rule.sourceAddresses.length > 0 ? rule.sourceAddresses.join(', ') : '(sprint address space)'}</td>
+        <td>{rule.destinationAddresses && rule.destinationAddresses.length > 0 ? rule.destinationAddresses.join(', ') : <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
+        <td>Allow</td>
+        <td><span className={`firewall-direction ${rule.direction.toLowerCase()}`}>{rule.direction}</span></td>
+        <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
+      </tr>)}
+    </tbody>
+  </>
+}
+
+
 export default function FirewallRules({ embedded = false }: { embedded?: boolean }) {
   const [sprints, setSprints] = useState<SprintOption[]>([])
   const [scope, setScope] = useState<'all' | number>('all')
@@ -118,16 +146,21 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
   const [scopeLabel, setScopeLabel] = useState('')
   const [rules, setRules] = useState<FirewallRule[]>([])
   const [sprintAddresses, setSprintAddresses] = useState<string[]>([])
-  const [importedMatches, setImportedMatches] = useState<ImportedFirewallMatchResult | null>(null)
+  const [importedMatches, setImportedMatches] = useState<ImportedFirewallMatches | null>(null)
   const [truncated, setTruncated] = useState(false)
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState<ExportFormat | null>(null)
+  const [importedExporting, setImportedExporting] = useState<ExportFormat | null>(null)
   const [error, setError] = useState('')
   const [planMissing, setPlanMissing] = useState(false)
   const [directionFilter, setDirectionFilter] = useState<'All' | 'Inbound' | 'Outbound'>('All')
   const [search, setSearch] = useState('')
   const [rulesPage, setRulesPage] = useState(1)
   const rulesPageSize = 10
+  const [importedDirectionFilter, setImportedDirectionFilter] = useState<'All' | 'Inbound' | 'Outbound'>('All')
+  const [importedSearch, setImportedSearch] = useState('')
+  const [importedRulesPage, setImportedRulesPage] = useState(1)
+
 
   const query = useMemo(() => `sprint=${scope === 'all' ? 'all' : scope}&target=${target}&excludeCoreInfrastructure=${excludeCore}`, [scope, target, excludeCore])
 
@@ -193,6 +226,32 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
     }
   }
 
+  const exportImportedRules = async (format: ExportFormat) => {
+    if (target === '') return
+    setImportedExporting(format)
+    setError('')
+    try {
+      const response = await apiFetch(`/api/firewall-rules/imported-matches/export?${query}&format=${format}`)
+      if (!response.ok) {
+        const payload = await response.json() as { error?: string }
+        throw new Error(payload.error ?? `Unable to export the imported ${format} rules.`)
+      }
+      const extension = format === 'xlsx' ? 'xlsx' : 'zip'
+      const suffix = format === 'xlsx' ? '' : `-${format}`
+      const scopeName = scope === 'all' ? 'all-sprints' : `sprint-${scope}`
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `imported-firewall-rules-${scopeName}-${target}${suffix}.${extension}`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : `Unable to export the imported ${format} rules.`)
+    } finally {
+      setImportedExporting(null)
+    }
+  }
+
   const visibleRules = useMemo(() => {
     const term = search.trim().toLowerCase()
     return rules.filter((rule) => {
@@ -210,6 +269,26 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
   const pagedRules = useMemo(
     () => visibleRules.slice((currentRulesPage - 1) * rulesPageSize, currentRulesPage * rulesPageSize),
     [visibleRules, currentRulesPage],
+  )
+
+  const importedRules = importedMatches?.rules ?? []
+  const visibleImportedRules = useMemo(() => {
+    const term = importedSearch.trim().toLowerCase()
+    return importedRules.filter((rule) => {
+      if (importedDirectionFilter !== 'All' && rule.direction !== importedDirectionFilter) return false
+      if (!term) return true
+      return [rule.name, rule.remoteName, rule.remoteAddress, rule.service, String(rule.port ?? ''), ...rule.localServers]
+        .some((value) => value && value.toLowerCase().includes(term))
+    })
+  }, [importedRules, importedDirectionFilter, importedSearch])
+
+  useEffect(() => { setImportedRulesPage(1) }, [importedDirectionFilter, importedSearch, importedRules])
+
+  const importedRulesTotalPages = Math.max(1, Math.ceil(visibleImportedRules.length / rulesPageSize))
+  const currentImportedRulesPage = Math.min(importedRulesPage, importedRulesTotalPages)
+  const pagedImportedRules = useMemo(
+    () => visibleImportedRules.slice((currentImportedRulesPage - 1) * rulesPageSize, currentImportedRulesPage * rulesPageSize),
+    [visibleImportedRules, currentImportedRulesPage],
   )
 
   if (loading && target !== '' && rules.length === 0 && !planMissing) {
@@ -295,39 +374,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
       </div>
       {rules.length === 0 ? <div className="firewall-empty small"><Shield size={22} /><strong>No connections found for this scope</strong><span>The selected sprint has no observed dependency traffic.</span></div> : <div className="firewall-table-wrap">
         <table className="firewall-table">
-          {target === 'nsg' ? <>
-            <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Direction</th><th>NSG Name</th><th>Core</th><th>Notes</th></tr></thead>
-            <tbody>
-              {pagedRules.map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
-                <td>{rule.priority ?? ''}</td>
-                <td>{rule.name ?? ''}</td>
-                <td>{rule.port ?? 'Any'}</td>
-                <td>{rule.protocol === '*' ? 'Any' : rule.protocol}</td>
-                <td>{rule.sourceAddresses && rule.sourceAddresses.length > 0 ? rule.sourceAddresses.join(', ') : '(sprint address space)'}</td>
-                <td>{rule.destinationAddresses && rule.destinationAddresses.length > 0 ? rule.destinationAddresses.join(', ') : '(sprint address space)'}</td>
-                <td>Allow</td>
-                <td><span className={`firewall-direction ${rule.direction.toLowerCase()}`}>{rule.direction}</span></td>
-                <td>{rule.nsgName || '—'}</td>
-                <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
-                <td>{rule.resolved ? '' : <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
-              </tr>)}
-            </tbody>
-          </> : target === 'azure-firewall' ? <>
-            <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Direction</th><th>Core</th></tr></thead>
-            <tbody>
-              {pagedRules.map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
-                <td>{rule.priority ?? ''}</td>
-                <td>{rule.name ?? ''}</td>
-                <td>{rule.port ?? 'Any'}</td>
-                <td>{rule.protocol === '*' ? 'Any' : rule.protocol}</td>
-                <td>{rule.sourceAddresses && rule.sourceAddresses.length > 0 ? rule.sourceAddresses.join(', ') : '(sprint address space)'}</td>
-                <td>{rule.destinationAddresses && rule.destinationAddresses.length > 0 ? rule.destinationAddresses.join(', ') : <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
-                <td>Allow</td>
-                <td><span className={`firewall-direction ${rule.direction.toLowerCase()}`}>{rule.direction}</span></td>
-                <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
-              </tr>)}
-            </tbody>
-          </> : <>
+          {target === 'nsg' ? <NsgTableRows rules={pagedRules} /> : target === 'azure-firewall' ? <AzureFirewallTableRows rules={pagedRules} /> : <>
             <thead><tr><th>Direction</th><th>Protocol</th><th>Port</th><th>Peer</th><th>Peer address</th><th>Sprint servers</th><th>Connections</th><th>Service</th><th>Core</th></tr></thead>
             <tbody>
               {pagedRules.map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
@@ -355,29 +402,46 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
     </section>
 
     <section className="firewall-table-section" aria-labelledby="firewall-imported-matches-heading">
-      <div className="section-heading"><div><p className="eyebrow">Imported rules</p><h2 id="firewall-imported-matches-heading">Matching rules from imported firewall configurations</h2></div>{importedMatches && <span>{importedMatches.matches.length} of {importedMatches.summary.rulesScanned} imported rules</span>}</div>
-      <div className="firewall-disclaimer"><Info size={17} /><span>Rules parsed from Firewall rules import (Preview) whose source or destination address (resolved through any address-object references) matches or contains a sprint server's IP address. Sprint and core-infrastructure exclusion filters above apply; the firewall target selection does not, since imported rules are not classified as NSG, Azure Firewall, or on-prem.</span></div>
-      {!importedMatches || importedMatches.summary.rulesetsScanned === 0 ? <div className="firewall-empty small"><Shield size={22} /><strong>No imported firewall rules available</strong><span>Import and parse firewall configurations on the Firewall rules import (Preview) page to see matches here.</span></div>
-        : importedMatches.matches.length === 0 ? <div className="firewall-empty small"><Shield size={22} /><strong>No imported rules matched this scope</strong><span>None of the {formatNumber.format(importedMatches.summary.rulesScanned)} imported rules reference an address that matches this sprint's servers.</span></div>
-        : <div className="firewall-table-wrap">
+      <div className="section-heading"><div><p className="eyebrow">Imported rules</p><h2 id="firewall-imported-matches-heading">Matching rules from imported firewall configurations</h2></div>{importedMatches && <span>{visibleImportedRules.length} of {importedRules.length} matched rules</span>}</div>
+      <div className="firewall-disclaimer"><Info size={17} /><span>Rules parsed from Firewall rules import (Preview) whose source or destination address (resolved through any address-object references, including named services) matches or contains a sprint server's IP address, formatted the same way as the generated {targetLabels[target]} table above{target === 'on-prem' ? ' (on-prem uses the Azure Firewall column layout)' : ''}. Only enabled Allow/Permit imported rules can be recreated here — {importedMatches ? formatNumber.format(importedMatches.nonAllowOrDisabledExcluded) : 0} matched but disabled or non-allow rule{importedMatches?.nonAllowOrDisabledExcluded === 1 ? ' was' : 's were'} excluded. The same north-south/east-west and inbound/outbound perspective rules used for the generated table above apply here too.</span></div>
+      {importedMatches && <section className="firewall-summary" aria-label="Imported rule summary">
+        <div className="firewall-stat"><span>Total rules</span><strong>{formatNumber.format(importedMatches.summary.total)}</strong></div>
+        <div className="firewall-stat"><span>Inbound</span><strong>{formatNumber.format(importedMatches.summary.inbound)}</strong></div>
+        <div className="firewall-stat"><span>Outbound</span><strong>{formatNumber.format(importedMatches.summary.outbound)}</strong></div>
+        <div className="firewall-stat"><span>Rulesets scanned</span><strong>{formatNumber.format(importedMatches.rulesetsScanned)}</strong></div>
+        <div className="firewall-stat"><span>Imported rules scanned</span><strong>{formatNumber.format(importedMatches.rulesScanned)}</strong></div>
+        <div className="firewall-stat"><span>Core connections removed</span><strong>{formatNumber.format(importedMatches.summary.coreInfrastructureExcluded)}</strong></div>
+        {target === 'on-prem' && <div className="firewall-stat"><span>Same-sprint connections removed</span><strong>{formatNumber.format(importedMatches.summary.sameSprintExcluded)}</strong></div>}
+        {target !== 'on-prem' && <div className="firewall-stat"><span>Same-subnet connections removed</span><strong>{formatNumber.format(importedMatches.summary.sameSubnetExcluded)}</strong></div>}
+        <div className="firewall-stat"><span>Disabled / non-allow excluded</span><strong>{formatNumber.format(importedMatches.nonAllowOrDisabledExcluded)}</strong></div>
+      </section>}
+      {!importedMatches || importedMatches.rulesetsScanned === 0 ? <div className="firewall-empty small"><Shield size={22} /><strong>No imported firewall rules available</strong><span>Import and parse firewall configurations on the Firewall rules import (Preview) page to see matches here.</span></div>
+        : importedRules.length === 0 ? <div className="firewall-empty small"><Shield size={22} /><strong>No imported rules matched this scope</strong><span>None of the {formatNumber.format(importedMatches.rulesScanned)} imported rules produced an allow rule for this scope and target.</span></div>
+        : <>
+      <div className="firewall-download-buttons">
+        <button type="button" disabled={importedExporting !== null} onClick={() => void exportImportedRules('xlsx')}><FileSpreadsheet size={16} />{importedExporting === 'xlsx' ? 'Preparing...' : 'Excel workbook'}</button>
+        {canExportInfrastructure && <button type="button" disabled={importedExporting !== null} onClick={() => void exportImportedRules('terraform')}><FileCode2 size={16} />{importedExporting === 'terraform' ? 'Preparing...' : 'Terraform (.zip)'}</button>}
+        {canExportInfrastructure && <button type="button" disabled={importedExporting !== null} onClick={() => void exportImportedRules('bicep')}><Download size={16} />{importedExporting === 'bicep' ? 'Preparing...' : 'Bicep (.zip)'}</button>}
+      </div>
+      <div className="firewall-table-filters">
+        <div className="firewall-direction-tabs">
+          {(['All', 'Inbound', 'Outbound'] as const).map((value) => <button key={value} type="button" className={importedDirectionFilter === value ? 'active' : ''} onClick={() => setImportedDirectionFilter(value)}>{value}</button>)}
+        </div>
+        <input type="search" placeholder="Search name, peer, address, service, or port" value={importedSearch} onChange={(event) => setImportedSearch(event.target.value)} />
+      </div>
+      <div className="firewall-table-wrap">
         <table className="firewall-table">
-          <thead><tr><th>Name</th><th>Action</th><th>Vendor / import</th><th>Zones</th><th>Source</th><th>Destination</th><th>Services</th><th>Matched servers</th><th>Matched side</th></tr></thead>
-          <tbody>
-            {importedMatches.matches.slice(0, 500).map((match) => <tr key={match.id} className={match.enabled ? '' : 'unresolved'}>
-              <td>{match.name ?? match.externalId}</td>
-              <td>{match.action}</td>
-              <td>{match.vendor ?? 'Unknown vendor'}{match.importFileName ? ` · ${match.importFileName}` : ''}</td>
-              <td>{match.sourceZones.join(', ') || '—'} → {match.destinationZones.join(', ') || '—'}</td>
-              <td>{match.sourceAddresses.join(', ') || 'any'}</td>
-              <td>{match.destinationAddresses.join(', ') || 'any'}</td>
-              <td>{match.services.join(', ') || '—'}</td>
-              <td title={match.matchedServers.join(', ')}>{match.matchedServers.length}</td>
-              <td>{match.matchedSide}</td>
-            </tr>)}
-          </tbody>
+          {target === 'nsg' ? <NsgTableRows rules={pagedImportedRules} /> : <AzureFirewallTableRows rules={pagedImportedRules} />}
         </table>
-        {importedMatches.matches.length > 500 && <div className="firewall-table-note">Showing the first 500 matches.</div>}
-      </div>}
+        <footer className="pagination">
+          <span>Page {currentImportedRulesPage} of {importedRulesTotalPages} · {visibleImportedRules.length} rule{visibleImportedRules.length === 1 ? '' : 's'}</span>
+          <div>
+            <button type="button" className="icon-button" title="Previous page" disabled={currentImportedRulesPage <= 1} onClick={() => setImportedRulesPage((page) => page - 1)}><ArrowLeft size={17} /></button>
+            <button type="button" className="icon-button" title="Next page" disabled={currentImportedRulesPage >= importedRulesTotalPages} onClick={() => setImportedRulesPage((page) => page + 1)}><ArrowRight size={17} /></button>
+          </div>
+        </footer>
+      </div>
+      </>}
     </section>
     </>}
   </div>
