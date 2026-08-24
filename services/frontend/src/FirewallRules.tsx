@@ -62,7 +62,7 @@ const targetLabels: Record<FirewallTarget, string> = {
 
 const targetDisclaimers: Record<FirewallTarget, string> = {
   nsg: 'Inbound and outbound allow rules for the sprint network security group, from the Azure perspective.',
-  'azure-firewall': 'Egress (outbound) allow rules for an Azure Firewall Policy. East-west traffic between sprint servers is omitted.',
+  'azure-firewall': 'Egress (outbound) allow rules for an existing Azure Firewall Policy (typically hub-managed via Azure Firewall Manager). East-west traffic between sprint servers is omitted.',
   'on-prem': 'Rules from the on-premises firewall perspective. Azure-inbound flows become outbound here, and traffic between two servers in the same sprint is discarded.',
 }
 
