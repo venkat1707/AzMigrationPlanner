@@ -122,6 +122,40 @@ test('auto-size mode consolidates mutually independent core infrastructure serve
   assert.equal(infraSprints.size, 1)
 })
 
+test('auto-size mode prioritizes an application-to-database edge over a heavier non-database edge when the ceiling forces a cut', () => {
+  const core = Array.from({ length: 24 }, (_, index) => ({
+    serverName: `core-${index + 1}`,
+    application: 'Core',
+    environment: 'Prod',
+    migrationReadiness: 'Ready',
+    securityReadiness: null,
+    storageGb: 10,
+    databaseServer: false,
+    totalIssues: 0,
+    recommendedComputeSku: null,
+  }))
+  const assessments = [
+    ...core,
+    { serverName: 'app-x-01', application: 'AppX', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+    { serverName: 'db-y-01', application: 'DBY', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: true, totalIssues: 0, recommendedComputeSku: null },
+  ]
+  // With Core already at 24 servers (ceiling 25), only ONE of these two edges can be merged in
+  // without exceeding the ceiling. app-x's edge has far more weight, but db-y's is a database
+  // connection, so it must be the one kept even though it would lose a pure weight comparison.
+  const dependencies = [
+    { sourceServer: 'core-1', destinationServer: 'app-x-01', connectionCount: 100 },
+    { sourceServer: 'core-1', destinationServer: 'db-y-01', connectionCount: 1 },
+  ]
+  const plan = buildMigrationWavePlan(assessments, [], dependencies, {
+    ...defaultMigrationWaveOptions,
+    autoSizeSprints: true,
+  })
+
+  const sprintFor = (name: string) => plan.waves.flatMap((wave) => wave.sprints).find((sprint) => sprint.servers.some((server) => server.name === name))
+  assert.equal(sprintFor('core-1')?.sequence, sprintFor('db-y-01')?.sequence)
+  assert.notEqual(sprintFor('core-1')?.sequence, sprintFor('app-x-01')?.sequence)
+})
+
 test('auto-size mode bin-packs unrelated dependency-free servers instead of one sprint each', () => {
   const assessments = Array.from({ length: 12 }, (_, index) => ({
     serverName: `iso-${index + 1}`,

@@ -196,12 +196,11 @@ export function buildMigrationWavePlan(
         const poolUnits = environmentUnits.filter((unit) => unit.pool === pool)
         if (poolUnits.length === 0) continue
         const ceiling = computeSafetyCeiling(poolUnits.reduce((total, unit) => total + unit.servers.length, 0))
-        // Shared infrastructure has no per-application downtime window to protect, so pack it as
-        // tightly as the safety ceiling allows rather than sizing sprints off the median observed
-        // dependency-cluster size (infra servers are often mutually independent, which would
-        // otherwise fragment them into several small sprints for no real benefit).
-        const target = pool === 'infrastructure' ? ceiling : computeAdaptiveTarget(poolUnits.map((unit) => unit.servers.length), ceiling)
-        packUnitsAuto(poolUnits, environment, pool, target, drafts)
+        // Mutually independent clusters cost nothing extra to combine into the same sprint (there is
+        // no dependency between them either way), so pack every pool as tightly as its own safety
+        // ceiling allows instead of stopping at the smaller median observed dependency-cluster size,
+        // which otherwise leaves many small, avoidable sprints on the table.
+        packUnitsAuto(poolUnits, environment, pool, ceiling, drafts)
       }
     } else {
       packUnits(environmentUnits, environment, options, drafts)
@@ -380,7 +379,7 @@ export function buildMigrationWavePlan(
         ? 'Sprint sizing has no fixed minimum or maximum in this mode; grouping is driven entirely by observed dependencies and a computed safety ceiling.'
         : `Compatible under-minimum affinity groups are merged or rebalanced before an exception is reported; minimum size never overrides maximum size or environment boundaries${options.separateDataHeavyWorkloads ? ', or data-heavy separation' : ''}.`,
       options.autoSizeSprints
-        ? 'Automatic sprint sizing is enabled: each application’s servers always stay together in one sprint, but dependency-linked applications may be combined into the same sprint to reduce cross-sprint dependency. A combined group is only split when it would otherwise exceed a computed safety ceiling, always cutting the weakest observed connection first. Shared core infrastructure is clustered separately so it never shares a sprint with application servers, and is packed as tightly as its own safety ceiling allows so it lands in as few sprints as possible. Unrelated, dependency-free application servers are bundled up to a target size derived from the observed cluster sizes.'
+        ? 'Automatic sprint sizing is enabled: each application’s servers always stay together in one sprint, and an application’s database connections are prioritized so they are the last to be cut if a safety ceiling forces a split. Dependency-linked applications are combined into the same sprint to reduce cross-sprint dependency, and independent application clusters are also packed together as tightly as the same ceiling allows to minimize sprint count. Shared core infrastructure is clustered and packed separately (never mixed with application servers) as tightly as its own safety ceiling allows. Because sprints are still capped by a safety ceiling for practicality, some dependencies between heavily-shared components (e.g. one database used by many applications) may still cross sprint boundaries — these are listed under cross-sprint dependencies below.'
         : 'Shared infrastructure and services consumed by more groups are scheduled earlier where environment ordering allows.',
       'Bandwidth, replication duration, change windows, approvals, rollback tests, and owner validation are not present in the imported data and require external confirmation.',
     ],
@@ -579,6 +578,7 @@ function buildAutoClusters(
   for (const affinityGroup of serverAffinityGroups) {
     joinAll([...affinityGroup].filter((serverName) => names.has(serverName)))
   }
+  const databaseNames = new Set(groupServers.filter((server) => server.serverType === 'Database').map(({ name }) => normalize(name)))
 
   const pairWeights = new Map<string, number>()
   for (const { sourceServer, destinationServer, connectionCount } of dependencies) {
@@ -590,7 +590,13 @@ function buildAutoClusters(
   }
 
   const ceiling = computeSafetyCeiling(groupServers.length)
-  const orderedPairs = [...pairWeights.entries()].sort((left, right) => right[1] - left[1])
+  // Database-touching edges are tried first (still bounded by the ceiling) so an application's
+  // database connection is the last one cut, not the first, when the ceiling forces a split.
+  const orderedPairs = [...pairWeights.entries()].sort((left, right) => {
+    const leftIsDatabase = left[0].split('|').some((name) => databaseNames.has(name)) ? 1 : 0
+    const rightIsDatabase = right[0].split('|').some((name) => databaseNames.has(name)) ? 1 : 0
+    return (rightIsDatabase - leftIsDatabase) || (right[1] - left[1])
+  })
   for (const [key] of orderedPairs) {
     const [source, destination] = key.split('|') as [string, string]
     const sourceRoot = find(source)
@@ -614,19 +620,6 @@ function buildAutoClusters(
 // the environment's own server count (~20%), bounded to a practically executable range.
 function computeSafetyCeiling(groupSize: number) {
   return Math.min(60, Math.max(25, Math.round(groupSize * 0.2)))
-}
-
-// Derives a natural sprint size from the observed dependency clusters (the median size among
-// clusters that have more than one server), so unrelated/isolated servers are bundled up to a size
-// that reflects this dataset rather than an arbitrary fixed fallback.
-function computeAdaptiveTarget(clusterSizes: number[], ceiling: number) {
-  const multiServerClusters = clusterSizes.filter((size) => size > 1).sort((left, right) => left - right)
-  if (multiServerClusters.length === 0) return Math.min(10, ceiling)
-  const middle = Math.floor(multiServerClusters.length / 2)
-  const median = multiServerClusters.length % 2 === 0
-    ? Math.round((multiServerClusters[middle - 1]! + multiServerClusters[middle]!) / 2)
-    : multiServerClusters[middle]!
-  return Math.min(ceiling, Math.max(3, median))
 }
 
 function partitionCluster(servers: PlanningServer[], options: MigrationWaveOptions) {
@@ -709,9 +702,11 @@ function packUnitsAuto(units: WorkUnit[], environment: string, pool: 'infrastruc
       drafts.push({ environment, pool, units: [unit], servers: [...unit.servers] })
       continue
     }
+    // Prefer a draft that already holds a unit this one depends on (a ceiling-cut weakest link):
+    // reuniting them in the same sprint turns a cross-sprint dependency into an in-sprint one.
     const draft = drafts
       .filter((candidate) => candidate.environment === environment && candidate.pool === pool && candidate.servers.length + unit.servers.length <= adaptiveTarget)
-      .sort((left, right) => right.servers.length - left.servers.length)[0]
+      .sort((left, right) => dependencyWeight(unit, right) - dependencyWeight(unit, left) || right.servers.length - left.servers.length)[0]
     if (draft) {
       draft.units.push(unit)
       draft.servers.push(...unit.servers)
