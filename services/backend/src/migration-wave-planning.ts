@@ -56,6 +56,7 @@ type WorkUnit = {
   id: string
   environment: string
   application: string
+  pool: 'infrastructure' | 'application'
   servers: PlanningServer[]
   dependentCount: number
   dependencyWeights: Map<string, number>
@@ -63,6 +64,7 @@ type WorkUnit = {
 
 type SprintDraft = {
   environment: string
+  pool: 'infrastructure' | 'application'
   units: WorkUnit[]
   servers: PlanningServer[]
 }
@@ -190,9 +192,13 @@ export function buildMigrationWavePlan(
       .filter((unit) => environment === 'All environments' || unit.environment === environment)
       .sort(compareWorkUnits)
     if (options.autoSizeSprints) {
-      const ceiling = computeSafetyCeiling(environmentUnits.reduce((total, unit) => total + unit.servers.length, 0))
-      const adaptiveTarget = computeAdaptiveTarget(environmentUnits.map((unit) => unit.servers.length), ceiling)
-      packUnitsAuto(environmentUnits, environment, adaptiveTarget, drafts)
+      for (const pool of ['infrastructure', 'application'] as const) {
+        const poolUnits = environmentUnits.filter((unit) => unit.pool === pool)
+        if (poolUnits.length === 0) continue
+        const ceiling = computeSafetyCeiling(poolUnits.reduce((total, unit) => total + unit.servers.length, 0))
+        const adaptiveTarget = computeAdaptiveTarget(poolUnits.map((unit) => unit.servers.length), ceiling)
+        packUnitsAuto(poolUnits, environment, pool, adaptiveTarget, drafts)
+      }
     } else {
       packUnits(environmentUnits, environment, options, drafts)
     }
@@ -241,12 +247,16 @@ export function buildMigrationWavePlan(
             ? `Kept within the ${environment} environment boundary.`
             : `Environment boundaries are disabled; this sprint includes ${environments.length} environment${environments.length === 1 ? '' : 's'}.`,
           options.autoSizeSprints
-            ? `${draft.units.length} dependency-driven group${draft.units.length === 1 ? '' : 's'} combined across ${applications.length} application${applications.length === 1 ? '' : 's'}; sprint size is derived automatically from observed dependency clusters rather than a fixed guardrail.`
+            ? (draft.pool === 'infrastructure'
+              ? `Core infrastructure sprint: ${draft.units.length} shared infrastructure group${draft.units.length === 1 ? '' : 's'} kept separate from application sprints so no application owner's downtime window includes shared infrastructure.`
+              : `${draft.units.length} dependency-driven group${draft.units.length === 1 ? '' : 's'} combined across ${applications.length} application${applications.length === 1 ? '' : 's'}; each application's servers always stay in one sprint, and sprint size is otherwise derived automatically from observed dependency clusters rather than a fixed guardrail.`)
             : `${draft.units.length} application/dependency affinity group${draft.units.length === 1 ? '' : 's'} combined across ${applications.length} application${applications.length === 1 ? '' : 's'} to approach the ${options.minimumServers}-${options.maximumServers} server guardrails.`,
           retainedDependencyPairs > 0
             ? `${retainedDependencyPairs} observed dependency pair${retainedDependencyPairs === 1 ? '' : 's'} retained within this sprint.`
             : 'No direct dependency pairs were observed between the assigned servers.',
-          infrastructureServers > 0
+          options.autoSizeSprints && draft.pool === 'infrastructure'
+            ? 'This sprint contains only shared infrastructure servers.'
+            : infrastructureServers > 0
             ? `${infrastructureServers} shared infrastructure server${infrastructureServers === 1 ? '' : 's'} placed early for downstream consumers.`
             : 'Application readiness and dependency priority determine this sprint’s sequence.',
           !options.separateDataHeavyWorkloads
@@ -366,7 +376,7 @@ export function buildMigrationWavePlan(
         ? 'Sprint sizing has no fixed minimum or maximum in this mode; grouping is driven entirely by observed dependencies and a computed safety ceiling.'
         : `Compatible under-minimum affinity groups are merged or rebalanced before an exception is reported; minimum size never overrides maximum size or environment boundaries${options.separateDataHeavyWorkloads ? ', or data-heavy separation' : ''}.`,
       options.autoSizeSprints
-        ? 'Automatic sprint sizing is enabled: servers connected by an observed dependency are grouped into the same sprint regardless of application, and a group is only split when it would otherwise exceed a computed safety ceiling, always cutting the weakest observed connection first. Unrelated, dependency-free servers are bundled up to a target size derived from the observed cluster sizes.'
+        ? 'Automatic sprint sizing is enabled: each application’s servers always stay together in one sprint, but dependency-linked applications may be combined into the same sprint to reduce cross-sprint dependency. A combined group is only split when it would otherwise exceed a computed safety ceiling, always cutting the weakest observed connection first. Shared core infrastructure is clustered and sized separately so it never shares a sprint with application servers, and unrelated, dependency-free servers are bundled up to a target size derived from the observed cluster sizes.'
         : 'Shared infrastructure and services consumed by more groups are scheduled earlier where environment ordering allows.',
       'Bandwidth, replication duration, change windows, approvals, rollback tests, and owner validation are not present in the imported data and require external confirmation.',
     ],
@@ -412,9 +422,10 @@ function createWorkUnits(servers: PlanningServer[], dependencies: DependencyRow[
   let sequence = 0
   for (const groupServers of groups.values()) {
     const clusters = options.autoSizeSprints
-      ? buildAutoClusters(groupServers, dependencies, applicationAffinityGroups, serverAffinityGroups)
+      ? autoClusterPools(groupServers, dependencies, applicationAffinityGroups, serverAffinityGroups)
       : buildManualClusters(groupServers, dependencies, applicationAffinityGroups, serverAffinityGroups)
-    for (const cluster of clusters) {
+        .map((cluster) => ({ pool: 'application' as const, cluster }))
+    for (const { pool, cluster } of clusters) {
       const applications = new Set(cluster.map(({ application }) => normalize(application)))
       const serverNames = new Set(cluster.map(({ name }) => normalize(name)))
       const explicitlyGrouped = applicationAffinityGroups.some((group) => [...group].filter((application) => applications.has(application)).length > 1)
@@ -426,6 +437,7 @@ function createWorkUnits(servers: PlanningServer[], dependencies: DependencyRow[
           id: `unit-${sequence}`,
           environment: options.considerEnvironments ? partition[0]!.environment : 'All environments',
           application: partition[0]!.application,
+          pool,
           servers: partition,
           dependentCount: 0,
           dependencyWeights: new Map(),
@@ -434,6 +446,26 @@ function createWorkUnits(servers: PlanningServer[], dependencies: DependencyRow[
     }
   }
   return units
+}
+
+// Core infrastructure is shared across applications and cannot honor any single app owner's
+// downtime window, so it is clustered separately from application servers and never mixed into an
+// application sprint. Application servers are additionally force-grouped by application first, so
+// an application's servers always land in the same sprint even if that means exceeding the ceiling.
+function autoClusterPools(
+  groupServers: PlanningServer[],
+  dependencies: DependencyRow[],
+  applicationAffinityGroups: Set<string>[],
+  serverAffinityGroups: Set<string>[],
+) {
+  const infrastructureServers = groupServers.filter((server) => server.serverType === 'Infrastructure')
+  const applicationServers = groupServers.filter((server) => server.serverType !== 'Infrastructure')
+  return [
+    ...buildAutoClusters(infrastructureServers, dependencies, applicationAffinityGroups, serverAffinityGroups, false)
+      .map((cluster) => ({ pool: 'infrastructure' as const, cluster })),
+    ...buildAutoClusters(applicationServers, dependencies, applicationAffinityGroups, serverAffinityGroups, true)
+      .map((cluster) => ({ pool: 'application' as const, cluster })),
+  ]
 }
 
 function buildManualClusters(
@@ -494,8 +526,10 @@ function buildAutoClusters(
   dependencies: DependencyRow[],
   applicationAffinityGroups: Set<string>[],
   serverAffinityGroups: Set<string>[],
+  forceApplicationUnion: boolean,
 ) {
   const names = new Set(groupServers.map(({ name }) => normalize(name)))
+  if (names.size === 0) return []
   const parent = new Map([...names].map((name) => [name, name]))
   const size = new Map([...names].map((name) => [name, 1]))
   const find = (name: string): string => {
@@ -529,6 +563,10 @@ function buildAutoClusters(
   for (const server of groupServers) {
     const application = normalize(server.application)
     serversByApplication.set(application, [...(serversByApplication.get(application) ?? []), normalize(server.name)])
+  }
+  // An application's servers always share a sprint, even if that means exceeding the ceiling.
+  if (forceApplicationUnion) {
+    for (const members of serversByApplication.values()) joinAll(members)
   }
   // Explicit affinity groups are a direct user instruction: merge unconditionally, ahead of the ceiling.
   for (const affinityGroup of applicationAffinityGroups) {
@@ -647,7 +685,7 @@ function packUnits(units: WorkUnit[], environment: string, options: MigrationWav
     if (draft) {
       draft.units.push(unit)
       draft.servers.push(...unit.servers)
-    } else drafts.push({ environment, units: [unit], servers: [...unit.servers] })
+    } else drafts.push({ environment, pool: 'application', units: [unit], servers: [...unit.servers] })
   }
 }
 
@@ -659,21 +697,21 @@ function dependencyWeight(unit: WorkUnit, draft: SprintDraft) {
 // dependency-linked group and become their own sprint untouched. Smaller, effectively
 // dependency-free clusters are bin-packed together (first-fit-decreasing) up to the target purely
 // to limit sprint count; since they are mutually independent, combining them adds zero cross-sprint
-// dependency.
-function packUnitsAuto(units: WorkUnit[], environment: string, adaptiveTarget: number, drafts: SprintDraft[]) {
+// dependency. Infrastructure and application units are packed separately and never share a draft.
+function packUnitsAuto(units: WorkUnit[], environment: string, pool: 'infrastructure' | 'application', adaptiveTarget: number, drafts: SprintDraft[]) {
   const orderedUnits = [...units].sort((left, right) => right.servers.length - left.servers.length || compareWorkUnits(left, right))
   for (const unit of orderedUnits) {
     if (unit.servers.length >= adaptiveTarget) {
-      drafts.push({ environment, units: [unit], servers: [...unit.servers] })
+      drafts.push({ environment, pool, units: [unit], servers: [...unit.servers] })
       continue
     }
     const draft = drafts
-      .filter((candidate) => candidate.environment === environment && candidate.servers.length + unit.servers.length <= adaptiveTarget)
+      .filter((candidate) => candidate.environment === environment && candidate.pool === pool && candidate.servers.length + unit.servers.length <= adaptiveTarget)
       .sort((left, right) => right.servers.length - left.servers.length)[0]
     if (draft) {
       draft.units.push(unit)
       draft.servers.push(...unit.servers)
-    } else drafts.push({ environment, units: [unit], servers: [...unit.servers] })
+    } else drafts.push({ environment, pool, units: [unit], servers: [...unit.servers] })
   }
 }
 

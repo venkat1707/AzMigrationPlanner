@@ -60,6 +60,42 @@ test('auto-size mode groups dependency-connected servers into one sprint even ac
   assert.equal(plan.crossSprintDependencies.length, 0)
 })
 
+test('auto-size mode never splits a single application across sprints', () => {
+  const assessments = [
+    { serverName: 'x1', application: 'Orders', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+    { serverName: 'x2', application: 'Orders', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+    { serverName: 'x3', application: 'Orders', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+    { serverName: 'y1', application: 'Billing', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+  ]
+  // Only x1 has an observed dependency; without a forced application boundary it alone would be
+  // pulled toward y1's sprint, splitting the Orders application across two sprints.
+  const dependencies = [{ sourceServer: 'x1', destinationServer: 'y1', connectionCount: 5 }]
+  const plan = buildMigrationWavePlan(assessments, [], dependencies, {
+    ...defaultMigrationWaveOptions,
+    autoSizeSprints: true,
+  })
+
+  const sprintFor = (name: string) => plan.waves.flatMap((wave) => wave.sprints).find((sprint) => sprint.servers.some((server) => server.name === name))
+  assert.equal(sprintFor('x1')?.sequence, sprintFor('x2')?.sequence)
+  assert.equal(sprintFor('x2')?.sequence, sprintFor('x3')?.sequence)
+})
+
+test('auto-size mode keeps core infrastructure in its own sprint, separate from application servers', () => {
+  const assessments = [
+    { serverName: 'app-01', application: 'Orders', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+    { serverName: 'infra-01', application: null, environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+  ]
+  const infrastructureRows = [{ serverName: 'infra-01', category: 'Domain Controller' }]
+  const dependencies = [{ sourceServer: 'app-01', destinationServer: 'infra-01', connectionCount: 5 }]
+  const plan = buildMigrationWavePlan(assessments, infrastructureRows, dependencies, {
+    ...defaultMigrationWaveOptions,
+    autoSizeSprints: true,
+  })
+
+  const sprintFor = (name: string) => plan.waves.flatMap((wave) => wave.sprints).find((sprint) => sprint.servers.some((server) => server.name === name))
+  assert.notEqual(sprintFor('app-01')?.sequence, sprintFor('infra-01')?.sequence)
+})
+
 test('auto-size mode bin-packs unrelated dependency-free servers instead of one sprint each', () => {
   const assessments = Array.from({ length: 12 }, (_, index) => ({
     serverName: `iso-${index + 1}`,
