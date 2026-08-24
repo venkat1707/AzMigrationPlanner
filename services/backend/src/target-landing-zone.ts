@@ -6,6 +6,7 @@ import ExcelJS from 'exceljs'
 export type LandingZoneResourceGroupInput = {
   subscriptionName: string
   resourceGroupId: string
+  location?: string
 }
 
 export type DerivedLandingZoneResourceGroup = {
@@ -13,6 +14,7 @@ export type DerivedLandingZoneResourceGroup = {
   subscriptionName: string
   resourceGroupName: string
   resourceGroupId: string
+  location: string
 }
 
 type ResourceChainEntry = { type: string; name: string }
@@ -32,6 +34,12 @@ function requireSubscriptionName(value: string): string {
   if (!name) throw new Error('Subscription name is required.')
   if (name.length > 200) throw new Error('Subscription name must be 200 characters or fewer.')
   return name
+}
+
+function normalizeLocation(value: string): string {
+  const location = value.trim()
+  if (location.length > 50) throw new Error('Location must be 50 characters or fewer.')
+  return location
 }
 
 function parseAzureResourceId(value: string, label: string): ParsedResourceId {
@@ -80,6 +88,7 @@ export function deriveResourceGroup(input: LandingZoneResourceGroupInput): Deriv
     subscriptionName: requireSubscriptionName(input.subscriptionName),
     resourceGroupName: parsed.resourceGroupName,
     resourceGroupId: input.resourceGroupId.trim(),
+    location: normalizeLocation(input.location ?? ''),
   }
 }
 
@@ -108,6 +117,7 @@ function parseRows(rows: RawRow[]): DerivedLandingZoneResourceGroup[] {
     const input: LandingZoneResourceGroupInput = {
       subscriptionName: readColumn(values, 'subscriptionname', 'subscriptiondisplayname'),
       resourceGroupId: readColumn(values, 'resourcegroupid', 'resourcegroup', 'resourcegroupresourceid', 'rgid', 'id'),
+      location: readColumn(values, 'location', 'resourcegrouplocation', 'region'),
     }
     if (!input.subscriptionName && !input.resourceGroupId) return
     let derived: DerivedLandingZoneResourceGroup

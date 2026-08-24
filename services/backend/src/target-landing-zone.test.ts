@@ -37,3 +37,15 @@ test('requires a resource group ID', () => {
 test('requires a subscription name', () => {
   assert.throws(() => deriveResourceGroup({ subscriptionName: '   ', resourceGroupId: `/subscriptions/${subscription}/resourceGroups/vt-arc-rg` }), /subscription name/i)
 })
+
+test('captures the location when provided and defaults to empty when omitted', () => {
+  const withLocation = deriveResourceGroup({ subscriptionName: 'Production subscription', resourceGroupId: `/subscriptions/${subscription}/resourceGroups/vt-arc-rg`, location: 'East US' })
+  assert.equal(withLocation.location, 'East US')
+  const withoutLocation = deriveResourceGroup({ subscriptionName: 'Production subscription', resourceGroupId: `/subscriptions/${subscription}/resourceGroups/vt-arc-rg` })
+  assert.equal(withoutLocation.location, '')
+})
+
+test('rejects a location longer than 50 characters', () => {
+  assert.throws(() => deriveResourceGroup({ subscriptionName: 'Production subscription', resourceGroupId: `/subscriptions/${subscription}/resourceGroups/vt-arc-rg`, location: 'a'.repeat(51) }), /50 characters/i)
+})
+

@@ -1860,6 +1860,7 @@ const resourceGroupColumns = {
   subscriptionName: 'subscription_name',
   resourceGroupName: 'resource_group_name',
   resourceGroupId: 'resource_group_id',
+  location: 'location',
   source: 'source',
   updatedAt: 'updated_at',
 }
@@ -1872,6 +1873,7 @@ const resourceGroupRow = (group: DerivedLandingZoneResourceGroup, source: 'Manua
   resource_group_name: group.resourceGroupName,
   resource_group_id: group.resourceGroupId,
   resource_group_id_hash: resourceGroupIdHash(group.resourceGroupId),
+  location: group.location,
   source,
   updated_at: transaction.fn.now(),
 })
@@ -1881,6 +1883,7 @@ const resourceGroupMerge = (source: 'Manual' | 'Upload', transaction: Knex.Trans
   subscription_name: transaction.raw('VALUES(subscription_name)'),
   resource_group_name: transaction.raw('VALUES(resource_group_name)'),
   resource_group_id: transaction.raw('VALUES(resource_group_id)'),
+  location: transaction.raw('VALUES(location)'),
   source,
   updated_at: transaction.fn.now(),
 })
@@ -1905,6 +1908,7 @@ app.put('/api/landing-zone-resource-groups', async (request, response) => {
     return {
       subscriptionName: String(value.subscriptionName ?? '').trim(),
       resourceGroupId: String(value.resourceGroupId ?? '').trim(),
+      location: String(value.location ?? '').trim(),
     }
   })
   const derived: DerivedLandingZoneResourceGroup[] = []
