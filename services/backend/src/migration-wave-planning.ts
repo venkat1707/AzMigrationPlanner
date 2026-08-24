@@ -196,8 +196,12 @@ export function buildMigrationWavePlan(
         const poolUnits = environmentUnits.filter((unit) => unit.pool === pool)
         if (poolUnits.length === 0) continue
         const ceiling = computeSafetyCeiling(poolUnits.reduce((total, unit) => total + unit.servers.length, 0))
-        const adaptiveTarget = computeAdaptiveTarget(poolUnits.map((unit) => unit.servers.length), ceiling)
-        packUnitsAuto(poolUnits, environment, pool, adaptiveTarget, drafts)
+        // Shared infrastructure has no per-application downtime window to protect, so pack it as
+        // tightly as the safety ceiling allows rather than sizing sprints off the median observed
+        // dependency-cluster size (infra servers are often mutually independent, which would
+        // otherwise fragment them into several small sprints for no real benefit).
+        const target = pool === 'infrastructure' ? ceiling : computeAdaptiveTarget(poolUnits.map((unit) => unit.servers.length), ceiling)
+        packUnitsAuto(poolUnits, environment, pool, target, drafts)
       }
     } else {
       packUnits(environmentUnits, environment, options, drafts)
@@ -376,7 +380,7 @@ export function buildMigrationWavePlan(
         ? 'Sprint sizing has no fixed minimum or maximum in this mode; grouping is driven entirely by observed dependencies and a computed safety ceiling.'
         : `Compatible under-minimum affinity groups are merged or rebalanced before an exception is reported; minimum size never overrides maximum size or environment boundaries${options.separateDataHeavyWorkloads ? ', or data-heavy separation' : ''}.`,
       options.autoSizeSprints
-        ? 'Automatic sprint sizing is enabled: each application’s servers always stay together in one sprint, but dependency-linked applications may be combined into the same sprint to reduce cross-sprint dependency. A combined group is only split when it would otherwise exceed a computed safety ceiling, always cutting the weakest observed connection first. Shared core infrastructure is clustered and sized separately so it never shares a sprint with application servers, and unrelated, dependency-free servers are bundled up to a target size derived from the observed cluster sizes.'
+        ? 'Automatic sprint sizing is enabled: each application’s servers always stay together in one sprint, but dependency-linked applications may be combined into the same sprint to reduce cross-sprint dependency. A combined group is only split when it would otherwise exceed a computed safety ceiling, always cutting the weakest observed connection first. Shared core infrastructure is clustered separately so it never shares a sprint with application servers, and is packed as tightly as its own safety ceiling allows so it lands in as few sprints as possible. Unrelated, dependency-free application servers are bundled up to a target size derived from the observed cluster sizes.'
         : 'Shared infrastructure and services consumed by more groups are scheduled earlier where environment ordering allows.',
       'Bandwidth, replication duration, change windows, approvals, rollback tests, and owner validation are not present in the imported data and require external confirmation.',
     ],

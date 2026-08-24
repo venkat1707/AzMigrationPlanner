@@ -96,6 +96,32 @@ test('auto-size mode keeps core infrastructure in its own sprint, separate from 
   assert.notEqual(sprintFor('app-01')?.sequence, sprintFor('infra-01')?.sequence)
 })
 
+test('auto-size mode consolidates mutually independent core infrastructure servers into one sprint', () => {
+  // These infra servers have no dependencies on each other (or on anything), so the
+  // dependency-cluster-derived adaptive target would otherwise fragment them into several small
+  // sprints; infra should instead pack as tightly as its own safety ceiling allows.
+  const assessments = Array.from({ length: 8 }, (_, index) => ({
+    serverName: `infra-${index + 1}`,
+    application: null,
+    environment: 'Dev',
+    migrationReadiness: 'Ready',
+    securityReadiness: null,
+    storageGb: 10,
+    databaseServer: false,
+    totalIssues: 0,
+    recommendedComputeSku: null,
+  }))
+  const infrastructureRows = assessments.map(({ serverName }) => ({ serverName, category: 'Domain Controller' }))
+  const plan = buildMigrationWavePlan(assessments, infrastructureRows, [], {
+    ...defaultMigrationWaveOptions,
+    autoSizeSprints: true,
+  })
+
+  const infraSprints = new Set(assessments.map(({ serverName }) =>
+    plan.waves.flatMap((wave) => wave.sprints).find((sprint) => sprint.servers.some((server) => server.name === serverName))?.sequence))
+  assert.equal(infraSprints.size, 1)
+})
+
 test('auto-size mode bin-packs unrelated dependency-free servers instead of one sprint each', () => {
   const assessments = Array.from({ length: 12 }, (_, index) => ({
     serverName: `iso-${index + 1}`,
