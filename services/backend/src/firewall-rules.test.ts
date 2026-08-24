@@ -242,7 +242,7 @@ test('Bicep NSG export defaults NSG name and address prefixes from the landing z
   assert.ok(nsgBicep?.includes(`param nsgName string = 'nsg-prod-web'`))
   assert.ok(nsgBicep?.includes(`param sprintAddressPrefixes array = ['10.5.0.0/24']`))
   const readme = await zip.file('README.md')?.async('string')
-  assert.ok(readme?.includes('--resource-group rg-prod-web'))
+  assert.ok(readme?.includes('--resource-group "rg-prod-web"'))
   assert.ok(readme?.includes('az network vnet subnet update'))
   assert.ok(readme?.includes('## Landing Zone Placement'))
 })
