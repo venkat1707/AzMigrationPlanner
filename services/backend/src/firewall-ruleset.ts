@@ -599,3 +599,83 @@ export async function listFirewallRulesetRulesPaged(
     actions: actionRows.map((row) => row.action as string),
   }
 }
+
+// --- Data for matching imported rules against sprint servers (backs the "Generate firewall rules" page) ---
+
+export type ImportedFirewallRulesetForMatching = {
+  rulesetId: number
+  importId: number
+  vendor: string | null
+  fileName: string | null
+  rules: Array<{
+    rulesetId: number; id: number; externalId: string; name: string | null; action: string; enabled: boolean
+    sourceZones: string[]; destinationZones: string[]; sourceAddresses: string[]; destinationAddresses: string[]; services: string[]
+  }>
+  addressObjects: Array<{
+    rulesetId: number; externalId: string; name: string; type: string | null; value: string | null; members: string[]
+  }>
+}
+
+// Loads the most recently completed parse (highest version with status = 'Completed') for every
+// firewall rule import, along with its rules and address objects, shaped for matchImportedFirewallRules.
+export async function loadLatestCompletedFirewallRulesetsForMatching(): Promise<ImportedFirewallRulesetForMatching[]> {
+  const completedRulesets = await database('firewall_rulesets')
+    .where({ status: 'Completed' })
+    .orderBy('import_id')
+    .orderBy('version', 'desc')
+    .select({ rulesetId: 'id', importId: 'import_id', vendor: 'vendor' }) as Array<{ rulesetId: number; importId: number; vendor: string | null }>
+
+  const latestByImport = new Map<number, { rulesetId: number; importId: number; vendor: string | null }>()
+  for (const row of completedRulesets) {
+    if (!latestByImport.has(row.importId)) latestByImport.set(row.importId, row)
+  }
+  const latestRulesets = [...latestByImport.values()]
+  if (latestRulesets.length === 0) return []
+
+  const rulesetIds = latestRulesets.map((row) => row.rulesetId)
+  const importIds = latestRulesets.map((row) => row.importId)
+  const [imports, ruleRows, addressObjectRows] = await Promise.all([
+    database('firewall_rule_imports').whereIn('id', importIds).select({ id: 'id', fileName: 'file_name' }) as Promise<Array<{ id: number; fileName: string }>>,
+    database('firewall_ruleset_rules').whereIn('ruleset_id', rulesetIds).select({
+      rulesetId: 'ruleset_id', id: 'id', externalId: 'external_id', name: 'name', action: 'action', enabled: 'enabled',
+      sourceZones: 'source_zones', destinationZones: 'destination_zones', sourceAddresses: 'source_addresses', destinationAddresses: 'destination_addresses', services: 'services',
+    }) as Promise<Array<Record<string, unknown>>>,
+    database('firewall_ruleset_address_objects').whereIn('ruleset_id', rulesetIds).select({
+      rulesetId: 'ruleset_id', externalId: 'external_id', name: 'name', type: 'type', value: 'value', members: 'members',
+    }) as Promise<Array<Record<string, unknown>>>,
+  ])
+
+  const fileNameByImportId = new Map(imports.map((row) => [row.id, row.fileName]))
+  const rulesByRuleset = new Map<number, ImportedFirewallRulesetForMatching['rules']>()
+  for (const row of ruleRows) {
+    const rulesetId = row.rulesetId as number
+    const list = rulesByRuleset.get(rulesetId) ?? []
+    list.push({
+      rulesetId, id: row.id as number, externalId: row.externalId as string, name: row.name as string | null,
+      action: row.action as string, enabled: Boolean(row.enabled),
+      sourceZones: parseJsonColumn<string[]>(row.sourceZones, []), destinationZones: parseJsonColumn<string[]>(row.destinationZones, []),
+      sourceAddresses: parseJsonColumn<string[]>(row.sourceAddresses, []), destinationAddresses: parseJsonColumn<string[]>(row.destinationAddresses, []),
+      services: parseJsonColumn<string[]>(row.services, []),
+    })
+    rulesByRuleset.set(rulesetId, list)
+  }
+  const addressObjectsByRuleset = new Map<number, ImportedFirewallRulesetForMatching['addressObjects']>()
+  for (const row of addressObjectRows) {
+    const rulesetId = row.rulesetId as number
+    const list = addressObjectsByRuleset.get(rulesetId) ?? []
+    list.push({
+      rulesetId, externalId: row.externalId as string, name: row.name as string,
+      type: row.type as string | null, value: row.value as string | null, members: parseJsonColumn<string[]>(row.members, []),
+    })
+    addressObjectsByRuleset.set(rulesetId, list)
+  }
+
+  return latestRulesets.map((row) => ({
+    rulesetId: row.rulesetId,
+    importId: row.importId,
+    vendor: row.vendor,
+    fileName: fileNameByImportId.get(row.importId) ?? null,
+    rules: rulesByRuleset.get(row.rulesetId) ?? [],
+    addressObjects: addressObjectsByRuleset.get(row.rulesetId) ?? [],
+  }))
+}

@@ -27,8 +27,9 @@ import {
 } from './firewall-rules-import.js'
 import {
   FirewallRulesetError, getFirewallRulesetDetail, listFirewallRulesetRulesPaged, listFirewallRulesets, listFirewallRulesetsBatch,
-  startFirewallRulesetParse,
+  loadLatestCompletedFirewallRulesetsForMatching, startFirewallRulesetParse,
 } from './firewall-ruleset.js'
+import { matchImportedFirewallRules, type ImportedFirewallMatchResult } from './firewall-rule-matching.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
@@ -2864,6 +2865,52 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
   return { sprints, ruleSet, scopeFound: true }
 }
 
+// Cross-references already-imported firewall rulesets against the servers in scope for a sprint (or
+// all sprints), mirroring the sprint/scope resolution used by buildSprintFirewallRuleSet above.
+async function buildMatchedImportedFirewallRules(scope: 'all' | number, excludeCoreInfrastructure: boolean): Promise<{ result: ImportedFirewallMatchResult | null; scopeFound: boolean }> {
+  const saved = await loadSavedTaskPlan()
+  if (!saved) return { result: null, scopeFound: false }
+  const sprints: SprintScopeOption[] = saved.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
+    sequence: sprint.sequence, sprint: sprint.sprint, wave: wave.wave, environment: wave.environment, name: sprint.name, serverCount: sprint.serverCount,
+  }))).sort((left, right) => left.sequence - right.sequence)
+
+  const selectedSprints = scope === 'all' ? sprints : sprints.filter((sprint) => sprint.sequence === scope)
+  if (scope !== 'all' && selectedSprints.length === 0) return { result: null, scopeFound: false }
+
+  const selectedSequences = new Set(selectedSprints.map((sprint) => sprint.sequence))
+  const selectedSprintTasks = saved.plan.waves.flatMap((wave) => wave.sprints).filter((sprint) => selectedSequences.has(sprint.sequence))
+  const serverNames = [...new Set(selectedSprintTasks.flatMap((sprint) => sprint.servers.map((server) => server.name.trim()).filter(Boolean)))]
+  const scopeLabel = scope === 'all'
+    ? `All sprints (${serverNames.length} servers)`
+    : `${selectedSprints[0]?.name ?? `Sprint ${scope}`} - Wave ${selectedSprints[0]?.wave ?? '?'} (${serverNames.length} servers)`
+
+  if (serverNames.length === 0) {
+    return {
+      result: matchImportedFirewallRules({ scopeLabel, assessmentIps: [], coreInfrastructureIps: [], excludeCoreInfrastructure, rulesets: [] }),
+      scopeFound: true,
+    }
+  }
+
+  const [coreServers, loadBalancerIps, assessmentRows, rulesets] = await Promise.all([
+    database('core_infrastructure_servers').distinct({ ipAddress: 'ip_address' }) as Promise<Array<{ ipAddress: string | null }>>,
+    database('core_infrastructure_load_balancer_ips').pluck('ip_address') as Promise<string[]>,
+    database('server_assessments').whereIn('server_name', serverNames).whereNotNull('ip_address').select({ serverName: 'server_name', ipAddress: 'ip_address' }) as Promise<Array<{ serverName: string; ipAddress: string | null }>>,
+    loadLatestCompletedFirewallRulesetsForMatching(),
+  ])
+
+  const coreInfrastructureIps = [...new Set([
+    ...coreServers.flatMap((server) => parseIpList(server.ipAddress)),
+    ...loadBalancerIps.flatMap((ip) => parseIpList(ip)),
+  ])]
+  const assessmentIps = assessmentRows.flatMap((row) => {
+    const ip = parseIpList(row.ipAddress)[0]
+    return ip ? [{ serverName: row.serverName, ip }] : []
+  })
+
+  const result = matchImportedFirewallRules({ scopeLabel, assessmentIps, coreInfrastructureIps, excludeCoreInfrastructure, rulesets })
+  return { result, scopeFound: true }
+}
+
 function parseFirewallScope(value: unknown): 'all' | number | null {
   const raw = String(value ?? 'all').trim().toLowerCase()
   if (raw === '' || raw === 'all') return 'all'
@@ -2906,6 +2953,7 @@ app.get('/api/firewall-rules', async (request, response) => {
         return projected.map((rule) => ({ ...rule, nsgName: nsgNamesForRule(rule.localServers, serverNsgNames) }))
       })()
     : ruleSet.rules
+  const { result: importedMatches } = await buildMatchedImportedFirewallRules(scope, excludeCoreInfrastructure)
   response.json({
     scope: scope === 'all' ? 'all' : scope,
     target,
@@ -2916,6 +2964,7 @@ app.get('/api/firewall-rules', async (request, response) => {
     truncated: ruleSet.truncated,
     sprintAddresses: ruleSet.sprintAddresses,
     rules,
+    importedMatches,
   })
 })
 

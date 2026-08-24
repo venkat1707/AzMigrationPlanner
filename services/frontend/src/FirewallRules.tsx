@@ -41,6 +41,38 @@ type FirewallSummary = {
   sprintServers: number
 }
 
+type ImportedFirewallMatch = {
+  id: string
+  rulesetId: number
+  externalId: string
+  name: string | null
+  action: string
+  enabled: boolean
+  vendor: string | null
+  importFileName: string | null
+  sourceZones: string[]
+  destinationZones: string[]
+  sourceAddresses: string[]
+  destinationAddresses: string[]
+  services: string[]
+  matchedServers: string[]
+  matchedSide: 'source' | 'destination' | 'both'
+}
+
+type ImportedFirewallMatchResult = {
+  scopeLabel: string
+  excludeCoreInfrastructure: boolean
+  matches: ImportedFirewallMatch[]
+  summary: {
+    rulesetsScanned: number
+    rulesScanned: number
+    matched: number
+    coreInfrastructureExcluded: number
+    sprintServers: number
+  }
+  truncated: boolean
+}
+
 type FirewallResponse = {
   scope: 'all' | number
   target: FirewallTarget
@@ -51,6 +83,7 @@ type FirewallResponse = {
   truncated: boolean
   sprintAddresses: string[]
   rules: FirewallRule[]
+  importedMatches: ImportedFirewallMatchResult | null
   error?: string
 }
 
@@ -85,6 +118,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
   const [scopeLabel, setScopeLabel] = useState('')
   const [rules, setRules] = useState<FirewallRule[]>([])
   const [sprintAddresses, setSprintAddresses] = useState<string[]>([])
+  const [importedMatches, setImportedMatches] = useState<ImportedFirewallMatchResult | null>(null)
   const [truncated, setTruncated] = useState(false)
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState<ExportFormat | null>(null)
@@ -117,11 +151,13 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
       setScopeLabel(payload.scopeLabel)
       setRules(payload.rules)
       setSprintAddresses(payload.sprintAddresses)
+      setImportedMatches(payload.importedMatches)
       setTruncated(payload.truncated)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to load firewall rules.')
       setRules([])
       setSummary(null)
+      setImportedMatches(null)
     } finally {
       setLoading(false)
     }
@@ -298,6 +334,32 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
           </>}
         </table>
         {visibleRules.length > 500 && <div className="firewall-table-note">Showing the first 500 rules. Download a rule set for the full list.</div>}
+      </div>}
+    </section>
+
+    <section className="firewall-table-section" aria-labelledby="firewall-imported-matches-heading">
+      <div className="section-heading"><div><p className="eyebrow">Imported rules</p><h2 id="firewall-imported-matches-heading">Matching rules from imported firewall configurations</h2></div>{importedMatches && <span>{importedMatches.matches.length} of {importedMatches.summary.rulesScanned} imported rules</span>}</div>
+      <div className="firewall-disclaimer"><Info size={17} /><span>Rules parsed from Firewall rules import (Preview) whose source or destination address (resolved through any address-object references) matches or contains a sprint server's IP address. Sprint and core-infrastructure exclusion filters above apply; the firewall target selection does not, since imported rules are not classified as NSG, Azure Firewall, or on-prem.</span></div>
+      {!importedMatches || importedMatches.summary.rulesetsScanned === 0 ? <div className="firewall-empty small"><Shield size={22} /><strong>No imported firewall rules available</strong><span>Import and parse firewall configurations on the Firewall rules import (Preview) page to see matches here.</span></div>
+        : importedMatches.matches.length === 0 ? <div className="firewall-empty small"><Shield size={22} /><strong>No imported rules matched this scope</strong><span>None of the {formatNumber.format(importedMatches.summary.rulesScanned)} imported rules reference an address that matches this sprint's servers.</span></div>
+        : <div className="firewall-table-wrap">
+        <table className="firewall-table">
+          <thead><tr><th>Name</th><th>Action</th><th>Vendor / import</th><th>Zones</th><th>Source</th><th>Destination</th><th>Services</th><th>Matched servers</th><th>Matched side</th></tr></thead>
+          <tbody>
+            {importedMatches.matches.slice(0, 500).map((match) => <tr key={match.id} className={match.enabled ? '' : 'unresolved'}>
+              <td>{match.name ?? match.externalId}</td>
+              <td>{match.action}</td>
+              <td>{match.vendor ?? 'Unknown vendor'}{match.importFileName ? ` · ${match.importFileName}` : ''}</td>
+              <td>{match.sourceZones.join(', ') || '—'} → {match.destinationZones.join(', ') || '—'}</td>
+              <td>{match.sourceAddresses.join(', ') || 'any'}</td>
+              <td>{match.destinationAddresses.join(', ') || 'any'}</td>
+              <td>{match.services.join(', ') || '—'}</td>
+              <td title={match.matchedServers.join(', ')}>{match.matchedServers.length}</td>
+              <td>{match.matchedSide}</td>
+            </tr>)}
+          </tbody>
+        </table>
+        {importedMatches.matches.length > 500 && <div className="firewall-table-note">Showing the first 500 matches.</div>}
       </div>}
     </section>
     </>}
