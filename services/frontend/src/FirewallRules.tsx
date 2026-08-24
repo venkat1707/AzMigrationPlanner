@@ -20,6 +20,12 @@ type FirewallRule = {
   coreInfrastructure: boolean
   resolved: boolean
   peerKind: 'host' | 'server' | 'network'
+  // Only populated for the Azure NSG target, to mirror the Excel export's columns.
+  priority?: number
+  name?: string
+  sourceAddresses?: string[]
+  destinationAddresses?: string[]
+  nsgName?: string
 }
 
 type FirewallSummary = {
@@ -239,20 +245,39 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
       </div>
       {rules.length === 0 ? <div className="firewall-empty small"><Shield size={22} /><strong>No connections found for this scope</strong><span>The selected sprint has no observed dependency traffic.</span></div> : <div className="firewall-table-wrap">
         <table className="firewall-table">
-          <thead><tr><th>Direction</th><th>Protocol</th><th>Port</th><th>Peer</th><th>Peer address</th><th>Sprint servers</th><th>Connections</th><th>Service</th><th>Core</th></tr></thead>
-          <tbody>
-            {visibleRules.slice(0, 500).map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
-              <td><span className={`firewall-direction ${rule.direction.toLowerCase()}`}>{rule.direction}</span></td>
-              <td>{rule.protocol === '*' ? 'Any' : rule.protocol}</td>
-              <td>{rule.port ?? 'Any'}</td>
-              <td>{rule.remoteName ?? '—'}{rule.peerKind === 'network' ? <span className="firewall-core-badge" title="Summarized office/VPN prefix"> Prefix</span> : ''}</td>
-              <td>{rule.remoteAddress ?? <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
-              <td title={rule.localServers.join(', ')}>{rule.localServers.length}</td>
-              <td>{formatNumber.format(rule.connections)}</td>
-              <td>{rule.service ?? '—'}</td>
-              <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
-            </tr>)}
-          </tbody>
+          {target === 'nsg' ? <>
+            <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Direction</th><th>NSG Name</th><th>Core</th><th>Notes</th></tr></thead>
+            <tbody>
+              {visibleRules.slice(0, 500).map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
+                <td>{rule.priority ?? ''}</td>
+                <td>{rule.name ?? ''}</td>
+                <td>{rule.port ?? 'Any'}</td>
+                <td>{rule.protocol === '*' ? 'Any' : rule.protocol}</td>
+                <td>{rule.sourceAddresses && rule.sourceAddresses.length > 0 ? rule.sourceAddresses.join(', ') : '(sprint address space)'}</td>
+                <td>{rule.destinationAddresses && rule.destinationAddresses.length > 0 ? rule.destinationAddresses.join(', ') : '(sprint address space)'}</td>
+                <td>Allow</td>
+                <td><span className={`firewall-direction ${rule.direction.toLowerCase()}`}>{rule.direction}</span></td>
+                <td>{rule.nsgName || '—'}</td>
+                <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
+                <td>{rule.resolved ? '' : <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
+              </tr>)}
+            </tbody>
+          </> : <>
+            <thead><tr><th>Direction</th><th>Protocol</th><th>Port</th><th>Peer</th><th>Peer address</th><th>Sprint servers</th><th>Connections</th><th>Service</th><th>Core</th></tr></thead>
+            <tbody>
+              {visibleRules.slice(0, 500).map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
+                <td><span className={`firewall-direction ${rule.direction.toLowerCase()}`}>{rule.direction}</span></td>
+                <td>{rule.protocol === '*' ? 'Any' : rule.protocol}</td>
+                <td>{rule.port ?? 'Any'}</td>
+                <td>{rule.remoteName ?? '—'}{rule.peerKind === 'network' ? <span className="firewall-core-badge" title="Summarized office/VPN prefix"> Prefix</span> : ''}</td>
+                <td>{rule.remoteAddress ?? <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
+                <td title={rule.localServers.join(', ')}>{rule.localServers.length}</td>
+                <td>{formatNumber.format(rule.connections)}</td>
+                <td>{rule.service ?? '—'}</td>
+                <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
+              </tr>)}
+            </tbody>
+          </>}
         </table>
         {visibleRules.length > 500 && <div className="firewall-table-note">Showing the first 500 rules. Download a rule set for the full list.</div>}
       </div>}

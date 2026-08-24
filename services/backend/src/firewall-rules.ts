@@ -322,7 +322,7 @@ function firewallProtocol(protocol: NsgProtocol): string {
   return 'Any'
 }
 
-type ProjectedRule = FirewallRule & {
+export type ProjectedRule = FirewallRule & {
   name: string
   priority: number
   portRange: string
@@ -333,7 +333,7 @@ type ProjectedRule = FirewallRule & {
   destinationServers: string[]
 }
 
-function projectRules(ruleSet: FirewallRuleSet): ProjectedRule[] {
+export function projectRules(ruleSet: FirewallRuleSet): ProjectedRule[] {
   const priorities: Record<'Inbound' | 'Outbound', number> = { Inbound: 100, Outbound: 100 }
   const usedNames = new Set<string>()
   return ruleSet.rules.map((rule) => {
@@ -409,24 +409,31 @@ function addOverviewSheet(workbook: ExcelJS.Workbook, ruleSet: FirewallRuleSet):
   fitColumns(overview)
 }
 
-function addNsgSheet(workbook: ExcelJS.Workbook, projected: ProjectedRule[], landingZone: LandingZoneContext): void {
-  // Server name (lowercased) -> NSG name, from the sprint's Landing Zone Resource Groups/Network mapping.
+// Server name (lowercased) -> NSG name, from the sprint's Landing Zone Resource Groups/Network mapping.
+export function landingZoneNsgNamesByServer(landingZone: LandingZoneContext): Map<string, string> {
   const serverNsgNames = new Map<string, string>()
   for (const placement of landingZone.placements) {
     if (!placement.networkSecurityGroup) continue
     for (const server of placement.servers) serverNsgNames.set(server.toLowerCase(), placement.networkSecurityGroup)
   }
+  return serverNsgNames
+}
+
+export function nsgNamesForRule(localServers: string[], serverNsgNames: Map<string, string>): string {
+  return [...new Set(localServers.map((server) => serverNsgNames.get(server.toLowerCase())).filter((value): value is string => Boolean(value)))].join(', ')
+}
+
+function addNsgSheet(workbook: ExcelJS.Workbook, projected: ProjectedRule[], landingZone: LandingZoneContext): void {
+  const serverNsgNames = landingZoneNsgNamesByServer(landingZone)
 
   const nsg = workbook.addWorksheet('Azure NSG Rules', { views: [{ state: 'frozen', ySplit: 1 }] })
   nsg.columns = [
     { header: 'Priority', key: 'priority' }, { header: 'Name', key: 'name' }, { header: 'Port', key: 'port' },
     { header: 'Protocol', key: 'protocol' }, { header: 'Source', key: 'source' }, { header: 'Destination', key: 'destination' },
     { header: 'Action', key: 'action' }, { header: 'Direction', key: 'direction' }, { header: 'NSG Name', key: 'nsgName' },
-    { header: 'Peer Server', key: 'peer' }, { header: 'Service', key: 'service' }, { header: 'Connections', key: 'connections' },
     { header: 'Core Infrastructure', key: 'core' }, { header: 'Notes', key: 'notes' },
   ]
   for (const rule of projected) {
-    const nsgNames = [...new Set(rule.localServers.map((server) => serverNsgNames.get(server.toLowerCase())).filter((value): value is string => Boolean(value)))]
     nsg.addRow({
       priority: rule.priority,
       name: rule.name,
@@ -436,16 +443,13 @@ function addNsgSheet(workbook: ExcelJS.Workbook, projected: ProjectedRule[], lan
       destination: rule.destinationAddresses.join(', ') || SPRINT_ADDRESS_FALLBACK,
       action: 'Allow',
       direction: rule.direction,
-      nsgName: nsgNames.join(', '),
-      peer: rule.remoteName ?? '',
-      service: rule.service ?? '',
-      connections: rule.connections,
+      nsgName: nsgNamesForRule(rule.localServers, serverNsgNames),
       core: rule.coreInfrastructure ? 'Yes' : 'No',
       notes: rule.resolved ? '' : 'Resolve the peer IP address before applying.',
     })
   }
   styleHeader(nsg.getRow(1))
-  nsg.autoFilter = { from: 'A1', to: 'N1' }
+  nsg.autoFilter = { from: 'A1', to: 'K1' }
   fitColumns(nsg)
 }
 

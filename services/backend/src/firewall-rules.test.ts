@@ -214,7 +214,7 @@ test('NSG Excel sheet mirrors the Azure portal rule columns and includes the map
   await workbook.xlsx.load(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer)
   const sheet = workbook.getWorksheet('Azure NSG Rules')
   assert.deepEqual((sheet?.getRow(1).values as ExcelJS.CellValue[])?.slice(1), [
-    'Priority', 'Name', 'Port', 'Protocol', 'Source', 'Destination', 'Action', 'Direction', 'NSG Name', 'Peer Server', 'Service', 'Connections', 'Core Infrastructure', 'Notes',
+    'Priority', 'Name', 'Port', 'Protocol', 'Source', 'Destination', 'Action', 'Direction', 'NSG Name', 'Core Infrastructure', 'Notes',
   ])
   const dataRow = (sheet?.getRow(2).values as ExcelJS.CellValue[])?.slice(1)
   assert.equal(dataRow?.[6], 'Allow')

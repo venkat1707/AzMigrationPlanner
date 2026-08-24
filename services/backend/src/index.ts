@@ -34,7 +34,7 @@ import { importApplicationServerMappingFile } from './application-server-mapping
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
 import { normalizeSprintSchedule, type SprintSchedule, type SprintScheduleInput } from './sprint-schedule.js'
 import { buildSprintScheduleView, createSprintSchedulePresentation, createSprintScheduleWorkbook, type ScheduleAssessment } from './sprint-schedule-export.js'
-import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallRulesWorkbook, createFirewallTerraformArchive, type DependencyFlowRow, type FirewallRuleSet, type FirewallTarget, type LandingZoneContext, type LandingZonePlacement, type NetworkRange, type PortReference } from './firewall-rules.js'
+import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallRulesWorkbook, createFirewallTerraformArchive, landingZoneNsgNamesByServer, nsgNamesForRule, projectRules, type DependencyFlowRow, type FirewallRuleSet, type FirewallTarget, type LandingZoneContext, type LandingZonePlacement, type NetworkRange, type PortReference } from './firewall-rules.js'
 import { refreshDatabaseServerFlags } from './database-server-classification.js'
 import { getCleanupStatus, startDataCleanup } from './data-cleanup.js'
 import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
@@ -2897,6 +2897,13 @@ app.get('/api/firewall-rules', async (request, response) => {
     response.status(404).json({ error: `Sprint sequence ${scope} was not found in the saved plan.`, sprints })
     return
   }
+  // The NSG target's page mirrors the Excel export's columns, so it needs the same projected priority/name/orientation/NSG name.
+  const rules = target === 'nsg'
+    ? (() => {
+        const serverNsgNames = landingZoneNsgNamesByServer(ruleSet.landingZone)
+        return projectRules(ruleSet).map((rule) => ({ ...rule, nsgName: nsgNamesForRule(rule.localServers, serverNsgNames) }))
+      })()
+    : ruleSet.rules
   response.json({
     scope: scope === 'all' ? 'all' : scope,
     target,
@@ -2906,7 +2913,7 @@ app.get('/api/firewall-rules', async (request, response) => {
     summary: ruleSet.summary,
     truncated: ruleSet.truncated,
     sprintAddresses: ruleSet.sprintAddresses,
-    rules: ruleSet.rules,
+    rules,
   })
 })
 
