@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import ExcelJS from 'exceljs'
 import JSZip from 'jszip'
-import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallTerraformArchive, orientRule, type FirewallRuleInput, type FirewallTarget, type LandingZoneContext } from './firewall-rules.js'
+import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallRulesWorkbook, createFirewallTerraformArchive, orientRule, type FirewallRuleInput, type FirewallTarget, type LandingZoneContext } from './firewall-rules.js'
 
 function baseInput(overrides: Partial<FirewallRuleInput> & { target: FirewallTarget }): FirewallRuleInput {
   return {
@@ -200,4 +201,22 @@ test('Bicep NSG export defaults NSG name and address prefixes from the landing z
   assert.ok(readme?.includes('--resource-group rg-prod-web'))
   assert.ok(readme?.includes('az network vnet subnet update'))
   assert.ok(readme?.includes('## Landing Zone Placement'))
+})
+
+test('NSG Excel sheet mirrors the Azure portal rule columns and includes the mapped NSG name', async () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    landingZone,
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: null, remoteIp: '192.168.5.5', port: 443, connections: 10 }],
+  }))
+  const buffer = await createFirewallRulesWorkbook(result)
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.load(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer)
+  const sheet = workbook.getWorksheet('Azure NSG Rules')
+  assert.deepEqual((sheet?.getRow(1).values as ExcelJS.CellValue[])?.slice(1), [
+    'Priority', 'Name', 'Port', 'Protocol', 'Source', 'Destination', 'Action', 'Direction', 'NSG Name', 'Peer Server', 'Service', 'Connections', 'Core Infrastructure', 'Notes',
+  ])
+  const dataRow = (sheet?.getRow(2).values as ExcelJS.CellValue[])?.slice(1)
+  assert.equal(dataRow?.[6], 'Allow')
+  assert.equal(dataRow?.[8], 'nsg-prod-web')
 })

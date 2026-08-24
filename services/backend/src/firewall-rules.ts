@@ -409,27 +409,34 @@ function addOverviewSheet(workbook: ExcelJS.Workbook, ruleSet: FirewallRuleSet):
   fitColumns(overview)
 }
 
-function addNsgSheet(workbook: ExcelJS.Workbook, projected: ProjectedRule[]): void {
+function addNsgSheet(workbook: ExcelJS.Workbook, projected: ProjectedRule[], landingZone: LandingZoneContext): void {
+  // Server name (lowercased) -> NSG name, from the sprint's Landing Zone Resource Groups/Network mapping.
+  const serverNsgNames = new Map<string, string>()
+  for (const placement of landingZone.placements) {
+    if (!placement.networkSecurityGroup) continue
+    for (const server of placement.servers) serverNsgNames.set(server.toLowerCase(), placement.networkSecurityGroup)
+  }
+
   const nsg = workbook.addWorksheet('Azure NSG Rules', { views: [{ state: 'frozen', ySplit: 1 }] })
   nsg.columns = [
-    { header: 'Priority', key: 'priority' }, { header: 'Name', key: 'name' }, { header: 'Direction', key: 'direction' },
-    { header: 'Access', key: 'access' }, { header: 'Protocol', key: 'protocol' }, { header: 'Source Address', key: 'source' },
-    { header: 'Source Port', key: 'sourcePort' }, { header: 'Destination Address', key: 'destination' },
-    { header: 'Destination Port', key: 'destinationPort' }, { header: 'Peer Server', key: 'peer' },
-    { header: 'Service', key: 'service' }, { header: 'Connections', key: 'connections' },
+    { header: 'Priority', key: 'priority' }, { header: 'Name', key: 'name' }, { header: 'Port', key: 'port' },
+    { header: 'Protocol', key: 'protocol' }, { header: 'Source', key: 'source' }, { header: 'Destination', key: 'destination' },
+    { header: 'Action', key: 'action' }, { header: 'Direction', key: 'direction' }, { header: 'NSG Name', key: 'nsgName' },
+    { header: 'Peer Server', key: 'peer' }, { header: 'Service', key: 'service' }, { header: 'Connections', key: 'connections' },
     { header: 'Core Infrastructure', key: 'core' }, { header: 'Notes', key: 'notes' },
   ]
   for (const rule of projected) {
+    const nsgNames = [...new Set(rule.localServers.map((server) => serverNsgNames.get(server.toLowerCase())).filter((value): value is string => Boolean(value)))]
     nsg.addRow({
       priority: rule.priority,
       name: rule.name,
-      direction: rule.direction,
-      access: 'Allow',
+      port: rule.portRange,
       protocol: rule.protocol,
       source: rule.sourceAddresses.join(', ') || SPRINT_ADDRESS_FALLBACK,
-      sourcePort: '*',
       destination: rule.destinationAddresses.join(', ') || SPRINT_ADDRESS_FALLBACK,
-      destinationPort: rule.portRange,
+      action: 'Allow',
+      direction: rule.direction,
+      nsgName: nsgNames.join(', '),
       peer: rule.remoteName ?? '',
       service: rule.service ?? '',
       connections: rule.connections,
@@ -507,7 +514,7 @@ export async function createFirewallRulesWorkbook(ruleSet: FirewallRuleSet): Pro
   workbook.created = new Date()
 
   addOverviewSheet(workbook, ruleSet)
-  if (ruleSet.target === 'nsg') addNsgSheet(workbook, projected)
+  if (ruleSet.target === 'nsg') addNsgSheet(workbook, projected, ruleSet.landingZone)
   else if (ruleSet.target === 'azure-firewall') addAzureFirewallSheet(workbook, projected)
   else addOnPremSheet(workbook, projected)
 
