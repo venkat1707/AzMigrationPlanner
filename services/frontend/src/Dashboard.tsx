@@ -107,7 +107,7 @@ async function uploadResponsePayload(response: Response): Promise<{ result?: Upl
 }
 
 const pageDefinitions: PageDefinition[] = [
-  { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration dependency intelligence', description: 'Monitor discovery coverage and continue through the migration planning workflow.' },
+  { page: 'overview', label: 'Overview', group: 'Workspace', icon: LayoutDashboard, access: 'all', eyebrow: 'Workspace overview', title: 'Migration planning workspace', description: 'Track estate discovery and continue through the migration planning workflow.' },
   { page: 'imports', label: 'Imports', group: 'Discover & prepare', icon: Upload, access: 'modify', eyebrow: 'Data ingestion', title: 'Import migration source data', description: 'Upload application catalogs, Server Assessment data, mappings, dependency exports, and Corelight/Zeek flow logs.' },
   { page: 'corelight', label: 'Flow logs (Preview)', group: 'Discover & prepare', icon: Network, access: 'modify', eyebrow: 'Network telemetry', title: 'Import Corelight / Zeek flow logs', description: 'Import conn.log and dns.log to enrich dependency data for mapping, waves, firewall rules, and planning.' },
   { page: 'splunk', label: 'Splunk logs (Preview)', group: 'Discover & prepare', icon: Activity, access: 'modify', eyebrow: 'Network telemetry', title: 'Import Splunk flow logs', description: 'Import CIM Network Traffic-shaped CSV exports from Splunk to enrich dependency data for mapping, waves, firewall rules, and planning.' },
@@ -507,44 +507,41 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             <article><span className="metric-icon"><CalendarRange /></span><div><span>Sprints planned</span><strong>{overviewStats ? formatNumber.format(overviewStats.sprintsPlanned) : '-'}</strong><small>{overviewStats ? `${formatNumber.format(overviewStats.tasksCompleted)}/${formatNumber.format(overviewStats.tasksTotal)} tasks complete` : 'Migration wave plan'}</small></div></article>
           </section>
           <section className="overview-grid">
-            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Migration journey</p><h2>Where this workspace fits, end to end</h2><small className="overview-intro">From first discovery import through hand over, see which phases this app drives directly and which ones it supports with generated artefacts and tracking.</small></div></div>
+            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Migration journey</p><h2>Where this workspace fits, end to end</h2><small className="overview-intro">This app organizes discovery and assessment data collected by your own tools, drives landing zone and wave planning, and generates artefacts that feed migration. Testing and hand over happen outside this app.</small></div></div>
             <ol className="journey-timeline">
-              <li className="core"><span className="journey-timeline-icon"><ScanSearch size={16} /></span><strong>Discovery</strong><small>Drives</small></li>
-              <li className="core"><span className="journey-timeline-icon"><Search size={16} /></span><strong>Assessment</strong><small>Drives</small></li>
+              <li className="supports"><span className="journey-timeline-icon"><ScanSearch size={16} /></span><strong>Discovery</strong><small>Supports</small></li>
+              <li className="supports"><span className="journey-timeline-icon"><Search size={16} /></span><strong>Assessment</strong><small>Supports</small></li>
               <li className="core"><span className="journey-timeline-icon"><CalendarRange size={16} /></span><strong>Planning</strong><small>Drives</small></li>
               <li className="supports"><span className="journey-timeline-icon"><Waypoints size={16} /></span><strong>Migration</strong><small>Supports</small></li>
-              <li className="supports"><span className="journey-timeline-icon"><CheckCircle2 size={16} /></span><strong>Testing</strong><small>Supports</small></li>
-              <li className="supports"><span className="journey-timeline-icon"><FileSpreadsheet size={16} /></span><strong>Hand over</strong><small>Supports</small></li>
+              <li className="outside"><span className="journey-timeline-icon"><AlertCircle size={16} /></span><strong>Testing</strong><small>Outside app</small></li>
+              <li className="outside"><span className="journey-timeline-icon"><AlertCircle size={16} /></span><strong>Hand over</strong><small>Outside app</small></li>
             </ol>
             <div className="journey-map">
-              <section className="journey-phase discovery"><div className="journey-phase-heading"><span>01</span><div><p>Discovery</p><small>Load source data and establish the current-state baseline.</small><span className="phase-coverage core">Core workflow</span></div></div><div className="journey-actions">
+              <section className="journey-phase discovery"><div className="journey-phase-heading"><span>01</span><div><p>Discovery</p><small>Import and organize discovery data collected by your network and inventory tools.</small><span className="phase-coverage supports">Supports</span></div></div><div className="journey-actions">
                 {canPlanWaves && <a href="#imports"><Upload size={16} /><span><strong>Import source data</strong><small>Catalog, assessment, mappings, and dependencies</small></span><ArrowUpRight size={16} /></a>}
                 <a href="#corelight"><Network size={16} /><span><strong>Enrich with flow logs</strong><small>Corelight/Zeek and Splunk network telemetry</small></span><ArrowUpRight size={16} /></a>
                 <a href="#core-infrastructure"><Settings2 size={16} /><span><strong>Define core infrastructure</strong><small>Shared services, roles, IPs, and ranges</small></span><ArrowUpRight size={16} /></a>
               </div></section>
-              <section className="journey-phase assessment"><div className="journey-phase-heading"><span>02</span><div><p>Assessment</p><small>Turn discovery records into an evidence-based estate view.</small><span className="phase-coverage core">Core workflow</span></div></div><div className="journey-actions">
+              <section className="journey-phase assessment"><div className="journey-phase-heading"><span>02</span><div><p>Assessment</p><small>Analyze imported assessment data to classify environments and map applications.</small><span className="phase-coverage supports">Supports</span></div></div><div className="journey-actions">
                 <a href="#environment-identification"><ScanSearch size={16} /><span><strong>Identify environments</strong><small>Classify servers for planning</small></span><ArrowUpRight size={16} /></a>
                 <a href="#dependencies"><Search size={16} /><span><strong>Explore dependencies</strong><small>Observed traffic and communication paths</small></span><ArrowUpRight size={16} /></a>
                 <a href="#application-map"><Boxes size={16} /><span><strong>Review application map</strong><small>Application boundaries and coverage gaps</small></span><ArrowUpRight size={16} /></a>
               </div></section>
-              <section className="journey-phase planning"><div className="journey-phase-heading"><span>03</span><div><p>Planning</p><small>Design the landing zone and sequence the delivery backlog.</small><span className="phase-coverage core">Core workflow</span></div></div><div className="journey-actions">
+              <section className="journey-phase planning"><div className="journey-phase-heading"><span>03</span><div><p>Planning</p><small>Design the landing zone and sequence the delivery backlog.</small><span className="phase-coverage core">Drives this phase</span></div></div><div className="journey-actions">
                 <a href="#landing-zone-platform"><Cloud size={16} /><span><strong>Capture platform decisions</strong><small>Connectivity, regions, identity, and operations</small></span><ArrowUpRight size={16} /></a>
                 <a href="#landing-zone-network"><Network size={16} /><span><strong>Map landing-zone networks</strong><small>Resource groups, virtual networks, and NSGs</small></span><ArrowUpRight size={16} /></a>
                 {canPlanWaves && <a href="#wave-planning"><CalendarRange size={16} /><span><strong>Set treatments &amp; plan waves</strong><small>Assign approaches and group into sprints</small></span><ArrowUpRight size={16} /></a>}
               </div></section>
-              <section className="journey-phase migration"><div className="journey-phase-heading"><span>04</span><div><p>Migration</p><small>Prepare the cutover with generated rules and runbooks.</small><span className="phase-coverage supports">Supports with artefacts</span></div></div><div className="journey-actions">
+              <section className="journey-phase migration"><div className="journey-phase-heading"><span>04</span><div><p>Migration</p><small>Generates the rules, sizing, and runbooks used to prepare the cutover.</small><span className="phase-coverage supports">Supports</span></div></div><div className="journey-actions">
                 {canPlanWaves && <a href="#firewall-rules"><Shield size={16} /><span><strong>Generate security rules</strong><small>Derive NSG/firewall rules from dependencies</small></span><ArrowUpRight size={16} /></a>}
                 {canPlanWaves && <a href="#load-balancer-scale"><Scale size={16} /><span><strong>Recommend load balancer scale</strong><small>Size the target load balancing service</small></span><ArrowUpRight size={16} /></a>}
                 {canPlanWaves && <a href="#artefact-generation"><WandSparkles size={16} /><span><strong>Generate migration documents</strong><small>Design, migration plan, and runsheet drafts</small></span><ArrowUpRight size={16} /></a>}
               </div></section>
-              <section className="journey-phase testing"><div className="journey-phase-heading"><span>05</span><div><p>Testing</p><small>Track validation work; execution happens in your test tooling.</small><span className="phase-coverage supports">Supports with tracking</span></div></div><div className="journey-actions">
-                <a href="#tasks"><ClipboardList size={16} /><span><strong>Track sprint tasks</strong><small>Assigned, in review, blocked, or complete</small></span><ArrowUpRight size={16} /></a>
-                {canPlanWaves && <a href="#artefact-generation"><ClipboardCheck size={16} /><span><strong>Capture runsheet Q&amp;A</strong><small>Record validation answers per sprint</small></span><ArrowUpRight size={16} /></a>}
+              <section className="journey-phase testing"><div className="journey-phase-heading"><span>05</span><div><p>Testing</p><small>No dedicated capability. Validate cutover results in your own test tooling and QA process.</small><span className="phase-coverage outside">Outside this app</span></div></div><div className="journey-actions">
+                <span className="journey-note"><AlertCircle size={15} /><span>Task Workspace is a general assignment board, not a test-case or defect tracker &mdash; use dedicated QA tooling for test execution.</span></span>
               </div></section>
-              <section className="journey-phase handover"><div className="journey-phase-heading"><span>06</span><div><p>Hand over</p><small>Package the decisions and artefacts for operations.</small><span className="phase-coverage supports">Supports with artefacts</span></div></div><div className="journey-actions">
-                {canPlanWaves && <a href="#artefact-generation"><FileSpreadsheet size={16} /><span><strong>Export design &amp; plan documents</strong><small>Foundry-generated hand-over documentation</small></span><ArrowUpRight size={16} /></a>}
-                {canPlanWaves && <a href="#firewall-rules"><Download size={16} /><span><strong>Export network rules</strong><small>Excel, Terraform, and Bicep for target teams</small></span><ArrowUpRight size={16} /></a>}
-                <a href="#tasks"><ClipboardList size={16} /><span><strong>Maintain the audit trail</strong><small>Decisions, comments, and sign-off history</small></span><ArrowUpRight size={16} /></a>
+              <section className="journey-phase handover"><div className="journey-phase-heading"><span>06</span><div><p>Hand over</p><small>No dedicated capability. Package the planning artefacts yourself for the receiving team.</small><span className="phase-coverage outside">Outside this app</span></div></div><div className="journey-actions">
+                <span className="journey-note"><AlertCircle size={15} /><span>Design, migration plan, and runsheet documents from Migration can be reused as a starting point, but there is no formal hand-over/sign-off workflow.</span></span>
               </div></section>
             </div></div>
             <div className="activity-panel"><div className="section-heading"><div><p className="eyebrow">Import activity</p><h2>Latest files</h2></div><a href="#imports">View all</a></div><ImportHistory items={imports.slice(0, 5)} /></div>
