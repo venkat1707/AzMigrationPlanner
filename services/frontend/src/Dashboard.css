@@ -428,23 +428,27 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .cleanup-badge { padding: 5px 7px; display: inline-flex; align-items: center; gap: 5px; color: #1d4ed8; background: #e8f0ff; border-radius: 3px; font-size: 9px; font-weight: 700; text-transform: uppercase; }
 .cleanup-badge.completed { color: #166534; background: #eaf7ef; }
 .cleanup-badge.failed { color: #8f2d20; background: #fff0ed; }
-.cleanup-empty { min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #8c9aa8; text-align: center; }
-.cleanup-empty strong { margin-top: 10px; color: #40506a; font-size: 12px; }
-.cleanup-empty span { margin-top: 4px; font-size: 10px; }
 .cleanup-total { margin-top: 12px; padding: 15px; display: grid; grid-template-columns: 1fr auto; align-items: center; background: #f8faff; border: 1px solid var(--line); border-radius: 5px; }
 .cleanup-total span { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
 .cleanup-total strong { font-size: 24px; }
 .cleanup-total small { grid-column: 1 / -1; margin-top: 3px; color: var(--muted); font-size: 9px; }
-.cleanup-flow ol { margin: 13px 0 0; padding: 0; list-style: none; }
-.cleanup-flow li { min-height: 67px; padding: 10px 3px; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 9px; border-bottom: 1px solid var(--line); }
-.step-marker { width: 28px; height: 28px; display: grid; place-items: center; color: #68778b; background: #edf1f6; border-radius: 50%; font-size: 10px; font-weight: 700; }
-.cleanup-flow li.running .step-marker { color: #1d4ed8; background: #e8f0ff; }
-.cleanup-flow li.completed .step-marker { color: #166534; background: #eaf7ef; }
-.cleanup-flow li.failed .step-marker { color: #8f2d20; background: #fff0ed; }
-.cleanup-flow li strong, .cleanup-flow li small { display: block; }
-.cleanup-flow li strong { font-size: 11px; }
-.cleanup-flow li small { margin-top: 3px; color: var(--muted); font-size: 10px; }
-.cleanup-flow li em { color: var(--muted); font-size: 9px; font-style: normal; font-weight: 700; text-transform: uppercase; }
+.cleanup-sequence { position: relative; margin: 13px 0 0; padding: 0; list-style: none; max-height: 620px; overflow-y: auto; }
+.cleanup-sequence li { position: relative; min-height: 60px; padding: 8px 3px 8px 0; display: grid; grid-template-columns: 29px minmax(0, 1fr); gap: 11px; }
+.cleanup-sequence li::before { content: ''; position: absolute; top: 32px; left: 14px; width: 2px; height: calc(100% - 8px); background: #dce4f0; }
+.cleanup-sequence li:last-child::before { display: none; }
+.cleanup-sequence-icon { position: relative; z-index: 1; width: 29px; height: 29px; flex: 0 0 auto; display: grid; place-items: center; color: #5b6b81; background: #edf1f6; border-radius: 50%; box-shadow: 0 0 0 3px white; }
+.cleanup-sequence li.running .cleanup-sequence-icon { color: #1d4ed8; background: #e8f0ff; }
+.cleanup-sequence li.completed .cleanup-sequence-icon { color: #166534; background: #eaf7ef; }
+.cleanup-sequence li.failed .cleanup-sequence-icon { color: #8f2d20; background: #fff0ed; }
+.cleanup-sequence-body { min-width: 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.cleanup-sequence li:last-child .cleanup-sequence-body { border-bottom: none; }
+.cleanup-sequence-body strong, .cleanup-sequence-body small { display: block; }
+.cleanup-sequence-body strong { color: #263d55; font-size: 11px; font-weight: 700; }
+.cleanup-sequence-body > small:first-of-type { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.cleanup-sequence-status { margin-top: 3px; color: #8b98a8; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+.cleanup-sequence li.running .cleanup-sequence-status { color: #1d4ed8; }
+.cleanup-sequence li.completed .cleanup-sequence-status { color: #166534; }
+.cleanup-sequence li.failed .cleanup-sequence-status { color: #8f2d20; }
 .modal-backdrop { position: fixed; z-index: 50; inset: 0; padding: 20px; display: grid; place-items: center; background: rgb(15 23 42 / 58%); }
 .confirmation-dialog { width: min(560px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; background: white; border-radius: 7px; box-shadow: 0 24px 60px rgb(15 23 42 / 28%); }
 .confirmation-dialog > header { padding: 18px 20px; display: grid; grid-template-columns: 38px minmax(0, 1fr) 30px; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); }
