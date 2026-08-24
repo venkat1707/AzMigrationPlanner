@@ -507,9 +507,9 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             <article><span className="metric-icon"><CalendarRange /></span><div><span>Sprints planned</span><strong>{overviewStats ? formatNumber.format(overviewStats.sprintsPlanned) : '-'}</strong><small>{overviewStats ? `${formatNumber.format(overviewStats.tasksCompleted)}/${formatNumber.format(overviewStats.tasksTotal)} tasks complete` : 'Migration wave plan'}</small></div></article>
           </section>
           <section className="overview-grid">
-            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Migration journey</p><h2>Where this workspace fits, end to end</h2><small className="overview-intro">This app organizes discovery and assessment data collected by your own tools, drives landing zone and wave planning, and generates artefacts that feed migration. Testing and hand over happen outside this app.</small></div></div>
+            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Migration journey</p><h2>Where this workspace fits, end to end</h2><small className="overview-intro">This app doesn't perform discovery &mdash; it imports data already discovered by your own tools, drives landing zone and wave planning, and generates artefacts that feed migration. Discovery, testing, and hand over happen outside this app.</small></div></div>
             <ol className="journey-timeline">
-              <li className="supports"><span className="journey-timeline-icon"><ScanSearch size={16} /></span><strong>Discovery</strong><small>Supports</small></li>
+              <li className="outside"><span className="journey-timeline-icon"><ScanSearch size={16} /></span><strong>Discovery</strong><small>Imports only</small></li>
               <li className="supports"><span className="journey-timeline-icon"><Search size={16} /></span><strong>Assessment</strong><small>Supports</small></li>
               <li className="core"><span className="journey-timeline-icon"><CalendarRange size={16} /></span><strong>Planning</strong><small>Drives</small></li>
               <li className="supports"><span className="journey-timeline-icon"><Waypoints size={16} /></span><strong>Migration</strong><small>Supports</small></li>
@@ -517,7 +517,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
               <li className="outside"><span className="journey-timeline-icon"><AlertCircle size={16} /></span><strong>Hand over</strong><small>Outside app</small></li>
             </ol>
             <div className="journey-map">
-              <section className="journey-phase discovery"><div className="journey-phase-heading"><span>01</span><div><p>Discovery</p><small>Import and organize discovery data collected by your network and inventory tools.</small><span className="phase-coverage supports">Supports</span></div></div><div className="journey-actions">
+              <section className="journey-phase discovery"><div className="journey-phase-heading"><span>01</span><div><p>Discovery</p><small>No discovery capability &mdash; imports and organizes data already discovered by your network and inventory tools.</small><span className="phase-coverage outside">Imports only</span></div></div><div className="journey-actions">
                 {canPlanWaves && <a href="#imports"><Upload size={16} /><span><strong>Import source data</strong><small>Catalog, assessment, mappings, and dependencies</small></span><ArrowUpRight size={16} /></a>}
                 <a href="#corelight"><Network size={16} /><span><strong>Enrich with flow logs</strong><small>Corelight/Zeek and Splunk network telemetry</small></span><ArrowUpRight size={16} /></a>
                 <a href="#core-infrastructure"><Settings2 size={16} /><span><strong>Define core infrastructure</strong><small>Shared services, roles, IPs, and ranges</small></span><ArrowUpRight size={16} /></a>

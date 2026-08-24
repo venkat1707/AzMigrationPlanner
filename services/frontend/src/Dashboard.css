@@ -117,10 +117,10 @@ button { letter-spacing: 0; }
 .journey-timeline li.outside small { color: #4b5768; background: #eef1f5; }
 .journey-map { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .journey-phase { min-width: 0; padding: 14px; border: 1px solid var(--line); border-top: 3px solid #6b89a9; border-radius: 6px; background: #fbfdff; }
-.journey-phase.discovery, .journey-phase.assessment { border-top-color: #b0793a; }
+.journey-phase.assessment { border-top-color: #b0793a; }
 .journey-phase.planning { border-top-color: #2563eb; }
 .journey-phase.migration { border-top-color: #b0793a; }
-.journey-phase.testing, .journey-phase.handover { border-top-color: #8b98a8; }
+.journey-phase.discovery, .journey-phase.testing, .journey-phase.handover { border-top-color: #8b98a8; }
 .journey-phase-heading { display: flex; gap: 9px; align-items: flex-start; }
 .journey-phase-heading > span { width: 25px; height: 25px; flex: 0 0 auto; display: grid; place-items: center; color: #40546d; background: #edf3fa; border-radius: 4px; font-family: var(--mono); font-size: 9px; font-weight: 700; }
 .journey-phase-heading p { margin: 0; color: #263d55; font-size: 12px; font-weight: 800; }
