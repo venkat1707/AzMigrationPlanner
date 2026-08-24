@@ -1479,6 +1479,7 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .firewall-table-filters input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px var(--accent-soft); }
 .firewall-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 5px; }
 .firewall-table { min-width: 1050px; }
+.firewall-table td { overflow-wrap: anywhere; }
 .firewall-table tr.unresolved { background: #fffaf2; }
 .firewall-direction { display: inline-flex; padding: 2px 9px; border-radius: 999px; font-size: 10px; font-weight: 800; }
 .firewall-direction.inbound { color: #166534; background: #e4f5ea; }
