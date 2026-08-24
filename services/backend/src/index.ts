@@ -2797,9 +2797,9 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
       })
       .select({
         serverName: 'm.server_name', subscriptionId: 'm.subscription_id', subscriptionName: 'm.subscription_name',
-        resourceGroupName: 'rg.resource_group_name', virtualNetwork: 'm.virtual_network', subnet: 'm.subnet',
+        resourceGroupName: 'rg.resource_group_name', location: 'rg.location', virtualNetwork: 'm.virtual_network', subnet: 'm.subnet',
         subnetIpSegment: 'net.subnet_ip_segment', networkSecurityGroup: 'm.network_security_group',
-      }) as Promise<Array<{ serverName: string; subscriptionId: string | null; subscriptionName: string | null; resourceGroupName: string | null; virtualNetwork: string | null; subnet: string | null; subnetIpSegment: string | null; networkSecurityGroup: string | null }>>,
+      }) as Promise<Array<{ serverName: string; subscriptionId: string | null; subscriptionName: string | null; resourceGroupName: string | null; location: string | null; virtualNetwork: string | null; subnet: string | null; subnetIpSegment: string | null; networkSecurityGroup: string | null }>>,
   ])
 
   const landingZonePlacementsByKey = new Map<string, LandingZonePlacement>()
@@ -2809,7 +2809,7 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
     if (existing) { existing.servers.push(row.serverName); continue }
     landingZonePlacementsByKey.set(key, {
       servers: [row.serverName],
-      subscriptionId: row.subscriptionId, subscriptionName: row.subscriptionName, resourceGroupName: row.resourceGroupName,
+      subscriptionId: row.subscriptionId, subscriptionName: row.subscriptionName, resourceGroupName: row.resourceGroupName, location: row.location,
       virtualNetwork: row.virtualNetwork, subnet: row.subnet, subnetIpSegment: row.subnetIpSegment, networkSecurityGroup: row.networkSecurityGroup,
     })
   }

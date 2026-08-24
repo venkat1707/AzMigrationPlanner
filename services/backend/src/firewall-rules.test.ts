@@ -141,6 +141,7 @@ const landingZone: LandingZoneContext = {
     subscriptionId: 'sub-1',
     subscriptionName: 'Prod Subscription',
     resourceGroupName: 'rg-prod-web',
+    location: 'eastus',
     virtualNetwork: 'vnet-prod',
     subnet: 'snet-web',
     subnetIpSegment: '10.5.0.0/24',
@@ -166,6 +167,7 @@ test('Terraform NSG export defaults resource group, NSG name, and address space 
   assert.ok(variables?.includes('default     = "rg-prod-web"'))
   assert.ok(variables?.includes('default     = "nsg-prod-web"'))
   assert.ok(variables?.includes('default     = "10.5.0.0/24"'))
+  assert.ok(variables?.includes('default     = "eastus"'))
   const subnetAssociations = await zip.file('subnet_associations.tf')?.async('string')
   assert.ok(subnetAssociations?.includes('name                 = "snet-web"'))
   assert.ok(subnetAssociations?.includes('virtual_network_name = "vnet-prod"'))
@@ -191,6 +193,7 @@ test('Bicep NSG export defaults NSG name and address prefixes from the landing z
   const archive = await createFirewallBicepArchive(result)
   const zip = await JSZip.loadAsync(archive)
   const nsgBicep = await zip.file('nsg.bicep')?.async('string')
+  assert.ok(nsgBicep?.includes(`param location string = 'eastus'`))
   assert.ok(nsgBicep?.includes(`param nsgName string = 'nsg-prod-web'`))
   assert.ok(nsgBicep?.includes(`param sprintAddressPrefixes array = ['10.5.0.0/24']`))
   const readme = await zip.file('README.md')?.async('string')
