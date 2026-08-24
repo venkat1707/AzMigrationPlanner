@@ -60,6 +60,17 @@ test('VPN peers are summarized to their prefix', () => {
   assert.equal(rule.peerKind, 'network')
 })
 
+test('a local address inside a defined Office/VPN range is summarized to its prefix, same as a remote peer', () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    inbound: [{ localServer: 'web01', localIp: '192.168.5.5', remoteServer: 'app01', remoteIp: '10.0.1.1', port: 443, connections: 2 }],
+  }))
+  assert.equal(result.rules.length, 1)
+  const rule = result.rules[0]
+  assert.ok(rule)
+  assert.deepEqual(rule.localAddresses, ['192.168.0.0/16'])
+})
+
 test('on-prem target flips Azure inbound into an outbound rule', () => {
   const result = buildFirewallRuleSet(baseInput({
     target: 'on-prem',

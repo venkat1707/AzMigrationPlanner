@@ -199,8 +199,10 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
   const ingest = (direction: 'Inbound' | 'Outbound', flows: DependencyFlowRow[]) => {
     for (const flow of flows) {
       const localKey = flow.localServer.trim().toLowerCase()
-      const localAddress = flow.localIp ?? assessmentIp.get(localKey) ?? null
-      if (localAddress) sprintAddresses.add(localAddress)
+      const rawLocalAddress = flow.localIp ?? assessmentIp.get(localKey) ?? null
+      if (rawLocalAddress) sprintAddresses.add(rawLocalAddress)
+      // A local (sprint) address can itself fall inside a defined Office/VPN range; summarize it the same way a remote peer would be.
+      const localAddress = rawLocalAddress ? matchNetwork(rawLocalAddress, networks)?.cidr ?? rawLocalAddress : null
       let remoteAddress = flow.remoteIp
         ?? (flow.remoteServer ? assessmentIp.get(flow.remoteServer.trim().toLowerCase()) ?? null : null)
       const remoteKeyName = flow.remoteServer ? flow.remoteServer.trim().toLowerCase() : null
