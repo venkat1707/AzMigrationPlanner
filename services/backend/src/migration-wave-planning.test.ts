@@ -203,3 +203,31 @@ test('auto-size mode cuts an oversized dependency chain at its weakest link', ()
   assert.notEqual(sprintFor('chain-20')?.sequence, sprintFor('chain-21')?.sequence)
   assert.ok(plan.waves.flatMap((wave) => wave.sprints).every((sprint) => sprint.serverCount <= 60))
 })
+
+test('zero cross-sprint dependency mode keeps an oversized dependency chain in one sprint and reports no cross-sprint dependencies', () => {
+  const assessments = Array.from({ length: 40 }, (_, index) => ({
+    serverName: `chain-${index + 1}`,
+    application: `App ${index + 1}`,
+    environment: 'Prod',
+    migrationReadiness: 'Ready',
+    securityReadiness: null,
+    storageGb: 10,
+    databaseServer: false,
+    totalIssues: 0,
+    recommendedComputeSku: null,
+  }))
+  const dependencies = Array.from({ length: 39 }, (_, index) => ({
+    sourceServer: `chain-${index + 1}`,
+    destinationServer: `chain-${index + 2}`,
+    connectionCount: index === 19 ? 1 : 10,
+  }))
+  const plan = buildMigrationWavePlan(assessments, [], dependencies, {
+    ...defaultMigrationWaveOptions,
+    autoSizeSprints: true,
+    zeroCrossSprintDependencies: true,
+  })
+
+  const sprintFor = (name: string) => plan.waves.flatMap((wave) => wave.sprints).find((sprint) => sprint.servers.some((server) => server.name === name))
+  assert.equal(sprintFor('chain-20')?.sequence, sprintFor('chain-21')?.sequence)
+  assert.equal(plan.summary.crossSprintDependencies, 0)
+})

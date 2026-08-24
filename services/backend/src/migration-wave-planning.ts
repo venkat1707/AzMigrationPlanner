@@ -4,6 +4,7 @@ export type MigrationWaveOptions = {
   minimumServers: number
   maximumServers: number
   autoSizeSprints: boolean
+  zeroCrossSprintDependencies: boolean
   considerEnvironments: boolean
   prioritizeEnvironments: boolean
   environmentOrder: string[]
@@ -78,6 +79,7 @@ export const defaultMigrationWaveOptions: MigrationWaveOptions = {
   minimumServers: 5,
   maximumServers: 20,
   autoSizeSprints: false,
+  zeroCrossSprintDependencies: false,
   considerEnvironments: true,
   prioritizeEnvironments: true,
   environmentOrder: ['Dev', 'Test', 'UAT', 'Pre-prod', 'Prod'],
@@ -379,7 +381,7 @@ export function buildMigrationWavePlan(
         ? 'Sprint sizing has no fixed minimum or maximum in this mode; grouping is driven entirely by observed dependencies and a computed safety ceiling.'
         : `Compatible under-minimum affinity groups are merged or rebalanced before an exception is reported; minimum size never overrides maximum size or environment boundaries${options.separateDataHeavyWorkloads ? ', or data-heavy separation' : ''}.`,
       options.autoSizeSprints
-        ? 'Automatic sprint sizing is enabled: each application’s servers always stay together in one sprint, and an application’s database connections are prioritized so they are the last to be cut if a safety ceiling forces a split. Dependency-linked applications are combined into the same sprint to reduce cross-sprint dependency, and independent application clusters are also packed together as tightly as the same ceiling allows to minimize sprint count. Shared core infrastructure is clustered and packed separately (never mixed with application servers) as tightly as its own safety ceiling allows. Because sprints are still capped by a safety ceiling for practicality, some dependencies between heavily-shared components (e.g. one database used by many applications) may still cross sprint boundaries — these are listed under cross-sprint dependencies below.'
+        ? `Automatic sprint sizing is enabled: each application’s servers always stay together in one sprint${options.zeroCrossSprintDependencies ? '' : ', and an application’s database connections are prioritized so they are the last to be cut if a safety ceiling forces a split'}. Dependency-linked applications are combined into the same sprint to reduce cross-sprint dependency, and independent application clusters are also packed together as tightly as the same ceiling allows to minimize sprint count. Shared core infrastructure is clustered and packed separately (never mixed with application servers) as tightly as its own safety ceiling allows. ${options.zeroCrossSprintDependencies ? 'Zero cross-sprint dependency mode is enabled: the safety ceiling is ignored for dependency-connected application and database servers, so every observed dependency stays within a single sprint even if that sprint grows large as a result.' : 'Because sprints are still capped by a safety ceiling for practicality, some dependencies between heavily-shared components (e.g. one database used by many applications) may still cross sprint boundaries — these are listed under cross-sprint dependencies below.'}`
         : 'Shared infrastructure and services consumed by more groups are scheduled earlier where environment ordering allows.',
       'Bandwidth, replication duration, change windows, approvals, rollback tests, and owner validation are not present in the imported data and require external confirmation.',
     ],
@@ -425,7 +427,7 @@ function createWorkUnits(servers: PlanningServer[], dependencies: DependencyRow[
   let sequence = 0
   for (const groupServers of groups.values()) {
     const clusters = options.autoSizeSprints
-      ? autoClusterPools(groupServers, dependencies, applicationAffinityGroups, serverAffinityGroups)
+      ? autoClusterPools(groupServers, dependencies, applicationAffinityGroups, serverAffinityGroups, options.zeroCrossSprintDependencies)
       : buildManualClusters(groupServers, dependencies, applicationAffinityGroups, serverAffinityGroups)
         .map((cluster) => ({ pool: 'application' as const, cluster }))
     for (const { pool, cluster } of clusters) {
@@ -460,13 +462,14 @@ function autoClusterPools(
   dependencies: DependencyRow[],
   applicationAffinityGroups: Set<string>[],
   serverAffinityGroups: Set<string>[],
+  zeroCrossSprintDependencies: boolean,
 ) {
   const infrastructureServers = groupServers.filter((server) => server.serverType === 'Infrastructure')
   const applicationServers = groupServers.filter((server) => server.serverType !== 'Infrastructure')
   return [
-    ...buildAutoClusters(infrastructureServers, dependencies, applicationAffinityGroups, serverAffinityGroups, false)
+    ...buildAutoClusters(infrastructureServers, dependencies, applicationAffinityGroups, serverAffinityGroups, false, false)
       .map((cluster) => ({ pool: 'infrastructure' as const, cluster })),
-    ...buildAutoClusters(applicationServers, dependencies, applicationAffinityGroups, serverAffinityGroups, true)
+    ...buildAutoClusters(applicationServers, dependencies, applicationAffinityGroups, serverAffinityGroups, true, zeroCrossSprintDependencies)
       .map((cluster) => ({ pool: 'application' as const, cluster })),
   ]
 }
@@ -530,6 +533,7 @@ function buildAutoClusters(
   applicationAffinityGroups: Set<string>[],
   serverAffinityGroups: Set<string>[],
   forceApplicationUnion: boolean,
+  zeroCrossSprintDependencies: boolean,
 ) {
   const names = new Set(groupServers.map(({ name }) => normalize(name)))
   if (names.size === 0) return []
@@ -603,7 +607,9 @@ function buildAutoClusters(
     const destinationRoot = find(destination)
     if (sourceRoot === destinationRoot) continue
     const mergedSize = (size.get(sourceRoot) ?? 1) + (size.get(destinationRoot) ?? 1)
-    if (mergedSize <= ceiling) union(source, destination)
+    // Zero-cross-sprint-dependency mode merges every dependency-connected pair unconditionally,
+    // ignoring the ceiling, so no observed dependency can ever end up split across two sprints.
+    if (zeroCrossSprintDependencies || mergedSize <= ceiling) union(source, destination)
   }
 
   const clusters = new Map<string, PlanningServer[]>()

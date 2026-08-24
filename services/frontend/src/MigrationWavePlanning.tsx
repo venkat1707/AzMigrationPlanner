@@ -140,6 +140,7 @@ type PlannerSettings = {
   minimumServers: number
   maximumServers: number
   autoSizeSprints: boolean
+  zeroCrossSprintDependencies: boolean
   considerEnvironments: boolean
   prioritizeEnvironments: boolean
   environmentOrder: string[]
@@ -158,6 +159,7 @@ const defaultSettings: PlannerSettings = {
   minimumServers: 5,
   maximumServers: 20,
   autoSizeSprints: false,
+  zeroCrossSprintDependencies: false,
   considerEnvironments: true,
   prioritizeEnvironments: true,
   environmentOrder: ['Dev', 'Test', 'UAT', 'Pre-prod', 'Prod'],
@@ -413,7 +415,8 @@ export default function MigrationWavePlanning() {
           <label className={!settings.separateDataHeavyWorkloads ? 'disabled' : ''}>Data-heavy threshold<input type="number" min="1" max="1000000" disabled={!settings.separateDataHeavyWorkloads} value={settings.dataHeavyStorageGb} onChange={(event) => setSettings({ ...settings, dataHeavyStorageGb: Number(event.target.value) })} /><small>GB of assessed storage; database servers always qualify.</small></label>
         </div>
         <div className="wave-planner-toggles">
-          <label><input type="checkbox" checked={settings.autoSizeSprints} onChange={(event) => setSettings({ ...settings, autoSizeSprints: event.target.checked })} /><span><strong>Let the tool determine the optimal sprint size</strong><small>Ignores the min/max guardrails above and groups servers by observed dependencies, splitting only where a group would otherwise grow too large.</small></span></label>
+          <label><input type="checkbox" checked={settings.autoSizeSprints} onChange={(event) => setSettings({ ...settings, autoSizeSprints: event.target.checked, zeroCrossSprintDependencies: event.target.checked && settings.zeroCrossSprintDependencies })} /><span><strong>Let the tool determine the optimal sprint size</strong><small>Ignores the min/max guardrails above and groups servers by observed dependencies, splitting only where a group would otherwise grow too large.</small></span></label>
+          <label className={!settings.autoSizeSprints ? 'disabled' : ''}><input type="checkbox" disabled={!settings.autoSizeSprints} checked={settings.zeroCrossSprintDependencies} onChange={(event) => setSettings({ ...settings, zeroCrossSprintDependencies: event.target.checked })} /><span><strong>Zero cross-sprint dependency</strong><small>Requires letting the tool determine sprint size. Ignores the safety ceiling for dependency-connected servers so every observed dependency stays within one sprint, even if that sprint grows large as a result.</small></span></label>
           <label><input type="checkbox" checked={settings.considerEnvironments} onChange={(event) => setSettings({ ...settings, considerEnvironments: event.target.checked })} /><span><strong>Separate environments</strong><small>Keep application servers in environment-specific waves.</small></span></label>
           <label className={!settings.considerEnvironments ? 'disabled' : ''}><input type="checkbox" disabled={!settings.considerEnvironments} checked={settings.prioritizeEnvironments} onChange={(event) => setSettings({ ...settings, prioritizeEnvironments: event.target.checked })} /><span><strong>Prioritize environments</strong><small>Sequence lower environments before production.</small></span></label>
           <label><input type="checkbox" checked={settings.separateDataHeavyWorkloads} onChange={(event) => setSettings({ ...settings, separateDataHeavyWorkloads: event.target.checked })} /><span><strong>Separate data-heavy workloads</strong><small>Limit each sprint to one database or storage-heavy server.</small></span></label>
