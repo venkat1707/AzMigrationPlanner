@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertCircle, Download, FileCode2, FileSpreadsheet, Info, RefreshCw, Shield } from 'lucide-react'
+import { AlertCircle, ArrowLeft, ArrowRight, Download, FileCode2, FileSpreadsheet, Info, RefreshCw, Shield } from 'lucide-react'
 import { apiFetch } from './auth-client'
 
 type SprintOption = { sequence: number; sprint: number; wave: number; environment: string; name: string; serverCount: number }
@@ -126,6 +126,8 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
   const [planMissing, setPlanMissing] = useState(false)
   const [directionFilter, setDirectionFilter] = useState<'All' | 'Inbound' | 'Outbound'>('All')
   const [search, setSearch] = useState('')
+  const [rulesPage, setRulesPage] = useState(1)
+  const rulesPageSize = 10
 
   const query = useMemo(() => `sprint=${scope === 'all' ? 'all' : scope}&target=${target}&excludeCoreInfrastructure=${excludeCore}`, [scope, target, excludeCore])
 
@@ -200,6 +202,15 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
         .some((value) => value && value.toLowerCase().includes(term))
     })
   }, [rules, directionFilter, search])
+
+  useEffect(() => { setRulesPage(1) }, [directionFilter, search, rules])
+
+  const rulesTotalPages = Math.max(1, Math.ceil(visibleRules.length / rulesPageSize))
+  const currentRulesPage = Math.min(rulesPage, rulesTotalPages)
+  const pagedRules = useMemo(
+    () => visibleRules.slice((currentRulesPage - 1) * rulesPageSize, currentRulesPage * rulesPageSize),
+    [visibleRules, currentRulesPage],
+  )
 
   if (loading && target !== '' && rules.length === 0 && !planMissing) {
     return <div className={embedded ? 'firewall-rules-page embedded' : 'page firewall-rules-page'}><div className="firewall-loading"><RefreshCw className="spin" size={18} /> Loading firewall rules...</div></div>
@@ -287,7 +298,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
           {target === 'nsg' ? <>
             <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Direction</th><th>NSG Name</th><th>Core</th><th>Notes</th></tr></thead>
             <tbody>
-              {visibleRules.slice(0, 500).map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
+              {pagedRules.map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
                 <td>{rule.priority ?? ''}</td>
                 <td>{rule.name ?? ''}</td>
                 <td>{rule.port ?? 'Any'}</td>
@@ -304,7 +315,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
           </> : target === 'azure-firewall' ? <>
             <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Direction</th><th>Core</th></tr></thead>
             <tbody>
-              {visibleRules.slice(0, 500).map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
+              {pagedRules.map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
                 <td>{rule.priority ?? ''}</td>
                 <td>{rule.name ?? ''}</td>
                 <td>{rule.port ?? 'Any'}</td>
@@ -319,7 +330,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
           </> : <>
             <thead><tr><th>Direction</th><th>Protocol</th><th>Port</th><th>Peer</th><th>Peer address</th><th>Sprint servers</th><th>Connections</th><th>Service</th><th>Core</th></tr></thead>
             <tbody>
-              {visibleRules.slice(0, 500).map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
+              {pagedRules.map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
                 <td><span className={`firewall-direction ${rule.direction.toLowerCase()}`}>{rule.direction}</span></td>
                 <td>{rule.protocol === '*' ? 'Any' : rule.protocol}</td>
                 <td>{rule.port ?? 'Any'}</td>
@@ -333,7 +344,13 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
             </tbody>
           </>}
         </table>
-        {visibleRules.length > 500 && <div className="firewall-table-note">Showing the first 500 rules. Download a rule set for the full list.</div>}
+        <footer className="pagination">
+          <span>Page {currentRulesPage} of {rulesTotalPages} · {visibleRules.length} rule{visibleRules.length === 1 ? '' : 's'}</span>
+          <div>
+            <button type="button" className="icon-button" title="Previous page" disabled={currentRulesPage <= 1} onClick={() => setRulesPage((page) => page - 1)}><ArrowLeft size={17} /></button>
+            <button type="button" className="icon-button" title="Next page" disabled={currentRulesPage >= rulesTotalPages} onClick={() => setRulesPage((page) => page + 1)}><ArrowRight size={17} /></button>
+          </div>
+        </footer>
       </div>}
     </section>
 
