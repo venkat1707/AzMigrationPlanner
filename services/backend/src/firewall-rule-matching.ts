@@ -323,11 +323,16 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
         const peerKind: FirewallRule['peerKind'] = side.remoteMatchedServers.length > 0 ? 'server' : 'host'
 
         const serviceEntries = resolvedServices.length > 0 ? resolvedServices : [{ protocol: '*' as NsgProtocol, port: null, label: 'Any' }]
+        const baseName = rule.name ?? rule.externalId
         for (const service of serviceEntries) {
           if (rules.size >= MAX_RULES) { truncated = true; continue }
           const key = `${ruleset.rulesetId}:${rule.id}:${direction}:${service.protocol}:${service.port ?? 'any'}`
           let existing = rules.get(key)
           if (!existing) {
+            // A single imported rule with several services (e.g. a service group) fans out into one
+            // FirewallRule per resolved (protocol, port) pair — the service label is appended so each
+            // row's name still identifies its own port/protocol instead of colliding on the same base
+            // name (which would otherwise only be told apart by a meaningless "_1"/"_2" dedup suffix).
             existing = {
               id: key,
               direction,
@@ -343,7 +348,7 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
               coreInfrastructure: touchesCore,
               resolved: remoteResolved,
               peerKind,
-              name: rule.name ?? rule.externalId,
+              name: serviceEntries.length > 1 ? `${baseName} (${service.label})` : baseName,
             }
             rules.set(key, existing)
           }
