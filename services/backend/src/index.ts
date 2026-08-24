@@ -2407,6 +2407,30 @@ app.get('/api/summary', async (_request, response) => {
   })
 })
 
+app.get('/api/overview-stats', async (_request, response) => {
+  const [applicationsRow, treatedRow, serversRow, environmentsRow, landingZoneRow, firewallRulesetsRow, savedPlan] = await Promise.all([
+    database('applications').count({ count: '*' }).first() as Promise<{ count: number | string } | undefined>,
+    database('applications').whereNotNull('treatment_plan').count({ count: '*' }).first() as Promise<{ count: number | string } | undefined>,
+    database('server_assessments').count({ count: '*' }).first() as Promise<{ count: number | string } | undefined>,
+    database('server_assessments').whereNotNull('environment_type').countDistinct({ count: 'environment_type' }).first() as Promise<{ count: number | string } | undefined>,
+    database('landing_zone_resource_groups').count({ count: '*' }).first() as Promise<{ count: number | string } | undefined>,
+    database('firewall_rulesets').where({ status: 'Completed' }).count({ count: '*' }).first() as Promise<{ count: number | string } | undefined>,
+    loadSavedTaskPlan(),
+  ])
+  const tasks = savedPlan ? listPlanTasks(savedPlan.plan) : []
+  response.json({
+    applicationsCatalogued: Number(applicationsRow?.count ?? 0),
+    applicationsWithTreatment: Number(treatedRow?.count ?? 0),
+    serversAssessed: Number(serversRow?.count ?? 0),
+    environmentsIdentified: Number(environmentsRow?.count ?? 0),
+    landingZoneResourceGroups: Number(landingZoneRow?.count ?? 0),
+    firewallRulesetsParsed: Number(firewallRulesetsRow?.count ?? 0),
+    sprintsPlanned: Number(savedPlan?.plan.summary?.sprintCount ?? 0),
+    tasksTotal: tasks.length,
+    tasksCompleted: tasks.filter((task) => task.assignment?.status === 'Completed').length,
+  })
+})
+
 function applyFilters(query: Knex.QueryBuilder, request: Request): Knex.QueryBuilder {
   const server = String(request.query.server ?? '').trim()
   const ipAddress = String(request.query.ip ?? '').trim()

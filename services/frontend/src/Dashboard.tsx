@@ -30,6 +30,10 @@ import { apiFetch } from './auth-client'
 import './Dashboard.css'
 
 type Summary = { totalDependencies: number; totalConnections: number; sourceServers: number; destinationServers: number }
+type OverviewStats = {
+  applicationsCatalogued: number; applicationsWithTreatment: number; serversAssessed: number; environmentsIdentified: number
+  landingZoneResourceGroups: number; firewallRulesetsParsed: number; sprintsPlanned: number; tasksTotal: number; tasksCompleted: number
+}
 type Dependency = {
   Id: number
   ObservedDate: string
@@ -168,6 +172,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   const [activePage, setActivePage] = useState<AppPage>(() => pageFromHash(window.location.hash))
   const [expandedGroups, setExpandedGroups] = useState(readExpandedGroups)
   const [summary, setSummary] = useState<Summary | null>(null)
+  const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null)
   const [data, setData] = useState<Page>({ items: [], total: 0, page: 1, pageSize: 25 })
   const [filters, setFilters] = useState<Filters>(emptyFilters)
   const [query, setQuery] = useState<Filters>(emptyFilters)
@@ -225,6 +230,10 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
       })
       .then((nextSummary) => { setSummary(nextSummary); setDatabaseStatus('online') })
       .catch(() => { setDatabaseStatus('offline'); setError('Unable to connect to the API. Confirm the database and server are running.') })
+      apiFetch('/api/overview-stats')
+        .then((response) => response.ok ? response.json() as Promise<OverviewStats> : Promise.reject())
+        .then((nextStats) => setOverviewStats(nextStats))
+        .catch(() => undefined)
       apiFetch('/api/imports')
         .then((response) => response.ok ? response.json() as Promise<{ items: ImportRun[] }> : Promise.reject())
         .then(({ items }) => setImports(items))
@@ -487,34 +496,55 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
 
         {activePage === 'overview' && <div className="page overview-page">
           {error && <div className="error-message"><span>{error}</span><button type="button" onClick={retryConnection}><RefreshCw size={14} /> Retry</button></div>}
-          <section className="summary" aria-label="Dependency summary">
+          <section className="summary" aria-label="Estate summary">
+            <article><span className="metric-icon"><AppWindow /></span><div><span>Applications catalogued</span><strong>{overviewStats ? formatNumber.format(overviewStats.applicationsCatalogued) : '-'}</strong><small>{overviewStats ? `${formatNumber.format(overviewStats.applicationsWithTreatment)} with a treatment set` : 'Application catalog'}</small></div></article>
+            <article><span className="metric-icon"><Server /></span><div><span>Servers assessed</span><strong>{overviewStats ? formatNumber.format(overviewStats.serversAssessed) : '-'}</strong><small>Server Assessment imports</small></div></article>
+            <article><span className="metric-icon"><ScanSearch /></span><div><span>Environments identified</span><strong>{overviewStats ? formatNumber.format(overviewStats.environmentsIdentified) : '-'}</strong><small>Classified via identification rules</small></div></article>
             <article><span className="metric-icon"><Database /></span><div><span>Dependency records</span><strong>{summary ? formatNumber.format(summary.totalDependencies) : '-'}</strong><small>Imported observations</small></div></article>
             <article><span className="metric-icon"><Network /></span><div><span>Observed connections</span><strong>{summary ? formatNumber.format(summary.totalConnections) : '-'}</strong><small>Across all dependencies</small></div></article>
-            <article><span className="metric-icon"><Server /></span><div><span>Source servers</span><strong>{summary ? formatNumber.format(summary.sourceServers) : '-'}</strong><small>Unique systems</small></div></article>
-            <article><span className="metric-icon"><Server /></span><div><span>Destination servers</span><strong>{summary ? formatNumber.format(summary.destinationServers) : '-'}</strong><small>Unique endpoints</small></div></article>
+            <article><span className="metric-icon"><Cloud /></span><div><span>Landing zone resource groups</span><strong>{overviewStats ? formatNumber.format(overviewStats.landingZoneResourceGroups) : '-'}</strong><small>Target subscriptions mapped</small></div></article>
+            <article><span className="metric-icon"><ShieldCheck /></span><div><span>Firewall rulesets parsed</span><strong>{overviewStats ? formatNumber.format(overviewStats.firewallRulesetsParsed) : '-'}</strong><small>Ready for rule generation</small></div></article>
+            <article><span className="metric-icon"><CalendarRange /></span><div><span>Sprints planned</span><strong>{overviewStats ? formatNumber.format(overviewStats.sprintsPlanned) : '-'}</strong><small>{overviewStats ? `${formatNumber.format(overviewStats.tasksCompleted)}/${formatNumber.format(overviewStats.tasksTotal)} tasks complete` : 'Migration wave plan'}</small></div></article>
           </section>
           <section className="overview-grid">
-            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Migration journey</p><h2>Build a delivery-ready plan</h2><small className="overview-intro">Follow the flow from discovered estate to an approved migration backlog.</small></div></div><div className="journey-map">
-              <section className="journey-phase discovery"><div className="journey-phase-heading"><span>01</span><div><p>Discover the estate</p><small>Load source data and establish the current-state baseline.</small></div></div><div className="journey-actions">
+            <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Migration journey</p><h2>Where this workspace fits, end to end</h2><small className="overview-intro">From first discovery import through hand over, see which phases this app drives directly and which ones it supports with generated artefacts and tracking.</small></div></div>
+            <ol className="journey-timeline">
+              <li className="core"><span className="journey-timeline-icon"><ScanSearch size={16} /></span><strong>Discovery</strong><small>Drives</small></li>
+              <li className="core"><span className="journey-timeline-icon"><Search size={16} /></span><strong>Assessment</strong><small>Drives</small></li>
+              <li className="core"><span className="journey-timeline-icon"><CalendarRange size={16} /></span><strong>Planning</strong><small>Drives</small></li>
+              <li className="supports"><span className="journey-timeline-icon"><Waypoints size={16} /></span><strong>Migration</strong><small>Supports</small></li>
+              <li className="supports"><span className="journey-timeline-icon"><CheckCircle2 size={16} /></span><strong>Testing</strong><small>Supports</small></li>
+              <li className="supports"><span className="journey-timeline-icon"><FileSpreadsheet size={16} /></span><strong>Hand over</strong><small>Supports</small></li>
+            </ol>
+            <div className="journey-map">
+              <section className="journey-phase discovery"><div className="journey-phase-heading"><span>01</span><div><p>Discovery</p><small>Load source data and establish the current-state baseline.</small><span className="phase-coverage core">Core workflow</span></div></div><div className="journey-actions">
                 {canPlanWaves && <a href="#imports"><Upload size={16} /><span><strong>Import source data</strong><small>Catalog, assessment, mappings, and dependencies</small></span><ArrowUpRight size={16} /></a>}
+                <a href="#corelight"><Network size={16} /><span><strong>Enrich with flow logs</strong><small>Corelight/Zeek and Splunk network telemetry</small></span><ArrowUpRight size={16} /></a>
                 <a href="#core-infrastructure"><Settings2 size={16} /><span><strong>Define core infrastructure</strong><small>Shared services, roles, IPs, and ranges</small></span><ArrowUpRight size={16} /></a>
+              </div></section>
+              <section className="journey-phase assessment"><div className="journey-phase-heading"><span>02</span><div><p>Assessment</p><small>Turn discovery records into an evidence-based estate view.</small><span className="phase-coverage core">Core workflow</span></div></div><div className="journey-actions">
                 <a href="#environment-identification"><ScanSearch size={16} /><span><strong>Identify environments</strong><small>Classify servers for planning</small></span><ArrowUpRight size={16} /></a>
-              </div></section>
-              <section className="journey-phase landing-zone"><div className="journey-phase-heading"><span>02</span><div><p>Define the landing zone</p><small>Document the destination platform before workload planning.</small></div></div><div className="journey-actions">
-                <a href="#landing-zone-platform"><Cloud size={16} /><span><strong>Capture platform decisions</strong><small>Connectivity, regions, identity, security, and operations</small></span><ArrowUpRight size={16} /></a>
-                <a href="#target-landing-zone"><Cloud size={16} /><span><strong>Register resource groups</strong><small>Target subscriptions and resource groups</small></span><ArrowUpRight size={16} /></a>
-                <a href="#landing-zone-network"><Network size={16} /><span><strong>Map landing-zone networks</strong><small>Virtual networks, subnets, segments, and NSGs</small></span><ArrowUpRight size={16} /></a>
-              </div></section>
-              <section className="journey-phase analysis"><div className="journey-phase-heading"><span>03</span><div><p>Understand the workload</p><small>Turn discovery records into an application and dependency view.</small></div></div><div className="journey-actions">
                 <a href="#dependencies"><Search size={16} /><span><strong>Explore dependencies</strong><small>Observed traffic and communication paths</small></span><ArrowUpRight size={16} /></a>
-                <a href="#application-map"><Boxes size={16} /><span><strong>Review application map</strong><small>Application boundaries and shared services</small></span><ArrowUpRight size={16} /></a>
-                <a href="#server-coverage"><ServerOff size={16} /><span><strong>Resolve coverage gaps</strong><small>Find missing mapping or observation evidence</small></span><ArrowUpRight size={16} /></a>
+                <a href="#application-map"><Boxes size={16} /><span><strong>Review application map</strong><small>Application boundaries and coverage gaps</small></span><ArrowUpRight size={16} /></a>
               </div></section>
-              <section className="journey-phase delivery"><div className="journey-phase-heading"><span>04</span><div><p>Plan &amp; deliver</p><small>Choose treatments, sequence work, and execute with controls.</small></div></div><div className="journey-actions">
-                <a href="#application-treatments"><ClipboardCheck size={16} /><span><strong>Set application treatments</strong><small>Assign migration approaches</small></span><ArrowUpRight size={16} /></a>
-                {canPlanWaves && <a href="#wave-planning"><CalendarRange size={16} /><span><strong>Plan waves</strong><small>Group ready workloads into sprints</small></span><ArrowUpRight size={16} /></a>}
-                {canPlanWaves && <a href="#firewall-rules"><Shield size={16} /><span><strong>Generate security rules</strong><small>Derive firewall rules from dependencies</small></span><ArrowUpRight size={16} /></a>}
-                <a href="#tasks"><ClipboardList size={16} /><span><strong>Finalize sprints</strong><small>Assign ownership and track decisions</small></span><ArrowUpRight size={16} /></a>
+              <section className="journey-phase planning"><div className="journey-phase-heading"><span>03</span><div><p>Planning</p><small>Design the landing zone and sequence the delivery backlog.</small><span className="phase-coverage core">Core workflow</span></div></div><div className="journey-actions">
+                <a href="#landing-zone-platform"><Cloud size={16} /><span><strong>Capture platform decisions</strong><small>Connectivity, regions, identity, and operations</small></span><ArrowUpRight size={16} /></a>
+                <a href="#landing-zone-network"><Network size={16} /><span><strong>Map landing-zone networks</strong><small>Resource groups, virtual networks, and NSGs</small></span><ArrowUpRight size={16} /></a>
+                {canPlanWaves && <a href="#wave-planning"><CalendarRange size={16} /><span><strong>Set treatments &amp; plan waves</strong><small>Assign approaches and group into sprints</small></span><ArrowUpRight size={16} /></a>}
+              </div></section>
+              <section className="journey-phase migration"><div className="journey-phase-heading"><span>04</span><div><p>Migration</p><small>Prepare the cutover with generated rules and runbooks.</small><span className="phase-coverage supports">Supports with artefacts</span></div></div><div className="journey-actions">
+                {canPlanWaves && <a href="#firewall-rules"><Shield size={16} /><span><strong>Generate security rules</strong><small>Derive NSG/firewall rules from dependencies</small></span><ArrowUpRight size={16} /></a>}
+                {canPlanWaves && <a href="#load-balancer-scale"><Scale size={16} /><span><strong>Recommend load balancer scale</strong><small>Size the target load balancing service</small></span><ArrowUpRight size={16} /></a>}
+                {canPlanWaves && <a href="#artefact-generation"><WandSparkles size={16} /><span><strong>Generate migration documents</strong><small>Design, migration plan, and runsheet drafts</small></span><ArrowUpRight size={16} /></a>}
+              </div></section>
+              <section className="journey-phase testing"><div className="journey-phase-heading"><span>05</span><div><p>Testing</p><small>Track validation work; execution happens in your test tooling.</small><span className="phase-coverage supports">Supports with tracking</span></div></div><div className="journey-actions">
+                <a href="#tasks"><ClipboardList size={16} /><span><strong>Track sprint tasks</strong><small>Assigned, in review, blocked, or complete</small></span><ArrowUpRight size={16} /></a>
+                {canPlanWaves && <a href="#artefact-generation"><ClipboardCheck size={16} /><span><strong>Capture runsheet Q&amp;A</strong><small>Record validation answers per sprint</small></span><ArrowUpRight size={16} /></a>}
+              </div></section>
+              <section className="journey-phase handover"><div className="journey-phase-heading"><span>06</span><div><p>Hand over</p><small>Package the decisions and artefacts for operations.</small><span className="phase-coverage supports">Supports with artefacts</span></div></div><div className="journey-actions">
+                {canPlanWaves && <a href="#artefact-generation"><FileSpreadsheet size={16} /><span><strong>Export design &amp; plan documents</strong><small>Foundry-generated hand-over documentation</small></span><ArrowUpRight size={16} /></a>}
+                {canPlanWaves && <a href="#firewall-rules"><Download size={16} /><span><strong>Export network rules</strong><small>Excel, Terraform, and Bicep for target teams</small></span><ArrowUpRight size={16} /></a>}
+                <a href="#tasks"><ClipboardList size={16} /><span><strong>Maintain the audit trail</strong><small>Decisions, comments, and sign-off history</small></span><ArrowUpRight size={16} /></a>
               </div></section>
             </div></div>
             <div className="activity-panel"><div className="section-heading"><div><p className="eyebrow">Import activity</p><h2>Latest files</h2></div><a href="#imports">View all</a></div><ImportHistory items={imports.slice(0, 5)} /></div>
