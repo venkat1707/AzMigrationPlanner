@@ -85,6 +85,7 @@ export type FirewallRuleSet = {
     outbound: number
     coreInfrastructureExcluded: number
     sameSprintExcluded: number
+    sameSubnetExcluded: number
     networkSummarized: number
     unresolved: number
     sprintServers: number
@@ -190,10 +191,12 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
     .filter(({ serverName }) => sprintOf.has(serverName.trim().toLowerCase()))
     .map(({ ip }) => ip))
   const target = input.target
+  const subnetKeyOf = landingZoneSubnetKeyByServer(input.landingZone ?? { placements: [], unmapped: [] })
   const rules = new Map<string, FirewallRule>()
   const sprintAddresses = new Set<string>()
   let coreInfrastructureExcluded = 0
   let sameSprintExcluded = 0
+  let sameSubnetExcluded = 0
   let truncated = false
 
   const ingest = (direction: 'Inbound' | 'Outbound', flows: DependencyFlowRow[]) => {
@@ -216,6 +219,16 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
       if (target === 'on-prem' && remoteKeyName && sprintOf.has(remoteKeyName) && sprintOf.get(remoteKeyName) === sprintOf.get(localKey)) {
         sameSprintExcluded += 1
         continue
+      }
+      // NSG and Azure Firewall: two sprint servers already in the same subnet are covered by Azure's
+      // default intra-subnet allow rules, so an explicit rule between them is unnecessary.
+      if ((target === 'nsg' || target === 'azure-firewall') && remoteKeyName) {
+        const localSubnet = subnetKeyOf.get(localKey)
+        const remoteSubnet = subnetKeyOf.get(remoteKeyName)
+        if (localSubnet && remoteSubnet && localSubnet === remoteSubnet) {
+          sameSubnetExcluded += 1
+          continue
+        }
       }
       // Azure Firewall covers north-south traffic (both directions); skip east-west traffic between sprint servers.
       const remoteIsSprint = (remoteKeyName ? sprintOf.has(remoteKeyName) : false) || (remoteAddress ? sprintAddressSet.has(remoteAddress) : false)
@@ -298,6 +311,7 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
       outbound: ordered.length - inbound,
       coreInfrastructureExcluded,
       sameSprintExcluded,
+      sameSubnetExcluded,
       networkSummarized: ordered.filter((rule) => rule.peerKind === 'network').length,
       unresolved: ordered.filter((rule) => !rule.resolved).length,
       sprintServers: input.sprintServerCount,
@@ -401,6 +415,7 @@ function addOverviewSheet(workbook: ExcelJS.Workbook, ruleSet: FirewallRuleSet):
     { property: 'Outbound rules', value: ruleSet.summary.outbound },
     { property: 'Connections to core infrastructure removed', value: ruleSet.summary.coreInfrastructureExcluded },
     { property: 'Same-sprint connections removed', value: ruleSet.summary.sameSprintExcluded },
+    { property: 'Same-subnet connections removed', value: ruleSet.summary.sameSubnetExcluded },
     { property: 'Rules summarized to office/VPN prefixes', value: ruleSet.summary.networkSummarized },
     { property: 'Rules with unresolved peer address', value: ruleSet.summary.unresolved },
     { property: 'Result truncated', value: ruleSet.truncated ? `Yes (capped at ${MAX_RULES})` : 'No' },
@@ -417,6 +432,18 @@ export function landingZoneNsgNamesByServer(landingZone: LandingZoneContext): Ma
     for (const server of placement.servers) serverNsgNames.set(server.toLowerCase(), placement.networkSecurityGroup)
   }
   return serverNsgNames
+}
+
+// Server name (lowercased) -> subnet key, from the sprint's Landing Zone Resource Groups/Network mapping.
+// Two servers share this key only when they are mapped to the exact same subscription/resource group/VNet/subnet.
+function landingZoneSubnetKeyByServer(landingZone: LandingZoneContext): Map<string, string> {
+  const serverSubnetKeys = new Map<string, string>()
+  for (const placement of landingZone.placements) {
+    if (!placement.subnet) continue
+    const key = `${placement.subscriptionId ?? ''}|${placement.resourceGroupName ?? ''}|${placement.virtualNetwork ?? ''}|${placement.subnet}`
+    for (const server of placement.servers) serverSubnetKeys.set(server.trim().toLowerCase(), key)
+  }
+  return serverSubnetKeys
 }
 
 export function nsgNamesForRule(localServers: string[], serverNsgNames: Map<string, string>): string {

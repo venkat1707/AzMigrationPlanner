@@ -35,6 +35,7 @@ type FirewallSummary = {
   outbound: number
   coreInfrastructureExcluded: number
   sameSprintExcluded: number
+  sameSubnetExcluded: number
   networkSummarized: number
   unresolved: number
   sprintServers: number
@@ -68,7 +69,7 @@ const targetLabels: Record<FirewallTarget, string> = {
 }
 
 const targetDisclaimers: Record<FirewallTarget, string> = {
-  nsg: 'Inbound and outbound allow rules for the sprint network security group, from the Azure perspective.',
+  nsg: 'Inbound and outbound allow rules for the sprint network security group, from the Azure perspective. Traffic between two sprint servers already in the same subnet is omitted.',
   'azure-firewall': 'Inbound (on-prem/external to Azure) and outbound (Azure to on-prem/external) allow rules for an existing Azure Firewall Policy (typically hub-managed via Azure Firewall Manager). East-west traffic between sprint servers is omitted.',
   'on-prem': 'Rules from the on-premises firewall perspective. Azure-inbound flows become outbound here, and traffic between two servers in the same sprint is discarded.',
 }
@@ -220,6 +221,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
       <div className="firewall-stat"><span>Sprint servers</span><strong>{formatNumber.format(summary.sprintServers)}</strong></div>
       <div className="firewall-stat"><span>Core connections removed</span><strong>{formatNumber.format(summary.coreInfrastructureExcluded)}</strong></div>
       {target === 'on-prem' && <div className="firewall-stat"><span>Same-sprint connections removed</span><strong>{formatNumber.format(summary.sameSprintExcluded)}</strong></div>}
+      {target !== 'on-prem' && <div className="firewall-stat"><span>Same-subnet connections removed</span><strong>{formatNumber.format(summary.sameSubnetExcluded)}</strong></div>}
       <div className="firewall-stat"><span>Summarized to office/VPN prefixes</span><strong>{formatNumber.format(summary.networkSummarized)}</strong></div>
       <div className="firewall-stat"><span>Unresolved peer IPs</span><strong>{formatNumber.format(summary.unresolved)}</strong></div>
     </section>}

@@ -170,6 +170,36 @@ test('landingZone passes through unchanged on the built rule set', () => {
   assert.deepEqual(result.landingZone, landingZone)
 })
 
+test('NSG target discards traffic between two sprint servers already in the same subnet', () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    landingZone,
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: 'web02', remoteIp: '10.0.0.2', port: 445, connections: 3 }],
+  }))
+  assert.equal(result.rules.length, 0)
+  assert.equal(result.summary.sameSubnetExcluded, 1)
+})
+
+test('NSG target keeps traffic between sprint servers when one has no subnet mapping', () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    landingZone,
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: 'app01', remoteIp: '10.0.1.1', port: 445, connections: 3 }],
+  }))
+  assert.equal(result.rules.length, 1)
+  assert.equal(result.summary.sameSubnetExcluded, 0)
+})
+
+test('azure-firewall target excludes same-subnet sprint traffic as well', () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'azure-firewall',
+    landingZone,
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: 'web02', remoteIp: '10.0.0.2', port: 445, connections: 3 }],
+  }))
+  assert.equal(result.rules.length, 0)
+  assert.equal(result.summary.sameSubnetExcluded, 1)
+})
+
 test('Terraform NSG export defaults resource group, NSG name, and address space from the landing zone, and associates the mapped subnet', async () => {
   const result = buildFirewallRuleSet(baseInput({
     target: 'nsg',
