@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildFirewallRuleSet, orientRule, type FirewallRuleInput, type FirewallTarget } from './firewall-rules.js'
+import JSZip from 'jszip'
+import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallTerraformArchive, orientRule, type FirewallRuleInput, type FirewallTarget, type LandingZoneContext } from './firewall-rules.js'
 
 function baseInput(overrides: Partial<FirewallRuleInput> & { target: FirewallTarget }): FirewallRuleInput {
   return {
@@ -127,4 +128,73 @@ test('core infrastructure connections are excluded when requested', () => {
   }))
   assert.equal(result.rules.length, 0)
   assert.equal(result.summary.coreInfrastructureExcluded, 1)
+})
+
+test('landingZone defaults to empty placements and unmapped servers when omitted', () => {
+  const result = buildFirewallRuleSet(baseInput({ target: 'nsg' }))
+  assert.deepEqual(result.landingZone, { placements: [], unmapped: [] })
+})
+
+const landingZone: LandingZoneContext = {
+  placements: [{
+    servers: ['web01', 'web02'],
+    subscriptionId: 'sub-1',
+    subscriptionName: 'Prod Subscription',
+    resourceGroupName: 'rg-prod-web',
+    virtualNetwork: 'vnet-prod',
+    subnet: 'snet-web',
+    subnetIpSegment: '10.5.0.0/24',
+    networkSecurityGroup: 'nsg-prod-web',
+  }],
+  unmapped: ['app01'],
+}
+
+test('landingZone passes through unchanged on the built rule set', () => {
+  const result = buildFirewallRuleSet(baseInput({ target: 'nsg', landingZone }))
+  assert.deepEqual(result.landingZone, landingZone)
+})
+
+test('Terraform NSG export defaults resource group, NSG name, and address space from the landing zone, and associates the mapped subnet', async () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    landingZone,
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: null, remoteIp: '192.168.5.5', port: 443, connections: 10 }],
+  }))
+  const archive = await createFirewallTerraformArchive(result)
+  const zip = await JSZip.loadAsync(archive)
+  const variables = await zip.file('variables.tf')?.async('string')
+  assert.ok(variables?.includes('default     = "rg-prod-web"'))
+  assert.ok(variables?.includes('default     = "nsg-prod-web"'))
+  assert.ok(variables?.includes('default     = "10.5.0.0/24"'))
+  const subnetAssociations = await zip.file('subnet_associations.tf')?.async('string')
+  assert.ok(subnetAssociations?.includes('name                 = "snet-web"'))
+  assert.ok(subnetAssociations?.includes('virtual_network_name = "vnet-prod"'))
+  assert.ok(subnetAssociations?.includes('resource "azurerm_subnet_network_security_group_association"'))
+  const readme = await zip.file('README.md')?.async('string')
+  assert.ok(readme?.includes('## Landing Zone Placement'))
+  assert.ok(readme?.includes('app01'))
+})
+
+test('Terraform NSG export omits the subnet association file when no server has a full subnet mapping', async () => {
+  const result = buildFirewallRuleSet(baseInput({ target: 'nsg' }))
+  const archive = await createFirewallTerraformArchive(result)
+  const zip = await JSZip.loadAsync(archive)
+  assert.equal(zip.file('subnet_associations.tf'), null)
+})
+
+test('Bicep NSG export defaults NSG name and address prefixes from the landing zone', async () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    landingZone,
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: null, remoteIp: '192.168.5.5', port: 443, connections: 10 }],
+  }))
+  const archive = await createFirewallBicepArchive(result)
+  const zip = await JSZip.loadAsync(archive)
+  const nsgBicep = await zip.file('nsg.bicep')?.async('string')
+  assert.ok(nsgBicep?.includes(`param nsgName string = 'nsg-prod-web'`))
+  assert.ok(nsgBicep?.includes(`param sprintAddressPrefixes array = ['10.5.0.0/24']`))
+  const readme = await zip.file('README.md')?.async('string')
+  assert.ok(readme?.includes('--resource-group rg-prod-web'))
+  assert.ok(readme?.includes('az network vnet subnet update'))
+  assert.ok(readme?.includes('## Landing Zone Placement'))
 })

@@ -34,7 +34,7 @@ import { importApplicationServerMappingFile } from './application-server-mapping
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
 import { normalizeSprintSchedule, type SprintSchedule, type SprintScheduleInput } from './sprint-schedule.js'
 import { buildSprintScheduleView, createSprintSchedulePresentation, createSprintScheduleWorkbook, type ScheduleAssessment } from './sprint-schedule-export.js'
-import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallRulesWorkbook, createFirewallTerraformArchive, type DependencyFlowRow, type FirewallRuleSet, type FirewallTarget, type NetworkRange, type PortReference } from './firewall-rules.js'
+import { buildFirewallRuleSet, createFirewallBicepArchive, createFirewallRulesWorkbook, createFirewallTerraformArchive, type DependencyFlowRow, type FirewallRuleSet, type FirewallTarget, type LandingZoneContext, type LandingZonePlacement, type NetworkRange, type PortReference } from './firewall-rules.js'
 import { refreshDatabaseServerFlags } from './database-server-classification.js'
 import { getCleanupStatus, startDataCleanup } from './data-cleanup.js'
 import { getCoreInfrastructureSummary, refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
@@ -2761,7 +2761,7 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
     return { sprints, ruleSet: buildFirewallRuleSet({ scopeLabel, target, sprintServerCount: 0, inbound: [], outbound: [], coreInfrastructureServerNames: [], coreInfrastructureIps: [], assessmentIps: [], networks, sprintMembership: [], portReferences: [], excludeCoreInfrastructure }), scopeFound: true }
   }
 
-  const [inboundRows, outboundRows, coreServers, loadBalancerIps, assessmentRows, portReferences] = await Promise.all([
+  const [inboundRows, outboundRows, coreServers, loadBalancerIps, assessmentRows, portReferences, landingZoneMappingRows] = await Promise.all([
     // Column order matches idx_dependencies_inbound_topology so MySQL groups via the index (no temporary table).
     database('dependency_records')
       .whereIn('destination_server_name', serverNames)
@@ -2780,7 +2780,42 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
     database('core_infrastructure_load_balancer_ips').pluck('ip_address') as Promise<string[]>,
     database('server_assessments').whereNotNull('ip_address').select({ serverName: 'server_name', ipAddress: 'ip_address' }) as Promise<Array<{ serverName: string; ipAddress: string | null }>>,
     database('windows_services_ports').select({ windowsService: 'windows_service', shortDescription: 'short_description', ports: 'ports', networkProtocol: 'network_protocol', applicationProtocol: 'application_protocol' }) as Promise<PortReference[]>,
+    // Joins to the Landing Zone Resource Groups and Landing Zone Network datasets so generated IaC can
+    // be scoped to the actual target subscription/resource group/VNet/subnet/NSG for this sprint's servers.
+    database('sprint_server_landing_zone_mappings as m')
+      .whereIn('m.server_name', serverNames)
+      .leftJoin('landing_zone_resource_groups as rg', 'rg.resource_group_id', 'm.resource_group_id')
+      .leftJoin('landing_zone_networks as net', function joinNetwork() {
+        this.on('net.subscription_id', '=', 'm.subscription_id')
+          .andOn('net.network_resource_group', '=', 'm.network_resource_group')
+          .andOn('net.virtual_network', '=', 'm.virtual_network')
+          .andOn('net.subnet', '=', 'm.subnet')
+      })
+      .select({
+        serverName: 'm.server_name', subscriptionId: 'm.subscription_id', subscriptionName: 'm.subscription_name',
+        resourceGroupName: 'rg.resource_group_name', virtualNetwork: 'm.virtual_network', subnet: 'm.subnet',
+        subnetIpSegment: 'net.subnet_ip_segment', networkSecurityGroup: 'm.network_security_group',
+      }) as Promise<Array<{ serverName: string; subscriptionId: string | null; subscriptionName: string | null; resourceGroupName: string | null; virtualNetwork: string | null; subnet: string | null; subnetIpSegment: string | null; networkSecurityGroup: string | null }>>,
   ])
+
+  const landingZonePlacementsByKey = new Map<string, LandingZonePlacement>()
+  for (const row of landingZoneMappingRows) {
+    const key = [row.subscriptionId, row.resourceGroupName, row.virtualNetwork, row.subnet, row.networkSecurityGroup].map((value) => (value ?? '').toLowerCase()).join('|')
+    const existing = landingZonePlacementsByKey.get(key)
+    if (existing) { existing.servers.push(row.serverName); continue }
+    landingZonePlacementsByKey.set(key, {
+      servers: [row.serverName],
+      subscriptionId: row.subscriptionId, subscriptionName: row.subscriptionName, resourceGroupName: row.resourceGroupName,
+      virtualNetwork: row.virtualNetwork, subnet: row.subnet, subnetIpSegment: row.subnetIpSegment, networkSecurityGroup: row.networkSecurityGroup,
+    })
+  }
+  const landingZoneMappedServers = new Set(landingZoneMappingRows.map((row) => row.serverName))
+  const landingZone: LandingZoneContext = {
+    placements: [...landingZonePlacementsByKey.values()]
+      .map((placement) => ({ ...placement, servers: placement.servers.sort() }))
+      .sort((left, right) => right.servers.length - left.servers.length),
+    unmapped: serverNames.filter((name) => !landingZoneMappedServers.has(name)).sort(),
+  }
 
   const coreInfrastructureIps = [...new Set([
     ...coreServers.flatMap((server) => parseIpList(server.ipAddress)),
@@ -2820,6 +2855,7 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
     sprintMembership,
     portReferences,
     excludeCoreInfrastructure,
+    landingZone,
   })
   return { sprints, ruleSet, scopeFound: true }
 }
