@@ -14,9 +14,17 @@ const roles = [
 ]
 const emptyServer = (): ServerInput => ({ serverName: '', role: '', ipAddress: '' })
 
+type NetworkRangeKey = 'vpn' | 'loadBalancer' | 'office'
+const networkRangeGroups: Array<{ key: NetworkRangeKey; label: string; placeholder: string }> = [
+  { key: 'vpn', label: 'VPN network ranges', placeholder: '10.40.0.0/16' },
+  { key: 'loadBalancer', label: 'Load balancer IP ranges', placeholder: '10.50.20.0/24' },
+  { key: 'office', label: 'Office network IP ranges', placeholder: '192.168.0.0/16' },
+]
+const toRangeList = (ranges: string[]) => ranges.length > 0 ? ranges : ['']
+
 export default function CoreInfrastructureInput() {
   const [rows, setRows] = useState<ServerInput[]>([emptyServer()])
-  const [networks, setNetworks] = useState({ vpn: '', loadBalancer: '', office: '' })
+  const [networks, setNetworks] = useState<Record<NetworkRangeKey, string[]>>({ vpn: [''], loadBalancer: [''], office: [''] })
   const [savedServers, setSavedServers] = useState<SavedServer[]>([])
   const [loadBalancerIps, setLoadBalancerIps] = useState<string[]>([''])
   const [savedLoadBalancerIps, setSavedLoadBalancerIps] = useState<SavedLoadBalancerIp[]>([])
@@ -41,9 +49,9 @@ export default function CoreInfrastructureInput() {
         return groups
       }, {})
       setNetworks({
-        vpn: (ranges.VPN ?? []).map(({ ipRange }) => ipRange).join(', '),
-        loadBalancer: (ranges['Load balancer'] ?? []).map(({ ipRange }) => ipRange).join(', '),
-        office: (ranges.Office ?? []).map(({ ipRange }) => ipRange).join(', '),
+        vpn: toRangeList((ranges.VPN ?? []).map(({ ipRange }) => ipRange)),
+        loadBalancer: toRangeList((ranges['Load balancer'] ?? []).map(({ ipRange }) => ipRange)),
+        office: toRangeList((ranges.Office ?? []).map(({ ipRange }) => ipRange)),
       })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to load core infrastructure inputs.')
@@ -58,6 +66,16 @@ export default function CoreInfrastructureInput() {
     setRows((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row))
   }
 
+  const addRange = (key: NetworkRangeKey) => {
+    setNetworks((current) => ({ ...current, [key]: [...current[key], ''] }))
+  }
+  const updateRange = (key: NetworkRangeKey, index: number, value: string) => {
+    setNetworks((current) => ({ ...current, [key]: current[key].map((range, rangeIndex) => rangeIndex === index ? value : range) }))
+  }
+  const removeRange = (key: NetworkRangeKey, index: number) => {
+    setNetworks((current) => ({ ...current, [key]: current[key].filter((_, rangeIndex) => rangeIndex !== index) }))
+  }
+
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     setSaving(true)
@@ -65,10 +83,15 @@ export default function CoreInfrastructureInput() {
     setMessage('')
     try {
       const servers = rows.filter(({ serverName, role, ipAddress }) => serverName || role || ipAddress)
+      const networksPayload = {
+        vpn: networks.vpn.filter((value) => value.trim()).join(','),
+        loadBalancer: networks.loadBalancer.filter((value) => value.trim()).join(','),
+        office: networks.office.filter((value) => value.trim()).join(','),
+      }
       const response = await apiFetch('/api/core-infrastructure-inputs', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ servers, networks, loadBalancerIps: loadBalancerIps.filter((value) => value.trim()) }),
+        body: JSON.stringify({ servers, networks: networksPayload, loadBalancerIps: loadBalancerIps.filter((value) => value.trim()) }),
       })
       const payload = await response.json() as { savedServers?: number; savedNetworks?: number; savedLoadBalancerIps?: number; error?: string }
       if (!response.ok) throw new Error(payload.error ?? 'Unable to save core infrastructure inputs.')
@@ -125,11 +148,12 @@ export default function CoreInfrastructureInput() {
       </section>
 
       <section className="core-input-section network-ranges">
-        <header><div><p>Network boundaries</p><h2>Connected IP ranges</h2><small>Enter one or more CIDR ranges separated by commas. Leave a field empty when it is not yet known.</small></div><Network size={22} /></header>
+        <header><div><p>Network boundaries</p><h2>Connected IP ranges</h2><small>Add one or more CIDR ranges per category. Leave a category empty when it is not yet known.</small></div><Network size={22} /></header>
         <div className="network-range-grid">
-          <label>VPN network ranges<input value={networks.vpn} onChange={(event) => setNetworks({ ...networks, vpn: event.target.value })} placeholder="10.40.0.0/16, 10.41.0.0/16" /></label>
-          <label>Load balancer IP ranges<input value={networks.loadBalancer} onChange={(event) => setNetworks({ ...networks, loadBalancer: event.target.value })} placeholder="10.50.20.0/24, 10.50.21.0/24" /></label>
-          <label>Office network IP ranges<input value={networks.office} onChange={(event) => setNetworks({ ...networks, office: event.target.value })} placeholder="192.168.0.0/16, 172.20.0.0/16" /></label>
+          {networkRangeGroups.map(({ key, label, placeholder }) => <div className="network-range-group" key={key}>
+            <header><strong>{label}</strong><button type="button" className="secondary-command" onClick={() => addRange(key)}><Plus size={14} />Add range</button></header>
+            <div>{networks[key].map((value, index) => <span key={index}><input value={value} onChange={(event) => updateRange(key, index, event.target.value)} placeholder={placeholder} /><button type="button" title="Remove range" aria-label={`Remove ${label} ${index + 1}`} disabled={networks[key].length === 1} onClick={() => removeRange(key, index)}><Trash2 size={14} /></button></span>)}</div>
+          </div>)}
         </div>
         <div className="load-balancer-inputs">
           <header><div><strong>Individual load-balancer IPs</strong><small>Add one or more IPv4 or IPv6 addresses.</small></div><button type="button" className="secondary-command" onClick={() => setLoadBalancerIps((current) => [...current, ''])}><Plus size={14} />Add IP</button></header>
