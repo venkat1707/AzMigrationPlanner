@@ -173,11 +173,12 @@ const scaleAgentInstructions = [
   'You MUST choose exactly one of these two services: "Azure Application Gateway" or "Azure Load Balancer". Do not recommend any other service.',
   'Guidance for choosing: recommend Azure Application Gateway when the rule is HTTP/HTTPS (layer 7), needs URL-path or host-header based routing, cookie-based session affinity, SSL/TLS offload or end-to-end SSL, multi-site hosting, or a web application firewall.',
   'Recommend Azure Load Balancer when the rule is a non-HTTP TCP/UDP (layer 4) protocol, needs the lowest possible latency, or does not depend on any HTTP-specific routing or session behavior.',
+  'You must also recommend a specific SKU and a type for the chosen service. For Azure Application Gateway, the sku must be exactly "Standard_v2" or "WAF_v2" — recommend WAF_v2 only when a web application firewall is genuinely needed to protect this application, otherwise Standard_v2; never recommend the older non-v2 tiers. For Azure Load Balancer, the sku must be exactly "Standard" — the Basic SKU has been retired and must never be recommended. The type must be exactly "Public" when the virtual server/listener needs to be reachable from the internet, or "Internal" when it should only be reachable from within the virtual network or a connected private network (base this on the listener\'s IP address and any context about who the clients are).',
   'Reply with a SINGLE JSON object and nothing else — no markdown code fences, no commentary, no trailing text.',
   'If you need clarification before you can produce a confident recommendation, reply exactly with:',
   '{"status":"needs-input","message":"<short reason>","questions":[{"id":"q1","prompt":"<question>","kind":"single-choice|multi-choice|boolean|multiline|text","options":["..."],"required":true}]}',
   'When you have enough information, reply exactly with:',
-  '{"status":"completed","recommendation":{"service":"Azure Application Gateway|Azure Load Balancer","justification":"<markdown explaining, in plain simple English, why this service and not the other one, referencing the specific details of this rule>","instructions":"<full markdown with numbered steps for implementing this exact rule as the chosen Azure service, including the specific Azure resource(s) to create, their key settings (frontend IP/listener, backend pool members, health probe, routing rule, SKU/tier), and any migration considerations>"}}',
+  '{"status":"completed","recommendation":{"service":"Azure Application Gateway|Azure Load Balancer","sku":"<the exact SKU string per the rules above>","type":"Public|Internal","justification":"<markdown explaining, in plain simple English, why this service, SKU, and type were chosen and not the alternatives, referencing the specific details of this rule>","instructions":"<full markdown with numbered steps for implementing this exact rule as the chosen Azure service, including the specific Azure resource(s) to create, their key settings (frontend IP/listener, backend pool members, health probe, routing rule, SKU, type), and any migration considerations>"}}',
   'Write in plain, simple English, using short sentences and the active voice. Do not invent facts that are not present in the supplied rule configuration; where information is missing, state a reasonable default and flag it clearly as an assumption.',
 ].join('\n')
 
@@ -393,6 +394,8 @@ export async function requestLoadBalancerScaleDocument(input: RequestInput): Pro
 
   const recommendation = asRecord(contract.recommendation)
   const service = firstString(recommendation.service)
+  const sku = firstString(recommendation.sku)
+  const type = firstString(recommendation.type)
   const justification = firstString(recommendation.justification)
   const instructions = firstString(recommendation.instructions)
   if (!service || !instructions) throw new LoadBalancerScaleError('The agent reported completion but returned no readable recommendation.', 502)
@@ -402,6 +405,8 @@ export async function requestLoadBalancerScaleDocument(input: RequestInput): Pro
     renderScaleContextMarkdown(context),
     '## Recommended Azure Load Balancing Service',
     `**Service:** ${service}`,
+    `**SKU:** ${sku ?? 'Not specified by the agent'}`,
+    `**Type:** ${type ?? 'Not specified by the agent'}`,
     '',
     '## Why This Service Is Needed',
     justification ?? 'Not provided by the agent.',
