@@ -69,7 +69,7 @@ const targetLabels: Record<FirewallTarget, string> = {
 
 const targetDisclaimers: Record<FirewallTarget, string> = {
   nsg: 'Inbound and outbound allow rules for the sprint network security group, from the Azure perspective.',
-  'azure-firewall': 'Egress (outbound) allow rules for an existing Azure Firewall Policy (typically hub-managed via Azure Firewall Manager). East-west traffic between sprint servers is omitted.',
+  'azure-firewall': 'Inbound (on-prem/external to Azure) and outbound (Azure to on-prem/external) allow rules for an existing Azure Firewall Policy (typically hub-managed via Azure Firewall Manager). East-west traffic between sprint servers is omitted.',
   'on-prem': 'Rules from the on-premises firewall perspective. Azure-inbound flows become outbound here, and traffic between two servers in the same sprint is discarded.',
 }
 
@@ -232,7 +232,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
         {canExportInfrastructure && <button type="button" disabled={exporting !== null} onClick={() => void exportRules('bicep')}><Download size={16} />{exporting === 'bicep' ? 'Preparing...' : 'Bicep (.zip)'}</button>}
       </div>
       <small>{canExportInfrastructure
-        ? `The Excel workbook lists the ${targetLabels[target]} rules. Terraform and Bicep archives generate the matching ${target === 'nsg' ? 'network security group' : 'Azure Firewall Policy egress'} resources.`
+        ? `The Excel workbook lists the ${targetLabels[target]} rules. Terraform and Bicep archives generate the matching ${target === 'nsg' ? 'network security group' : 'Azure Firewall Policy'} resources.`
         : 'On-prem firewall rules are available as an Excel workbook only; Terraform and Bicep target Azure resources.'}</small>
     </section>
 
@@ -264,7 +264,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
               </tr>)}
             </tbody>
           </> : target === 'azure-firewall' ? <>
-            <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Core</th></tr></thead>
+            <thead><tr><th>Priority</th><th>Name</th><th>Port</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th><th>Direction</th><th>Core</th></tr></thead>
             <tbody>
               {visibleRules.slice(0, 500).map((rule) => <tr key={rule.id} className={rule.resolved ? '' : 'unresolved'}>
                 <td>{rule.priority ?? ''}</td>
@@ -274,6 +274,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
                 <td>{rule.sourceAddresses && rule.sourceAddresses.length > 0 ? rule.sourceAddresses.join(', ') : '(sprint address space)'}</td>
                 <td>{rule.destinationAddresses && rule.destinationAddresses.length > 0 ? rule.destinationAddresses.join(', ') : <span className="firewall-warn" title="Resolve the peer IP before applying">Unresolved</span>}</td>
                 <td>Allow</td>
+                <td><span className={`firewall-direction ${rule.direction.toLowerCase()}`}>{rule.direction}</span></td>
                 <td>{rule.coreInfrastructure ? <span className="firewall-core-badge">Core</span> : ''}</td>
               </tr>)}
             </tbody>

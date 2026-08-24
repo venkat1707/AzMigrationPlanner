@@ -101,7 +101,7 @@ test('on-prem target keeps traffic between servers in different sprints', () => 
   assert.equal(result.summary.sameSprintExcluded, 0)
 })
 
-test('azure-firewall target only emits outbound rules and skips east-west sprint traffic', () => {
+test('azure-firewall target emits both inbound and outbound rules but skips east-west sprint traffic', () => {
   const result = buildFirewallRuleSet(baseInput({
     target: 'azure-firewall',
     inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: 'ext01', remoteIp: '203.0.113.5', port: 443, connections: 5 }],
@@ -110,12 +110,15 @@ test('azure-firewall target only emits outbound rules and skips east-west sprint
       { localServer: 'web01', localIp: null, remoteServer: 'ext01', remoteIp: '203.0.113.9', port: 443, connections: 7 },
     ],
   }))
-  assert.equal(result.rules.length, 1)
-  const rule = result.rules[0]
-  assert.ok(rule)
-  assert.equal(rule.direction, 'Outbound')
-  assert.equal(rule.remoteAddress, '203.0.113.9')
-  assert.equal(result.summary.inbound, 0)
+  assert.equal(result.rules.length, 2)
+  const inboundRule = result.rules.find((rule) => rule.direction === 'Inbound')
+  const outboundRule = result.rules.find((rule) => rule.direction === 'Outbound')
+  assert.ok(inboundRule)
+  assert.equal(inboundRule.remoteAddress, '203.0.113.5')
+  assert.ok(outboundRule)
+  assert.equal(outboundRule.remoteAddress, '203.0.113.9')
+  assert.equal(result.summary.inbound, 1)
+  assert.equal(result.summary.outbound, 1)
 })
 
 test('orientRule maps source and destination per firewall perspective', () => {
@@ -242,10 +245,26 @@ test('Azure Firewall Excel sheet mirrors the Azure portal rule columns', async (
   await workbook.xlsx.load(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer)
   const sheet = workbook.getWorksheet('Azure Firewall Rules')
   assert.deepEqual((sheet?.getRow(1).values as ExcelJS.CellValue[])?.slice(1), [
-    'Priority', 'Name', 'Port', 'Protocol', 'Source', 'Destination', 'Action', 'Core Infrastructure',
+    'Priority', 'Name', 'Port', 'Protocol', 'Source', 'Destination', 'Action', 'Direction', 'Core Infrastructure',
   ])
   const dataRow = (sheet?.getRow(2).values as ExcelJS.CellValue[])?.slice(1)
   assert.equal(dataRow?.[3], 'TCP')
   assert.equal(dataRow?.[5], '203.0.113.9')
   assert.equal(dataRow?.[6], 'Allow')
+  assert.equal(dataRow?.[7], 'Outbound')
 })
+
+test('Azure Firewall Excel sheet includes inbound rules for on-prem/external traffic into Azure', async () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'azure-firewall',
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: null, remoteIp: '203.0.113.5', port: 443, connections: 3 }],
+  }))
+  const buffer = await createFirewallRulesWorkbook(result)
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.load(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer)
+  const sheet = workbook.getWorksheet('Azure Firewall Rules')
+  const dataRow = (sheet?.getRow(2).values as ExcelJS.CellValue[])?.slice(1)
+  assert.equal(dataRow?.[4], '203.0.113.5')
+  assert.equal(dataRow?.[7], 'Inbound')
+})
+

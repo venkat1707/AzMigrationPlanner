@@ -217,7 +217,7 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
         sameSprintExcluded += 1
         continue
       }
-      // Azure Firewall covers north-south egress; skip east-west traffic between sprint servers.
+      // Azure Firewall covers north-south traffic (both directions); skip east-west traffic between sprint servers.
       const remoteIsSprint = (remoteKeyName ? sprintOf.has(remoteKeyName) : false) || (remoteAddress ? sprintAddressSet.has(remoteAddress) : false)
       if (target === 'azure-firewall' && remoteIsSprint) continue
 
@@ -271,8 +271,6 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
     // Perspective flip: inbound to a sprint server is outbound from the on-prem firewall, and vice versa.
     ingest('Outbound', input.inbound)
     ingest('Inbound', input.outbound)
-  } else if (target === 'azure-firewall') {
-    ingest('Outbound', input.outbound)
   } else {
     ingest('Inbound', input.inbound)
     ingest('Outbound', input.outbound)
@@ -460,7 +458,7 @@ function addAzureFirewallSheet(workbook: ExcelJS.Workbook, projected: ProjectedR
   firewall.columns = [
     { header: 'Priority', key: 'priority' }, { header: 'Name', key: 'name' }, { header: 'Port', key: 'port' },
     { header: 'Protocol', key: 'protocol' }, { header: 'Source', key: 'source' }, { header: 'Destination', key: 'destination' },
-    { header: 'Action', key: 'action' }, { header: 'Core Infrastructure', key: 'core' },
+    { header: 'Action', key: 'action' }, { header: 'Direction', key: 'direction' }, { header: 'Core Infrastructure', key: 'core' },
   ]
   for (const rule of projected.filter((entry) => entry.resolved)) {
     firewall.addRow({
@@ -471,11 +469,12 @@ function addAzureFirewallSheet(workbook: ExcelJS.Workbook, projected: ProjectedR
       source: rule.sourceAddresses.join(', ') || SPRINT_ADDRESS_FALLBACK,
       destination: rule.destinationAddresses.join(', ') || '',
       action: 'Allow',
+      direction: rule.direction,
       core: rule.coreInfrastructure ? 'Yes' : 'No',
     })
   }
   styleHeader(firewall.getRow(1))
-  firewall.autoFilter = { from: 'A1', to: 'H1' }
+  firewall.autoFilter = { from: 'A1', to: 'I1' }
   fitColumns(firewall)
 }
 
@@ -595,13 +594,13 @@ provider "azurerm" {
   if (ruleSet.target === 'azure-firewall') {
     zip.file('variables.tf', `variable "firewall_policy_id" {
   type        = string
-  description = "Resource ID of the existing Azure Firewall Policy to add this sprint's egress rules to. This Terraform does not create the policy, the Azure Firewall, or a Firewall Manager association - it only adds a rule collection group to a policy that is already provisioned and attached to your hub/Firewall Manager. Find it with: az network firewall policy show --name <policy-name> --resource-group <hub-resource-group> --query id -o tsv"
+  description = "Resource ID of the existing Azure Firewall Policy to add this sprint's network rules to. This Terraform does not create the policy, the Azure Firewall, or a Firewall Manager association - it only adds a rule collection group to a policy that is already provisioned and attached to your hub/Firewall Manager. Find it with: az network firewall policy show --name <policy-name> --resource-group <hub-resource-group> --query id -o tsv"
 }
 
 variable "firewall_rule_collection_group_name" {
   type        = string
   description = "Name of the firewall policy rule collection group."
-  default     = "sprint-egress"
+  default     = "sprint-network-rules"
 }
 
 variable "sprint_address_space" {
@@ -631,7 +630,7 @@ resource "azurerm_firewall_policy_rule_collection_group" "sprint" {
   priority           = 300
 
   network_rule_collection {
-    name     = "sprint-egress"
+    name     = "sprint-network-rules"
     priority = 300
     action   = "Allow"
 
@@ -669,7 +668,7 @@ terraform plan
 terraform apply
 \`\`\`
 
-- \`firewall.tf\` creates an Azure Firewall Policy egress network rule collection for the sprint servers.
+- \`firewall.tf\` creates an Azure Firewall Policy network rule collection covering the sprint's inbound (on-prem/external to Azure) and outbound (Azure to on-prem/external) traffic. East-west traffic between sprint servers is omitted.
 ${landingZoneReadme}`)
 
     return zip.generateAsync({ type: 'nodebuffer' })
@@ -807,7 +806,7 @@ export async function createFirewallBicepArchive(ruleSet: FirewallRuleSet): Prom
 // Scope: ${ruleSet.scopeLabel}
 // Name of a pre-existing Azure Firewall Policy (typically hub-managed via Azure Firewall Manager); this template only adds a rule collection group to it.
 param firewallPolicyName string
-param ruleCollectionGroupName string = 'sprint-egress'
+param ruleCollectionGroupName string = 'sprint-network-rules'
 param sprintAddressPrefixes array = ${addressPrefixesLiteral}
 
 var networkRules = [
@@ -821,7 +820,7 @@ resource ruleCollectionGroup 'Microsoft.Network/firewallPolicies/ruleCollectionG
     ruleCollections: [
       {
         ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
-        name: 'sprint-egress'
+        name: 'sprint-network-rules'
         priority: 300
         action: {
           type: 'Allow'
@@ -848,7 +847,7 @@ param firewallPolicyName string
 param sprintAddressPrefixes array = ${addressPrefixesLiteral}
 
 module firewall 'firewall.bicep' = {
-  name: 'sprintFirewallEgress'
+  name: 'sprintFirewallNetworkRules'
   params: {
     firewallPolicyName: firewallPolicyName
     sprintAddressPrefixes: sprintAddressPrefixes
@@ -874,7 +873,7 @@ az deployment group create \\
   --parameters firewallPolicyName=<policy-name>
 \`\`\`
 
-- \`firewall.bicep\` creates an Azure Firewall Policy egress network rule collection group for the sprint servers.
+- \`firewall.bicep\` creates an Azure Firewall Policy network rule collection group covering the sprint's inbound (on-prem/external to Azure) and outbound (Azure to on-prem/external) traffic. East-west traffic between sprint servers is omitted.
 - \`firewallPolicyName\` must name an existing policy in the target resource group; look it up with \`az network firewall policy list --resource-group <hub-resource-group> -o table\`.
 - Adjust \`sprintAddressPrefixes\` when a sprint server address could not be resolved.
 ${landingZoneReadme}`)
