@@ -3043,16 +3043,22 @@ app.put('/api/migration-wave-plan', async (request, response) => {
 })
 
 app.post('/api/migration-wave-plan', async (request, response) => {
-  const minimumServers = Number(request.body?.minimumServers ?? defaultMigrationWaveOptions.minimumServers)
-  const maximumServers = Number(request.body?.maximumServers ?? defaultMigrationWaveOptions.maximumServers)
+  const rawMinimum = request.body?.minimumServers
+  const rawMaximum = request.body?.maximumServers
+  const bothOmitted = (rawMinimum === undefined || rawMinimum === null) && (rawMaximum === undefined || rawMaximum === null)
+  const autoSizeSprints = request.body?.autoSizeSprints === true || bothOmitted
+  const minimumServers = autoSizeSprints ? defaultMigrationWaveOptions.minimumServers : Number(rawMinimum ?? defaultMigrationWaveOptions.minimumServers)
+  const maximumServers = autoSizeSprints ? defaultMigrationWaveOptions.maximumServers : Number(rawMaximum ?? defaultMigrationWaveOptions.maximumServers)
   const dataHeavyStorageGb = Number(request.body?.dataHeavyStorageGb ?? defaultMigrationWaveOptions.dataHeavyStorageGb)
-  if (!Number.isInteger(minimumServers) || minimumServers < 1 || minimumServers > 100) {
-    response.status(400).json({ error: 'minimumServers must be an integer between 1 and 100.' })
-    return
-  }
-  if (!Number.isInteger(maximumServers) || maximumServers < minimumServers || maximumServers > 100) {
-    response.status(400).json({ error: 'maximumServers must be an integer between minimumServers and 100.' })
-    return
+  if (!autoSizeSprints) {
+    if (!Number.isInteger(minimumServers) || minimumServers < 1 || minimumServers > 100) {
+      response.status(400).json({ error: 'minimumServers must be an integer between 1 and 100.' })
+      return
+    }
+    if (!Number.isInteger(maximumServers) || maximumServers < minimumServers || maximumServers > 100) {
+      response.status(400).json({ error: 'maximumServers must be an integer between minimumServers and 100.' })
+      return
+    }
   }
   if (!Number.isFinite(dataHeavyStorageGb) || dataHeavyStorageGb < 1 || dataHeavyStorageGb > 1_000_000) {
     response.status(400).json({ error: 'dataHeavyStorageGb must be between 1 and 1,000,000.' })
@@ -3090,6 +3096,7 @@ app.post('/api/migration-wave-plan', async (request, response) => {
   const options: MigrationWaveOptions = {
     minimumServers,
     maximumServers,
+    autoSizeSprints,
     considerEnvironments: request.body?.considerEnvironments !== false,
     prioritizeEnvironments: request.body?.prioritizeEnvironments !== false,
     environmentOrder: [...new Set(requestedOrder)],
@@ -3117,7 +3124,7 @@ app.post('/api/migration-wave-plan', async (request, response) => {
   let saveMode: PlanSaveMode = saved ? 'replace' : 'initial'
   if (saved) {
     const previousOptions = { ...defaultMigrationWaveOptions, ...(saved.plan.options ?? {}), ...(savedFilters ? parseJsonValue<Partial<MigrationWaveOptions>>(savedFilters.filterJson) : {}) }
-    const planningKeys: Array<keyof MigrationWaveOptions> = ['minimumServers', 'maximumServers', 'considerEnvironments', 'prioritizeEnvironments', 'environmentOrder', 'dataHeavyStorageGb', 'separateDataHeavyWorkloads', 'excludedApplications', 'excludedServers', 'applicationAffinityGroups', 'serverAffinityGroups']
+    const planningKeys: Array<keyof MigrationWaveOptions> = ['minimumServers', 'maximumServers', 'autoSizeSprints', 'considerEnvironments', 'prioritizeEnvironments', 'environmentOrder', 'dataHeavyStorageGb', 'separateDataHeavyWorkloads', 'excludedApplications', 'excludedServers', 'applicationAffinityGroups', 'serverAffinityGroups']
     const samePlanningSettings = planningKeys.every((key) => JSON.stringify(previousOptions[key]) === JSON.stringify(options[key]))
     const eligible = (identity: typeof identities[number], value: MigrationWaveOptions) => {
       const environments = new Set(value.environmentFilters.map((item) => item.toLowerCase()))

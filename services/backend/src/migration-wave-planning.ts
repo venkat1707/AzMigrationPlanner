@@ -3,6 +3,7 @@ import type { Knex } from 'knex'
 export type MigrationWaveOptions = {
   minimumServers: number
   maximumServers: number
+  autoSizeSprints: boolean
   considerEnvironments: boolean
   prioritizeEnvironments: boolean
   environmentOrder: string[]
@@ -74,6 +75,7 @@ let dependencyCache: { loadedAt: number; rows: DependencyRow[] } | null = null
 export const defaultMigrationWaveOptions: MigrationWaveOptions = {
   minimumServers: 5,
   maximumServers: 20,
+  autoSizeSprints: false,
   considerEnvironments: true,
   prioritizeEnvironments: true,
   environmentOrder: ['Dev', 'Test', 'UAT', 'Pre-prod', 'Prod'],
@@ -187,11 +189,19 @@ export function buildMigrationWavePlan(
     const environmentUnits = units
       .filter((unit) => environment === 'All environments' || unit.environment === environment)
       .sort(compareWorkUnits)
-    packUnits(environmentUnits, environment, options, drafts)
+    if (options.autoSizeSprints) {
+      const ceiling = computeSafetyCeiling(environmentUnits.reduce((total, unit) => total + unit.servers.length, 0))
+      const adaptiveTarget = computeAdaptiveTarget(environmentUnits.map((unit) => unit.servers.length), ceiling)
+      packUnitsAuto(environmentUnits, environment, adaptiveTarget, drafts)
+    } else {
+      packUnits(environmentUnits, environment, options, drafts)
+    }
   }
 
-  rebalanceMinimums(drafts, options)
-  optimizeDependencyPacking(drafts, options)
+  if (!options.autoSizeSprints) {
+    rebalanceMinimums(drafts, options)
+    optimizeDependencyPacking(drafts, options)
+  }
   const assignment = new Map<string, { sprint: number; wave: number; environment: string; application: string }>()
   let sprintSequence = 0
   const waves = environmentOrder.map((environment, waveIndex) => {
@@ -212,8 +222,8 @@ export function buildMigrationWavePlan(
         draftNames.has(normalize(sourceServer)) && draftNames.has(normalize(destinationServer))).length
       const infrastructureServers = draft.servers.filter(({ serverType }) => serverType === 'Infrastructure').length
       const exceptions: string[] = []
-      if (draft.servers.length < options.minimumServers) exceptions.push(`Below the ${options.minimumServers}-server minimum because no remaining affinity group fits without exceeding the maximum${options.separateDataHeavyWorkloads ? ', combining data-heavy workloads,' : ' or'} crossing the environment boundary.`)
-      if (draft.servers.length > options.maximumServers) exceptions.push(`Exceeds the ${options.maximumServers}-server maximum because a dependency group is larger than the configured limit.`)
+      if (!options.autoSizeSprints && draft.servers.length < options.minimumServers) exceptions.push(`Below the ${options.minimumServers}-server minimum because no remaining affinity group fits without exceeding the maximum${options.separateDataHeavyWorkloads ? ', combining data-heavy workloads,' : ' or'} crossing the environment boundary.`)
+      if (!options.autoSizeSprints && draft.servers.length > options.maximumServers) exceptions.push(`Exceeds the ${options.maximumServers}-server maximum because a dependency group is larger than the configured limit.`)
       if (options.separateDataHeavyWorkloads && dataHeavyServers.length > 1) exceptions.push('Contains multiple data-heavy servers that could not be separated without splitting a dependency group.')
       return {
         sprint: sprintIndex + 1,
@@ -230,7 +240,9 @@ export function buildMigrationWavePlan(
           options.considerEnvironments
             ? `Kept within the ${environment} environment boundary.`
             : `Environment boundaries are disabled; this sprint includes ${environments.length} environment${environments.length === 1 ? '' : 's'}.`,
-          `${draft.units.length} application/dependency affinity group${draft.units.length === 1 ? '' : 's'} combined across ${applications.length} application${applications.length === 1 ? '' : 's'} to approach the ${options.minimumServers}-${options.maximumServers} server guardrails.`,
+          options.autoSizeSprints
+            ? `${draft.units.length} dependency-driven group${draft.units.length === 1 ? '' : 's'} combined across ${applications.length} application${applications.length === 1 ? '' : 's'}; sprint size is derived automatically from observed dependency clusters rather than a fixed guardrail.`
+            : `${draft.units.length} application/dependency affinity group${draft.units.length === 1 ? '' : 's'} combined across ${applications.length} application${applications.length === 1 ? '' : 's'} to approach the ${options.minimumServers}-${options.maximumServers} server guardrails.`,
           retainedDependencyPairs > 0
             ? `${retainedDependencyPairs} observed dependency pair${retainedDependencyPairs === 1 ? '' : 's'} retained within this sprint.`
             : 'No direct dependency pairs were observed between the assigned servers.',
@@ -350,8 +362,12 @@ export function buildMigrationWavePlan(
       options.separateDataHeavyWorkloads
         ? `Database servers and servers with at least ${options.dataHeavyStorageGb} GB assessed storage are data-heavy; the planner targets one per sprint.`
         : `Storage capacity separation is disabled. Data-heavy classification remains informational and does not constrain sprint grouping.`,
-      `Compatible under-minimum affinity groups are merged or rebalanced before an exception is reported; minimum size never overrides maximum size or environment boundaries${options.separateDataHeavyWorkloads ? ', or data-heavy separation' : ''}.`,
-      'Shared infrastructure and services consumed by more groups are scheduled earlier where environment ordering allows.',
+      options.autoSizeSprints
+        ? 'Sprint sizing has no fixed minimum or maximum in this mode; grouping is driven entirely by observed dependencies and a computed safety ceiling.'
+        : `Compatible under-minimum affinity groups are merged or rebalanced before an exception is reported; minimum size never overrides maximum size or environment boundaries${options.separateDataHeavyWorkloads ? ', or data-heavy separation' : ''}.`,
+      options.autoSizeSprints
+        ? 'Automatic sprint sizing is enabled: servers connected by an observed dependency are grouped into the same sprint regardless of application, and a group is only split when it would otherwise exceed a computed safety ceiling, always cutting the weakest observed connection first. Unrelated, dependency-free servers are bundled up to a target size derived from the observed cluster sizes.'
+        : 'Shared infrastructure and services consumed by more groups are scheduled earlier where environment ordering allows.',
       'Bandwidth, replication duration, change windows, approvals, rollback tests, and owner validation are not present in the imported data and require external confirmation.',
     ],
     waves,
@@ -390,56 +406,21 @@ function createWorkUnits(servers: PlanningServer[], dependencies: DependencyRow[
     groups.set(key, group)
   }
 
-  const dependencyPairs = dependencies.map(({ sourceServer, destinationServer }) => [normalize(sourceServer), normalize(destinationServer)] as const)
   const applicationAffinityGroups = options.applicationAffinityGroups.map((group) => new Set(group.map(normalize)))
   const serverAffinityGroups = options.serverAffinityGroups.map((group) => new Set(group.map(normalize)))
   const units: WorkUnit[] = []
   let sequence = 0
   for (const groupServers of groups.values()) {
-    const names = new Set(groupServers.map(({ name }) => normalize(name)))
-    const serverByName = new Map(groupServers.map((server) => [normalize(server.name), server]))
-    const parent = new Map([...names].map((name) => [name, name]))
-    const find = (name: string): string => {
-      const current = parent.get(name) ?? name
-      if (current === name) return name
-      const root = find(current)
-      parent.set(name, root)
-      return root
-    }
-    const join = (left: string, right: string) => parent.set(find(left), find(right))
-    const joinAll = (members: string[]) => {
-      const first = members[0]
-      if (!first) return
-      for (const member of members.slice(1)) join(first, member)
-    }
-    const serversByApplication = new Map<string, string[]>()
-    for (const server of groupServers) {
-      const application = normalize(server.application)
-      serversByApplication.set(application, [...(serversByApplication.get(application) ?? []), normalize(server.name)])
-    }
-    for (const [source, destination] of dependencyPairs) {
-      if (names.has(source) && names.has(destination)
-        && normalize(serverByName.get(source)?.application ?? '') === normalize(serverByName.get(destination)?.application ?? '')) join(source, destination)
-    }
-    for (const affinityGroup of applicationAffinityGroups) {
-      joinAll([...affinityGroup].flatMap((application) => serversByApplication.get(application) ?? []))
-    }
-    for (const affinityGroup of serverAffinityGroups) {
-      joinAll([...affinityGroup].filter((serverName) => names.has(serverName)))
-    }
-    const clusters = new Map<string, PlanningServer[]>()
-    for (const server of groupServers) {
-      const root = find(normalize(server.name))
-      const cluster = clusters.get(root) ?? []
-      cluster.push(server)
-      clusters.set(root, cluster)
-    }
-    for (const cluster of clusters.values()) {
+    const clusters = options.autoSizeSprints
+      ? buildAutoClusters(groupServers, dependencies, applicationAffinityGroups, serverAffinityGroups)
+      : buildManualClusters(groupServers, dependencies, applicationAffinityGroups, serverAffinityGroups)
+    for (const cluster of clusters) {
       const applications = new Set(cluster.map(({ application }) => normalize(application)))
       const serverNames = new Set(cluster.map(({ name }) => normalize(name)))
       const explicitlyGrouped = applicationAffinityGroups.some((group) => [...group].filter((application) => applications.has(application)).length > 1)
         || serverAffinityGroups.some((group) => [...group].filter((serverName) => serverNames.has(serverName)).length > 1)
-      for (const partition of explicitlyGrouped ? [cluster] : partitionCluster(cluster, options)) {
+      const partitions = options.autoSizeSprints || explicitlyGrouped ? [cluster] : partitionCluster(cluster, options)
+      for (const partition of partitions) {
         sequence += 1
         units.push({
           id: `unit-${sequence}`,
@@ -453,6 +434,157 @@ function createWorkUnits(servers: PlanningServer[], dependencies: DependencyRow[
     }
   }
   return units
+}
+
+function buildManualClusters(
+  groupServers: PlanningServer[],
+  dependencies: DependencyRow[],
+  applicationAffinityGroups: Set<string>[],
+  serverAffinityGroups: Set<string>[],
+) {
+  const dependencyPairs = dependencies.map(({ sourceServer, destinationServer }) => [normalize(sourceServer), normalize(destinationServer)] as const)
+  const names = new Set(groupServers.map(({ name }) => normalize(name)))
+  const serverByName = new Map(groupServers.map((server) => [normalize(server.name), server]))
+  const parent = new Map([...names].map((name) => [name, name]))
+  const find = (name: string): string => {
+    const current = parent.get(name) ?? name
+    if (current === name) return name
+    const root = find(current)
+    parent.set(name, root)
+    return root
+  }
+  const join = (left: string, right: string) => parent.set(find(left), find(right))
+  const joinAll = (members: string[]) => {
+    const first = members[0]
+    if (!first) return
+    for (const member of members.slice(1)) join(first, member)
+  }
+  const serversByApplication = new Map<string, string[]>()
+  for (const server of groupServers) {
+    const application = normalize(server.application)
+    serversByApplication.set(application, [...(serversByApplication.get(application) ?? []), normalize(server.name)])
+  }
+  for (const [source, destination] of dependencyPairs) {
+    if (names.has(source) && names.has(destination)
+      && normalize(serverByName.get(source)?.application ?? '') === normalize(serverByName.get(destination)?.application ?? '')) join(source, destination)
+  }
+  for (const affinityGroup of applicationAffinityGroups) {
+    joinAll([...affinityGroup].flatMap((application) => serversByApplication.get(application) ?? []))
+  }
+  for (const affinityGroup of serverAffinityGroups) {
+    joinAll([...affinityGroup].filter((serverName) => names.has(serverName)))
+  }
+  const clusters = new Map<string, PlanningServer[]>()
+  for (const server of groupServers) {
+    const root = find(normalize(server.name))
+    const cluster = clusters.get(root) ?? []
+    cluster.push(server)
+    clusters.set(root, cluster)
+  }
+  return [...clusters.values()]
+}
+
+// Auto-size mode: dependency-connected servers are grouped into the same cluster regardless of
+// application. A cluster is only split when growing it further would exceed a safety ceiling that
+// scales with the size of the environment; when that happens, the weakest (lowest aggregate
+// connection weight) dependency edges are the ones left uncombined, minimizing introduced
+// cross-sprint dependency. Explicit affinity groups always merge unconditionally first.
+function buildAutoClusters(
+  groupServers: PlanningServer[],
+  dependencies: DependencyRow[],
+  applicationAffinityGroups: Set<string>[],
+  serverAffinityGroups: Set<string>[],
+) {
+  const names = new Set(groupServers.map(({ name }) => normalize(name)))
+  const parent = new Map([...names].map((name) => [name, name]))
+  const size = new Map([...names].map((name) => [name, 1]))
+  const find = (name: string): string => {
+    const current = parent.get(name) ?? name
+    if (current === name) return name
+    const root = find(current)
+    parent.set(name, root)
+    return root
+  }
+  const union = (left: string, right: string) => {
+    const leftRoot = find(left)
+    const rightRoot = find(right)
+    if (leftRoot === rightRoot) return
+    const leftSize = size.get(leftRoot) ?? 1
+    const rightSize = size.get(rightRoot) ?? 1
+    if (leftSize >= rightSize) {
+      parent.set(rightRoot, leftRoot)
+      size.set(leftRoot, leftSize + rightSize)
+    } else {
+      parent.set(leftRoot, rightRoot)
+      size.set(rightRoot, leftSize + rightSize)
+    }
+  }
+  const joinAll = (members: string[]) => {
+    const first = members[0]
+    if (!first) return
+    for (const member of members.slice(1)) union(first, member)
+  }
+
+  const serversByApplication = new Map<string, string[]>()
+  for (const server of groupServers) {
+    const application = normalize(server.application)
+    serversByApplication.set(application, [...(serversByApplication.get(application) ?? []), normalize(server.name)])
+  }
+  // Explicit affinity groups are a direct user instruction: merge unconditionally, ahead of the ceiling.
+  for (const affinityGroup of applicationAffinityGroups) {
+    joinAll([...affinityGroup].flatMap((application) => serversByApplication.get(application) ?? []))
+  }
+  for (const affinityGroup of serverAffinityGroups) {
+    joinAll([...affinityGroup].filter((serverName) => names.has(serverName)))
+  }
+
+  const pairWeights = new Map<string, number>()
+  for (const { sourceServer, destinationServer, connectionCount } of dependencies) {
+    const source = normalize(sourceServer)
+    const destination = normalize(destinationServer)
+    if (source === destination || !names.has(source) || !names.has(destination)) continue
+    const key = [source, destination].sort().join('|')
+    pairWeights.set(key, (pairWeights.get(key) ?? 0) + Math.max(1, Number(connectionCount)))
+  }
+
+  const ceiling = computeSafetyCeiling(groupServers.length)
+  const orderedPairs = [...pairWeights.entries()].sort((left, right) => right[1] - left[1])
+  for (const [key] of orderedPairs) {
+    const [source, destination] = key.split('|') as [string, string]
+    const sourceRoot = find(source)
+    const destinationRoot = find(destination)
+    if (sourceRoot === destinationRoot) continue
+    const mergedSize = (size.get(sourceRoot) ?? 1) + (size.get(destinationRoot) ?? 1)
+    if (mergedSize <= ceiling) union(source, destination)
+  }
+
+  const clusters = new Map<string, PlanningServer[]>()
+  for (const server of groupServers) {
+    const root = find(normalize(server.name))
+    const cluster = clusters.get(root) ?? []
+    cluster.push(server)
+    clusters.set(root, cluster)
+  }
+  return [...clusters.values()]
+}
+
+// No single sprint should absorb an unreasonable share of an environment; the ceiling scales with
+// the environment's own server count (~20%), bounded to a practically executable range.
+function computeSafetyCeiling(groupSize: number) {
+  return Math.min(60, Math.max(25, Math.round(groupSize * 0.2)))
+}
+
+// Derives a natural sprint size from the observed dependency clusters (the median size among
+// clusters that have more than one server), so unrelated/isolated servers are bundled up to a size
+// that reflects this dataset rather than an arbitrary fixed fallback.
+function computeAdaptiveTarget(clusterSizes: number[], ceiling: number) {
+  const multiServerClusters = clusterSizes.filter((size) => size > 1).sort((left, right) => left - right)
+  if (multiServerClusters.length === 0) return Math.min(10, ceiling)
+  const middle = Math.floor(multiServerClusters.length / 2)
+  const median = multiServerClusters.length % 2 === 0
+    ? Math.round((multiServerClusters[middle - 1]! + multiServerClusters[middle]!) / 2)
+    : multiServerClusters[middle]!
+  return Math.min(ceiling, Math.max(3, median))
 }
 
 function partitionCluster(servers: PlanningServer[], options: MigrationWaveOptions) {
@@ -521,6 +653,28 @@ function packUnits(units: WorkUnit[], environment: string, options: MigrationWav
 
 function dependencyWeight(unit: WorkUnit, draft: SprintDraft) {
   return draft.units.reduce((total, candidate) => total + (unit.dependencyWeights.get(candidate.id) ?? 0), 0)
+}
+
+// Auto-size mode: clusters at or above the adaptive target already represent a real,
+// dependency-linked group and become their own sprint untouched. Smaller, effectively
+// dependency-free clusters are bin-packed together (first-fit-decreasing) up to the target purely
+// to limit sprint count; since they are mutually independent, combining them adds zero cross-sprint
+// dependency.
+function packUnitsAuto(units: WorkUnit[], environment: string, adaptiveTarget: number, drafts: SprintDraft[]) {
+  const orderedUnits = [...units].sort((left, right) => right.servers.length - left.servers.length || compareWorkUnits(left, right))
+  for (const unit of orderedUnits) {
+    if (unit.servers.length >= adaptiveTarget) {
+      drafts.push({ environment, units: [unit], servers: [...unit.servers] })
+      continue
+    }
+    const draft = drafts
+      .filter((candidate) => candidate.environment === environment && candidate.servers.length + unit.servers.length <= adaptiveTarget)
+      .sort((left, right) => right.servers.length - left.servers.length)[0]
+    if (draft) {
+      draft.units.push(unit)
+      draft.servers.push(...unit.servers)
+    } else drafts.push({ environment, units: [unit], servers: [...unit.servers] })
+  }
 }
 
 function optimizeDependencyPacking(drafts: SprintDraft[], options: MigrationWaveOptions) {

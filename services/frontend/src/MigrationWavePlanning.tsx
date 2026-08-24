@@ -139,6 +139,7 @@ type MigrationWavePlan = {
 type PlannerSettings = {
   minimumServers: number
   maximumServers: number
+  autoSizeSprints: boolean
   considerEnvironments: boolean
   prioritizeEnvironments: boolean
   environmentOrder: string[]
@@ -156,6 +157,7 @@ type PlannerSettings = {
 const defaultSettings: PlannerSettings = {
   minimumServers: 5,
   maximumServers: 20,
+  autoSizeSprints: false,
   considerEnvironments: true,
   prioritizeEnvironments: true,
   environmentOrder: ['Dev', 'Test', 'UAT', 'Pre-prod', 'Prod'],
@@ -251,7 +253,7 @@ export default function MigrationWavePlanning() {
 
   const generatePlan = async (event: FormEvent) => {
     event.preventDefault()
-    if (settings.minimumServers > settings.maximumServers) {
+    if (!settings.autoSizeSprints && settings.minimumServers > settings.maximumServers) {
       setError('Minimum servers cannot exceed maximum servers.')
       return
     }
@@ -406,11 +408,12 @@ export default function MigrationWavePlanning() {
       <form className="wave-planner-controls" onSubmit={generatePlan}>
         <header><span><CalendarRange size={21} /></span><div><h2>Planning constraints</h2><p>Configure sprint guardrails and sequencing rules.</p></div></header>
         <div className="wave-control-grid">
-          <label>Minimum servers per sprint<input type="number" min="1" max="100" value={settings.minimumServers} onChange={(event) => setSettings({ ...settings, minimumServers: Number(event.target.value) })} /></label>
-          <label>Maximum servers per sprint<input type="number" min="1" max="100" value={settings.maximumServers} onChange={(event) => setSettings({ ...settings, maximumServers: Number(event.target.value) })} /></label>
+          <label className={settings.autoSizeSprints ? 'disabled' : ''}>Minimum servers per sprint<input type="number" min="1" max="100" disabled={settings.autoSizeSprints} value={settings.minimumServers} onChange={(event) => setSettings({ ...settings, minimumServers: Number(event.target.value) })} /></label>
+          <label className={settings.autoSizeSprints ? 'disabled' : ''}>Maximum servers per sprint<input type="number" min="1" max="100" disabled={settings.autoSizeSprints} value={settings.maximumServers} onChange={(event) => setSettings({ ...settings, maximumServers: Number(event.target.value) })} /></label>
           <label className={!settings.separateDataHeavyWorkloads ? 'disabled' : ''}>Data-heavy threshold<input type="number" min="1" max="1000000" disabled={!settings.separateDataHeavyWorkloads} value={settings.dataHeavyStorageGb} onChange={(event) => setSettings({ ...settings, dataHeavyStorageGb: Number(event.target.value) })} /><small>GB of assessed storage; database servers always qualify.</small></label>
         </div>
         <div className="wave-planner-toggles">
+          <label><input type="checkbox" checked={settings.autoSizeSprints} onChange={(event) => setSettings({ ...settings, autoSizeSprints: event.target.checked })} /><span><strong>Let the tool determine the optimal sprint size</strong><small>Ignores the min/max guardrails above and groups servers by observed dependencies, splitting only where a group would otherwise grow too large.</small></span></label>
           <label><input type="checkbox" checked={settings.considerEnvironments} onChange={(event) => setSettings({ ...settings, considerEnvironments: event.target.checked })} /><span><strong>Separate environments</strong><small>Keep application servers in environment-specific waves.</small></span></label>
           <label className={!settings.considerEnvironments ? 'disabled' : ''}><input type="checkbox" disabled={!settings.considerEnvironments} checked={settings.prioritizeEnvironments} onChange={(event) => setSettings({ ...settings, prioritizeEnvironments: event.target.checked })} /><span><strong>Prioritize environments</strong><small>Sequence lower environments before production.</small></span></label>
           <label><input type="checkbox" checked={settings.separateDataHeavyWorkloads} onChange={(event) => setSettings({ ...settings, separateDataHeavyWorkloads: event.target.checked })} /><span><strong>Separate data-heavy workloads</strong><small>Limit each sprint to one database or storage-heavy server.</small></span></label>
