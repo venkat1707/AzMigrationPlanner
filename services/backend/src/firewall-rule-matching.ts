@@ -58,6 +58,9 @@ export type ImportedFirewallMatchInput = {
   assessmentIps: Array<{ serverName: string; ip: string }>
   coreInfrastructureIps: string[]
   excludeCoreInfrastructure: boolean
+  // Azure Firewall only: by default, traffic between two sprint servers (east-west) is left out since
+  // Azure Firewall covers north-south traffic. Set true to also include east-west traffic in the matches.
+  includeEastWestTraffic?: boolean
   // Server name -> sprint sequence, used (on-prem only) to discard rules entirely internal to one sprint.
   sprintMembership: Array<{ serverName: string; sprintSequence: number }>
   landingZone: LandingZoneContext
@@ -442,8 +445,9 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
 
         // North-south / east-west exclusion, mirroring the dependency-record rule generator's logic.
         if (side.remoteMatchedServers.length > 0) {
-          // Azure Firewall covers north-south traffic only; any overlap with another sprint server is east-west.
-          if (target === 'azure-firewall') continue
+          // Azure Firewall covers north-south traffic only; any overlap with another sprint server is east-west,
+          // unless the caller explicitly asked to include it.
+          if (target === 'azure-firewall' && !input.includeEastWestTraffic) continue
           if (target === 'on-prem') {
             // Connections entirely within one sprint stay inside Azure after migration.
             const sprintSequences = new Set([...side.localServers, ...side.remoteMatchedServers]

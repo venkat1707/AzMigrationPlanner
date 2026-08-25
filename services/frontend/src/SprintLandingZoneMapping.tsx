@@ -4,7 +4,8 @@ import { apiFetch } from './auth-client'
 
 type ResourceGroup = { subscriptionId: string; subscriptionName: string; resourceGroupId: string; resourceGroupName: string }
 type LandingZoneNetwork = { subscriptionId: string; networkResourceGroup: string; virtualNetwork: string; subnet: string; networkSecurityGroup: string }
-type Mapping = { serverName: string; sprintSequence: number; subscriptionId: string; subscriptionName: string; resourceGroupId: string; networkResourceGroup: string; virtualNetwork: string; subnet: string; networkSecurityGroup: string }
+type Mapping = { serverName: string; sprintSequence: number; subscriptionId: string; subscriptionName: string; resourceGroupId: string; networkResourceGroup: string; virtualNetwork: string; subnet: string; networkSecurityGroup: string; ipAllocation: string; resiliency: string; resiliencyDetails: string }
+const availabilityZoneDetails = ['Azure Selected', 'Zone 1', 'Zone 2', 'Zone 3']
 type Sprint = { sequence: number; name: string; wave: number; environment: string; servers: Array<{ serverName: string; mapping: Mapping | null }> }
 type MappingResponse = { sprints: Sprint[]; resourceGroups: ResourceGroup[]; networks: LandingZoneNetwork[] }
 
@@ -19,6 +20,9 @@ const emptyMapping = (serverName: string): EditableMapping => ({
   virtualNetwork: '',
   subnet: '',
   networkSecurityGroup: '',
+  ipAllocation: 'DYNAMIC',
+  resiliency: '',
+  resiliencyDetails: '',
 })
 
 function unique(values: string[]) {
@@ -74,6 +78,9 @@ export default function SprintLandingZoneMapping() {
       virtualNetwork: mapping.virtualNetwork,
       subnet: mapping.subnet,
       networkSecurityGroup: mapping.networkSecurityGroup,
+      ipAllocation: mapping.ipAllocation || 'DYNAMIC',
+      resiliency: mapping.resiliency,
+      resiliencyDetails: mapping.resiliencyDetails,
     } : emptyMapping(serverName)) ?? [])
   }
 
@@ -106,6 +113,10 @@ export default function SprintLandingZoneMapping() {
   const selectSubnet = (mapping: EditableMapping, subnet: string) => {
     const network = networks.find((item) => item.subscriptionId === mapping.subscriptionId && item.networkResourceGroup === mapping.networkResourceGroup && item.virtualNetwork === mapping.virtualNetwork && item.subnet === subnet)
     updateMapping(mapping.serverName, { subnet, networkSecurityGroup: network?.networkSecurityGroup ?? '' })
+  }
+
+  const selectResiliency = (mapping: EditableMapping, resiliency: string) => {
+    updateMapping(mapping.serverName, { resiliency, resiliencyDetails: '' })
   }
 
   const save = async () => {
@@ -178,7 +189,7 @@ export default function SprintLandingZoneMapping() {
       const sequence = payload.sprintSequence ?? Number(selectedSprint)
       const importedSprint = data.sprints.find((item) => item.sequence === sequence)
       setSelectedSprint(String(sequence))
-      setMappings(importedSprint?.servers.map(({ serverName, mapping }) => mapping ? { serverName, subscriptionId: mapping.subscriptionId, subscriptionName: mapping.subscriptionName, resourceGroupId: mapping.resourceGroupId, networkResourceGroup: mapping.networkResourceGroup, virtualNetwork: mapping.virtualNetwork, subnet: mapping.subnet, networkSecurityGroup: mapping.networkSecurityGroup } : emptyMapping(serverName)) ?? [])
+      setMappings(importedSprint?.servers.map(({ serverName, mapping }) => mapping ? { serverName, subscriptionId: mapping.subscriptionId, subscriptionName: mapping.subscriptionName, resourceGroupId: mapping.resourceGroupId, networkResourceGroup: mapping.networkResourceGroup, virtualNetwork: mapping.virtualNetwork, subnet: mapping.subnet, networkSecurityGroup: mapping.networkSecurityGroup, ipAllocation: mapping.ipAllocation || 'DYNAMIC', resiliency: mapping.resiliency, resiliencyDetails: mapping.resiliencyDetails } : emptyMapping(serverName)) ?? [])
       setNotice(`Imported and saved ${payload.saved ?? 0} server mapping${payload.saved === 1 ? '' : 's'} from Excel.`)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to import sprint landing-zone mappings.')
@@ -214,13 +225,13 @@ export default function SprintLandingZoneMapping() {
     {notice && <div className="core-input-feedback success"><CheckCircle2 size={15} />{notice}</div>}
 
     {!sprint && serverFilter.trim() && <section className="sprint-server-search-results"><header><div><p>Server search</p><h2>Matching sprint servers</h2><small>Choose a result to open its sprint and map the server.</small></div></header><div className="table-wrap"><table><thead><tr><th>Server name</th><th>Sprint</th><th>Wave</th><th>Environment</th><th aria-label="Open sprint"></th></tr></thead><tbody>{matchingServers.length === 0 ? <tr><td colSpan={5} className="empty-state">No sprint servers match this filter.</td></tr> : matchingServers.map(({ serverName, sprint: matchingSprint }) => <tr key={`${matchingSprint.sequence}-${serverName}`}><td><strong>{serverName}</strong></td><td>{matchingSprint.name}</td><td>Wave {matchingSprint.wave}</td><td>{matchingSprint.environment}</td><td><button type="button" className="secondary-command" onClick={() => selectSprint(String(matchingSprint.sequence))}>Map server</button></td></tr>)}</tbody></table></div></section>}
-    {sprint && <section className="sprint-landing-zone-table"><header><div><p>Selected sprint</p><h2>{sprint.name}</h2><small>Wave {sprint.wave} · {sprint.environment} · {completedMappings} of {mappings.length} fully mapped</small></div></header><div className="table-wrap"><table><thead><tr><th>Server name</th><th>Subscription name</th><th>Resource group</th><th>Network resource group</th><th>Virtual network</th><th>Subnet</th><th>NSG</th></tr></thead><tbody>{visibleMappings.length === 0 ? <tr><td colSpan={7} className="empty-state">No servers match this filter.</td></tr> : visibleMappings.map((mapping) => {
+    {sprint && <section className="sprint-landing-zone-table"><header><div><p>Selected sprint</p><h2>{sprint.name}</h2><small>Wave {sprint.wave} · {sprint.environment} · {completedMappings} of {mappings.length} fully mapped</small></div></header><div className="table-wrap"><table><thead><tr><th>Server name</th><th>Subscription name</th><th>Resource group</th><th>Network resource group</th><th>Virtual network</th><th>Subnet</th><th>NSG</th><th>IP allocation</th><th>Resiliency</th><th>Resiliency details</th></tr></thead><tbody>{visibleMappings.length === 0 ? <tr><td colSpan={10} className="empty-state">No servers match this filter.</td></tr> : visibleMappings.map((mapping) => {
       const groupsForSubscription = resourceGroups.filter((group) => group.subscriptionId === mapping.subscriptionId)
       const networksForSubscription = networks.filter((network) => network.subscriptionId === mapping.subscriptionId)
       const networkResourceGroups = unique(networksForSubscription.map((network) => network.networkResourceGroup))
       const virtualNetworks = unique(networksForSubscription.filter((network) => network.networkResourceGroup === mapping.networkResourceGroup).map((network) => network.virtualNetwork))
       const subnets = networksForSubscription.filter((network) => network.networkResourceGroup === mapping.networkResourceGroup && network.virtualNetwork === mapping.virtualNetwork)
-      return <tr key={mapping.serverName}><td><strong>{mapping.serverName}</strong></td><td><select value={mapping.subscriptionId} onChange={(event) => selectSubscription(mapping, event.target.value)}><option value="">Select subscription</option>{subscriptionIds.map((subscriptionId) => <option key={subscriptionId} value={subscriptionId}>{resourceGroups.find((group) => group.subscriptionId === subscriptionId)?.subscriptionName || subscriptionId}</option>)}</select></td><td><select value={mapping.resourceGroupId} disabled={!mapping.subscriptionId} onChange={(event) => updateMapping(mapping.serverName, { resourceGroupId: event.target.value })}><option value="">Select resource group</option>{groupsForSubscription.map((group) => <option key={group.resourceGroupId} value={group.resourceGroupId}>{group.resourceGroupName}</option>)}</select></td><td><select value={mapping.networkResourceGroup} disabled={!mapping.subscriptionId} onChange={(event) => selectNetworkResourceGroup(mapping, event.target.value)}><option value="">Select network resource group</option>{networkResourceGroups.map((group) => <option key={group} value={group}>{group}</option>)}</select></td><td><select value={mapping.virtualNetwork} disabled={!mapping.networkResourceGroup} onChange={(event) => selectVirtualNetwork(mapping, event.target.value)}><option value="">Select virtual network</option>{virtualNetworks.map((network) => <option key={network} value={network}>{network}</option>)}</select></td><td><select value={mapping.subnet} disabled={!mapping.virtualNetwork} onChange={(event) => selectSubnet(mapping, event.target.value)}><option value="">Select subnet</option>{subnets.map((network) => <option key={network.subnet} value={network.subnet}>{network.subnet}</option>)}</select></td><td><select value={mapping.networkSecurityGroup} disabled><option value="">No NSG attached</option>{mapping.networkSecurityGroup && <option value={mapping.networkSecurityGroup}>{mapping.networkSecurityGroup}</option>}</select></td></tr>
+      return <tr key={mapping.serverName}><td><strong>{mapping.serverName}</strong></td><td><select value={mapping.subscriptionId} onChange={(event) => selectSubscription(mapping, event.target.value)}><option value="">Select subscription</option>{subscriptionIds.map((subscriptionId) => <option key={subscriptionId} value={subscriptionId}>{resourceGroups.find((group) => group.subscriptionId === subscriptionId)?.subscriptionName || subscriptionId}</option>)}</select></td><td><select value={mapping.resourceGroupId} disabled={!mapping.subscriptionId} onChange={(event) => updateMapping(mapping.serverName, { resourceGroupId: event.target.value })}><option value="">Select resource group</option>{groupsForSubscription.map((group) => <option key={group.resourceGroupId} value={group.resourceGroupId}>{group.resourceGroupName}</option>)}</select></td><td><select value={mapping.networkResourceGroup} disabled={!mapping.subscriptionId} onChange={(event) => selectNetworkResourceGroup(mapping, event.target.value)}><option value="">Select network resource group</option>{networkResourceGroups.map((group) => <option key={group} value={group}>{group}</option>)}</select></td><td><select value={mapping.virtualNetwork} disabled={!mapping.networkResourceGroup} onChange={(event) => selectVirtualNetwork(mapping, event.target.value)}><option value="">Select virtual network</option>{virtualNetworks.map((network) => <option key={network} value={network}>{network}</option>)}</select></td><td><select value={mapping.subnet} disabled={!mapping.virtualNetwork} onChange={(event) => selectSubnet(mapping, event.target.value)}><option value="">Select subnet</option>{subnets.map((network) => <option key={network.subnet} value={network.subnet}>{network.subnet}</option>)}</select></td><td><select value={mapping.networkSecurityGroup} disabled><option value="">No NSG attached</option>{mapping.networkSecurityGroup && <option value={mapping.networkSecurityGroup}>{mapping.networkSecurityGroup}</option>}</select></td><td><select value={mapping.ipAllocation} onChange={(event) => updateMapping(mapping.serverName, { ipAllocation: event.target.value })}><option value="DYNAMIC">Dynamic</option><option value="STATIC">Static</option></select></td><td><select value={mapping.resiliency} onChange={(event) => selectResiliency(mapping, event.target.value)}><option value="">No preference</option><option value="Availability Zone">Availability Zone</option><option value="Availability Set">Availability Set</option></select></td><td>{mapping.resiliency === 'Availability Zone' ? <select value={mapping.resiliencyDetails} onChange={(event) => updateMapping(mapping.serverName, { resiliencyDetails: event.target.value })}><option value="">Select zone</option>{availabilityZoneDetails.map((value) => <option key={value} value={value}>{value}</option>)}</select> : mapping.resiliency === 'Availability Set' ? <input type="text" value={mapping.resiliencyDetails} onChange={(event) => updateMapping(mapping.serverName, { resiliencyDetails: event.target.value })} placeholder="Availability set name" maxLength={200} /> : <span className="sprint-landing-zone-muted">Not applicable</span>}</td></tr>
     })}</tbody></table></div><footer><span>Save at any point. Partial selections are stored as drafts and remain available when you return. The server filter does not remove hidden rows.</span><button type="button" disabled={saving || mappings.length === 0} onClick={() => void save()}><Save size={16} />{saving ? 'Saving...' : 'Save draft'}</button></footer></section>}
   </div>
 }

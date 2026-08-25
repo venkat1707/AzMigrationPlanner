@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react'
-import { Activity, AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ChevronUp, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Scale, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
+import { Activity, AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, BookOpen, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ChevronUp, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Scale, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
@@ -25,6 +25,8 @@ import FirewallRulesImport from './FirewallRulesImport'
 import ApplicationCatalog from './ApplicationCatalog'
 import ServerCoverage from './ServerCoverage'
 import EnvironmentIdentification from './EnvironmentIdentification'
+import WavePlannerGuide from './WavePlannerGuide'
+import FirewallRulesGuide from './FirewallRulesGuide'
 import type { AuthSettings, AuthUser } from './Authentication'
 import { apiFetch } from './auth-client'
 import './Dashboard.css'
@@ -63,7 +65,7 @@ type UploadResult = {
   warnings?: string[]
   error?: string
 }
-type AppPage = 'overview' | 'dependencies' | 'application-map' | 'application-catalog' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'load-balancer-scale' | 'tasks' | 'imports' | 'corelight' | 'splunk' | 'load-balancer-rules' | 'firewall-rule-imports' | 'cleanup' | 'admin' | 'agents'
+type AppPage = 'overview' | 'dependencies' | 'application-map' | 'application-catalog' | 'topology' | 'server-coverage' | 'core-infrastructure' | 'target-landing-zone' | 'landing-zone-network' | 'landing-zone-platform' | 'environment-identification' | 'wave-planning' | 'application-treatments' | 'sprint-schedule' | 'sprint-landing-zone-mapping' | 'visualize-sprints' | 'firewall-rules' | 'artefact-generation' | 'load-balancer-scale' | 'tasks' | 'imports' | 'corelight' | 'splunk' | 'load-balancer-rules' | 'firewall-rule-imports' | 'cleanup' | 'admin' | 'agents' | 'wave-planner-guide' | 'firewall-rules-guide'
 type ImportKind = 'dependencies' | 'applications' | 'server-assessment' | 'application-mapping'
 const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   applications: 'application-mapping',
@@ -71,7 +73,7 @@ const nextImportKind: Partial<Record<ImportKind, ImportKind>> = {
   'server-assessment': 'dependencies',
 }
 type PageAccess = 'all' | 'modify' | 'delete' | 'admin'
-type NavigationGroup = 'Workspace' | 'Discover & prepare' | 'Target landing zone' | 'Assess workloads' | 'Plan & deliver' | 'Artefacts (Preview)' | 'Manage workspace'
+type NavigationGroup = 'Workspace' | 'Discover & prepare' | 'Target landing zone' | 'Assess workloads' | 'Plan & deliver' | 'Artefacts (Preview)' | 'Manage workspace' | 'Documentation'
 type CollapsibleNavigationGroup = Exclude<NavigationGroup, 'Workspace'>
 type PageDefinition = { page: AppPage; label: string; group: NavigationGroup; icon: LucideIcon; access: PageAccess; eyebrow: string; title: string; description: string }
 
@@ -135,8 +137,10 @@ const pageDefinitions: PageDefinition[] = [
   { page: 'cleanup', label: 'Data Cleanup', group: 'Manage workspace', icon: Trash2, access: 'delete', eyebrow: 'Data management', title: 'Clean up application data', description: 'Remove imported data through a controlled, observable cleanup flow.' },
   { page: 'agents', label: 'Agents', group: 'Manage workspace', icon: Bot, access: 'admin', eyebrow: 'AI integration', title: 'Foundry agents', description: 'Register and manage the Foundry agent endpoints used across design, migration, load balancer, and firewall parsing features.' },
   { page: 'admin', label: 'Authentication', group: 'Manage workspace', icon: UserRoundCog, access: 'admin', eyebrow: 'Authentication', title: 'Identity and access', description: 'Manage local users, application privileges, and Microsoft Entra ID authentication.' },
+  { page: 'wave-planner-guide', label: 'Wave Planner Guide', group: 'Documentation', icon: BookOpen, access: 'all', eyebrow: 'Documentation', title: 'Migration wave planner guide', description: 'A plain-English explanation of the wave planner, every planning option, and common scenarios with examples.' },
+  { page: 'firewall-rules-guide', label: 'Firewall Rules Guide', group: 'Documentation', icon: Shield, access: 'all', eyebrow: 'Documentation', title: 'Firewall rules guide', description: 'How Azure NSG, Azure Firewall, and on-prem firewall rules are generated, and how to use the Terraform and Bicep downloads.' },
 ]
-const navigationGroups: NavigationGroup[] = ['Workspace', 'Discover & prepare', 'Target landing zone', 'Assess workloads', 'Plan & deliver', 'Artefacts (Preview)', 'Manage workspace']
+const navigationGroups: NavigationGroup[] = ['Workspace', 'Discover & prepare', 'Target landing zone', 'Assess workloads', 'Plan & deliver', 'Artefacts (Preview)', 'Manage workspace', 'Documentation']
 const navigationStateKey = 'migration-planner-navigation-groups'
 const defaultExpandedGroups: Record<CollapsibleNavigationGroup, boolean> = {
   'Discover & prepare': true,
@@ -145,6 +149,7 @@ const defaultExpandedGroups: Record<CollapsibleNavigationGroup, boolean> = {
   'Plan & deliver': true,
   'Artefacts (Preview)': true,
   'Manage workspace': false,
+  Documentation: true,
 }
 
 function readExpandedGroups(): Record<CollapsibleNavigationGroup, boolean> {
@@ -193,7 +198,6 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   const [inspectingSheets, setInspectingSheets] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [databaseStatus, setDatabaseStatus] = useState<'checking' | 'online' | 'offline'>('checking')
-  const [overviewSectionsCollapsed, setOverviewSectionsCollapsed] = useState(false)
   const uploadAbortController = useRef<AbortController | null>(null)
   const cancellationRequested = useRef(false)
 
@@ -447,6 +451,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   const canUpload = files.length > 0 && !uploading && !inspectingSheets && (!workbookSelected || Boolean(selectedSheet))
   const pageTitle = pageDefinitions.find(({ page }) => page === activePage)!
   const canPlanWaves = !auth.settings.authenticationEnabled || Boolean(auth.user?.canModify || auth.user?.isAdmin)
+  const canDeleteTasks = !auth.settings.authenticationEnabled || Boolean(auth.user?.canDelete || auth.user?.isAdmin)
   const canManageTasks = !auth.settings.authenticationEnabled || Boolean(auth.user?.canManageTasks || auth.user?.canModify || auth.user?.isAdmin)
   const availablePages = pageDefinitions.filter((definition) => canAccessPage(definition, auth))
   const activeGroup = pageTitle.group
@@ -458,6 +463,19 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
       return next
     })
   }
+  const collapsibleGroups = navigationGroups.filter((group): group is CollapsibleNavigationGroup => group !== 'Workspace')
+  const allNavigationGroupsExpanded = collapsibleGroups.every((group) => group === activeGroup || expandedGroups[group])
+  const toggleAllNavigationGroups = () => {
+    const target = !allNavigationGroupsExpanded
+    setExpandedGroups((current) => {
+      const next = { ...current }
+      for (const group of collapsibleGroups) {
+        if (group !== activeGroup) next[group] = target
+      }
+      window.localStorage.setItem(navigationStateKey, JSON.stringify(next))
+      return next
+    })
+  }
 
   return (
     <div className="app-shell">
@@ -465,6 +483,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark"><Network size={21} /></span><span><strong>Cloud Accelerate Factory</strong><small>Migration Planner</small></span></div>
         <nav className="desktop-navigation" aria-label="Primary navigation">
+          <button className="navigation-collapse-all" type="button" onClick={toggleAllNavigationGroups}>{allNavigationGroupsExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}{allNavigationGroupsExpanded ? 'Collapse all sections' : 'Expand all sections'}</button>
           {navigationGroups.map((group) => {
             const pages = availablePages.filter((definition) => definition.group === group)
             if (!pages.length) return null
@@ -497,8 +516,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
 
         {activePage === 'overview' && <div className="page overview-page">
           {error && <div className="error-message"><span>{error}</span><button type="button" onClick={retryConnection}><RefreshCw size={14} /> Retry</button></div>}
-          <div className="overview-collapse-all-row"><button type="button" className="overview-collapse-all" onClick={() => setOverviewSectionsCollapsed((value) => !value)}>{overviewSectionsCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}{overviewSectionsCollapsed ? 'Expand all sections' : 'Collapse all sections'}</button></div>
-          {!overviewSectionsCollapsed && <section className="summary" aria-label="Estate summary">
+          <section className="summary" aria-label="Estate summary">
             <article><span className="metric-icon"><AppWindow /></span><div><span>Applications catalogued</span><strong>{overviewStats ? formatNumber.format(overviewStats.applicationsCatalogued) : '-'}</strong><small>{overviewStats ? `${formatNumber.format(overviewStats.applicationsWithTreatment)} with a treatment set` : 'Application catalog'}</small></div></article>
             <article><span className="metric-icon"><Server /></span><div><span>Servers assessed</span><strong>{overviewStats ? formatNumber.format(overviewStats.serversAssessed) : '-'}</strong><small>Server Assessment imports</small></div></article>
             <article><span className="metric-icon"><ScanSearch /></span><div><span>Environments identified</span><strong>{overviewStats ? formatNumber.format(overviewStats.environmentsIdentified) : '-'}</strong><small>Classified via identification rules</small></div></article>
@@ -507,8 +525,8 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             <article><span className="metric-icon"><Cloud /></span><div><span>Landing zone resource groups</span><strong>{overviewStats ? formatNumber.format(overviewStats.landingZoneResourceGroups) : '-'}</strong><small>Target subscriptions mapped</small></div></article>
             <article><span className="metric-icon"><ShieldCheck /></span><div><span>Firewall rulesets parsed</span><strong>{overviewStats ? formatNumber.format(overviewStats.firewallRulesetsParsed) : '-'}</strong><small>Ready for rule generation</small></div></article>
             <article><span className="metric-icon"><CalendarRange /></span><div><span>Sprints planned</span><strong>{overviewStats ? formatNumber.format(overviewStats.sprintsPlanned) : '-'}</strong><small>{overviewStats ? `${formatNumber.format(overviewStats.tasksCompleted)}/${formatNumber.format(overviewStats.tasksTotal)} tasks complete` : 'Migration wave plan'}</small></div></article>
-          </section>}
-          {!overviewSectionsCollapsed && <section className="overview-grid">
+          </section>
+          <section className="overview-grid">
             <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Migration journey</p><h2>Where this workspace fits, end to end</h2><small className="overview-intro">This app doesn't perform discovery &mdash; it imports data already discovered by your own tools, drives landing zone and wave planning, and generates artefacts that feed migration. Discovery, testing, and hand over happen outside this app.</small></div></div>
             <ol className="journey-timeline">
               <li className="outside"><span className="journey-timeline-icon"><ScanSearch size={16} /></span><strong>Discovery</strong><small>Imports only</small></li>
@@ -547,7 +565,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
               </div></section>
             </div></div>
             <div className="activity-panel"><div className="section-heading"><div><p className="eyebrow">Import activity</p><h2>Latest files</h2></div><a href="#imports">View all</a></div><ImportHistory items={imports.slice(0, 5)} /></div>
-          </section>}
+          </section>
         </div>}
 
         {activePage === 'topology' && <ServerTopology refreshKey={refreshKey} />}
@@ -559,7 +577,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'landing-zone-network' && <LandingZoneNetwork />}
         {activePage === 'landing-zone-platform' && <LandingZonePlatform />}
         {activePage === 'environment-identification' && canPlanWaves && <EnvironmentIdentification canModify={canPlanWaves} />}
-        {activePage === 'wave-planning' && canPlanWaves && <MigrationWavePlanning />}
+        {activePage === 'wave-planning' && canPlanWaves && <MigrationWavePlanning canDeleteTasks={canDeleteTasks} />}
         {activePage === 'visualize-sprints' && <VisualizeSprints />}
         {activePage === 'application-treatments' && <ApplicationTreatmentPlanning canModify={canPlanWaves} />}
         {activePage === 'sprint-schedule' && canPlanWaves && <SprintSchedule />}
@@ -570,6 +588,8 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
         {activePage === 'tasks' && <TaskWorkspace canModify={canManageTasks} canReassign={canPlanWaves} currentUserId={auth.user?.id} />}
         {activePage === 'admin' && <AdminPage onAuthChanged={onAuthChanged} />}
         {activePage === 'agents' && <AgentsPage />}
+        {activePage === 'wave-planner-guide' && <WavePlannerGuide />}
+        {activePage === 'firewall-rules-guide' && <FirewallRulesGuide />}
 
         {activePage === 'cleanup' && <DataCleanup onComplete={() => {
           setImports([])

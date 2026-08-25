@@ -51,6 +51,9 @@ export type FirewallRuleInput = {
   sprintMembership: Array<{ serverName: string; sprintSequence: number }>
   portReferences: PortReference[]
   excludeCoreInfrastructure: boolean
+  // Azure Firewall only: by default, traffic between two sprint servers (east-west) is left out since
+  // Azure Firewall covers north-south traffic. Set true to also include east-west traffic in the rule set.
+  includeEastWestTraffic?: boolean
   landingZone?: LandingZoneContext
   // Servers whose own sprint has already completed migration (status "Closed"), together with the
   // Azure subnet CIDR they were placed in. When one of these servers shows up as a *remote* peer for
@@ -261,9 +264,10 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
           continue
         }
       }
-      // Azure Firewall covers north-south traffic (both directions); skip east-west traffic between sprint servers.
+      // Azure Firewall covers north-south traffic (both directions); skip east-west traffic between sprint
+      // servers unless the caller explicitly asked to include it.
       const remoteIsSprint = (remoteKeyName ? sprintOf.has(remoteKeyName) : false) || (remoteAddress ? sprintAddressSet.has(remoteAddress) : false)
-      if (target === 'azure-firewall' && remoteIsSprint) continue
+      if (target === 'azure-firewall' && remoteIsSprint && !input.includeEastWestTraffic) continue
 
       let peerKind: FirewallRule['peerKind'] = remoteKeyName ? 'server' : 'host'
       let remoteName = flow.remoteServer ?? null

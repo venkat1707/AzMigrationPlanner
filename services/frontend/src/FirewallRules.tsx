@@ -87,6 +87,7 @@ type FirewallResponse = {
   scope: 'all' | number
   target: FirewallTarget
   excludeCoreInfrastructure: boolean
+  includeEastWestTraffic: boolean
   sprints: SprintOption[]
   scopeLabel: string
   summary: FirewallSummary
@@ -211,6 +212,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
   const [scope, setScope] = useState<'all' | number>('all')
   const [target, setTarget] = useState<FirewallTarget | ''>('')
   const [excludeCore, setExcludeCore] = useState(false)
+  const [includeEastWest, setIncludeEastWest] = useState(false)
   const [summary, setSummary] = useState<FirewallSummary | null>(null)
   const [scopeLabel, setScopeLabel] = useState('')
   const [rules, setRules] = useState<FirewallRule[]>([])
@@ -233,7 +235,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
   const [sectionsCollapsed, setSectionsCollapsed] = useState(false)
 
 
-  const query = useMemo(() => `sprint=${scope === 'all' ? 'all' : scope}&target=${target}&excludeCoreInfrastructure=${excludeCore}`, [scope, target, excludeCore])
+  const query = useMemo(() => `sprint=${scope === 'all' ? 'all' : scope}&target=${target}&excludeCoreInfrastructure=${excludeCore}&includeEastWestTraffic=${includeEastWest}`, [scope, target, excludeCore, includeEastWest])
 
   const load = useCallback(async () => {
     if (target === '') {
@@ -436,8 +438,12 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
           <input type="checkbox" checked={excludeCore} onChange={(event) => setExcludeCore(event.target.checked)} disabled={target === ''} />
           <span>Exclude connections to core-infrastructure servers</span>
         </label>
+        {target === 'azure-firewall' && <label className="firewall-toggle">
+          <input type="checkbox" checked={includeEastWest} onChange={(event) => setIncludeEastWest(event.target.checked)} />
+          <span>Include east-west traffic between sprint servers</span>
+        </label>}
       </div>
-      {target !== '' && <div className="firewall-disclaimer"><Info size={17} /><span><strong>{targetLabels[target]} — {scopeLabel}</strong>. {targetDisclaimers[target]} Office and VPN network peers are summarized to their IP prefixes. Protocols are inferred from the Windows service and port catalog and default to TCP.{sprintAddresses.length > 0 ? ` ${sprintAddresses.length} sprint server address${sprintAddresses.length === 1 ? '' : 'es'} resolved.` : ''}</span></div>}
+      {target !== '' && <div className="firewall-disclaimer"><Info size={17} /><span><strong>{targetLabels[target]} — {scopeLabel}</strong>. {targetDisclaimers[target]}{target === 'azure-firewall' && includeEastWest ? ' East-west traffic between sprint servers is included because the toggle above is on.' : ''} Office and VPN network peers are summarized to their IP prefixes. Protocols are inferred from the Windows service and port catalog and default to TCP.{sprintAddresses.length > 0 ? ` ${sprintAddresses.length} sprint server address${sprintAddresses.length === 1 ? '' : 'es'} resolved.` : ''}</span></div>}
     </section>
 
     {target === '' ? <section className="firewall-empty">

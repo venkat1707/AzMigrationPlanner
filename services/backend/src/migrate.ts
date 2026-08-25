@@ -967,6 +967,14 @@ export async function migrateSchema(): Promise<void> {
     table.text('resource_group_id').nullable().alter()
   })
 
+  if (!(await database.schema.hasColumn('sprint_server_landing_zone_mappings', 'ip_allocation'))) {
+    await database.schema.alterTable('sprint_server_landing_zone_mappings', (table) => {
+      table.string('ip_allocation', 10).notNullable().defaultTo('DYNAMIC')
+      table.string('resiliency', 30).notNullable().defaultTo('')
+      table.string('resiliency_details', 200).notNullable().defaultTo('')
+    })
+  }
+
   if (!(await database.schema.hasTable('landing_zone_platform'))) {
     await database.schema.createTable('landing_zone_platform', (table) => {
       table.integer('id').unsigned().primary()

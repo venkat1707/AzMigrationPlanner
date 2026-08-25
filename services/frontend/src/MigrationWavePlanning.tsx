@@ -187,7 +187,7 @@ const formatAffinityGroups = (groups: string[][] | undefined) => (groups ?? []).
 const taskStatuses: TaskStatus[] = ['Assigned', 'In Review', 'Blocked', 'Completed']
 const treatmentPlanOptions = ['Rehost', 'Replatform', 'Refactor', 'Rearchitect', 'Retire', 'Retain', 'Replace']
 
-export default function MigrationWavePlanning() {
+export default function MigrationWavePlanning({ canDeleteTasks }: { canDeleteTasks: boolean }) {
   const [settings, setSettings] = useState(defaultSettings)
   const [environmentOrder, setEnvironmentOrder] = useState(defaultSettings.environmentOrder.join(', '))
   const [excludedApplications, setExcludedApplications] = useState('')
@@ -295,6 +295,11 @@ export default function MigrationWavePlanning() {
     setSaving(true)
     setError('')
     try {
+      if (resetTasks && !canDeleteTasks) {
+        setError('Delete privilege is required to replace the plan and reset existing tasks.')
+        setSaving(false)
+        return false
+      }
       const response = await apiFetch('/api/migration-wave-plan', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -505,7 +510,8 @@ export default function MigrationWavePlanning() {
     {resetTasksConfirmation && plan && <div className="modal-backdrop" role="presentation"><section className={`wave-change-dialog save-plan-dialog${regeneratedPlan ? ' reset-tasks-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="save-plan-title">
       <header><span>{regeneratedPlan ? <AlertTriangle size={20} /> : <Save size={20} />}</span><div><h2 id="save-plan-title">{regeneratedPlan ? 'Replace the saved plan and all tasks?' : saveMode === 'append' ? 'Add newly eligible workloads?' : 'Save generated migration plan?'}</h2><p>{regeneratedPlan ? 'This change can affect the current wave plan. Existing assignments, statuses, comments, and task history will be deleted. Choose which unassigned tasks to create from the replacement plan.' : saveMode === 'append' ? 'Only servers and applications never considered by an earlier saved plan will be added. Existing waves and tasks remain unchanged.' : 'Choose which unassigned tasks to create with this migration plan.'}</p></div><button type="button" title="Close confirmation" disabled={saving} onClick={closeSaveConfirmation}><X size={18} /></button></header>
       <div className="save-plan-task-options" aria-label="Task creation options"><label><input type="checkbox" checked={createDependencyTasksOnSave} onChange={(event) => setCreateDependencyTasksOnSave(event.target.checked)} /><span><strong>Create cross-dependency tasks</strong><small>{saveMode === 'append' ? 'Create unassigned tasks for dependencies newly introduced by these workloads.' : `Create ${plan.crossSprintDependencies.length} unassigned task${plan.crossSprintDependencies.length === 1 ? '' : 's'}, one for each detected cross-sprint dependency.`}</small></span></label></div>
-      <footer><button className="cancel-button" type="button" disabled={saving} onClick={closeSaveConfirmation}>Cancel</button><button className={regeneratedPlan ? 'discard-confirm-button' : 'confirm-button'} type="button" disabled={saving} onClick={() => void savePlan(plan, regeneratedPlan)}>{saving ? (regeneratedPlan ? 'Replacing plan...' : 'Saving plan...') : regeneratedPlan ? 'Replace plan and apply selection' : 'Save plan and apply selection'}</button></footer>
+      {regeneratedPlan && !canDeleteTasks && <p className="reset-tasks-permission-note"><AlertTriangle size={14} />Delete privilege is required to replace the plan and reset existing tasks and task history.</p>}
+      <footer><button className="cancel-button" type="button" disabled={saving} onClick={closeSaveConfirmation}>Cancel</button><button className={regeneratedPlan ? 'discard-confirm-button' : 'confirm-button'} type="button" disabled={saving || (regeneratedPlan && !canDeleteTasks)} onClick={() => void savePlan(plan, regeneratedPlan)}>{saving ? (regeneratedPlan ? 'Replacing plan...' : 'Saving plan...') : regeneratedPlan ? 'Replace plan and apply selection' : 'Save plan and apply selection'}</button></footer>
     </section></div>}
   </div>
 }

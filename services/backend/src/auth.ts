@@ -678,7 +678,8 @@ export function registerAuthentication(app: Express): void {
     }
     const taskOperatorPath = request.method === 'PUT' && request.path === '/tasks'
       || request.method === 'POST' && ['/tasks/sprint-action', '/tasks/dependency-action'].includes(request.path)
-    const privilege = request.method === 'DELETE' || request.path === '/cleanup'
+    const destructiveResetPath = request.method === 'PUT' && request.path === '/migration-wave-plan' && request.body?.resetTasks === true
+    const privilege = request.method === 'DELETE' || request.path === '/cleanup' || destructiveResetPath
       ? 'canDelete'
       : request.method === 'GET' || request.method === 'HEAD'
         ? 'canRead'

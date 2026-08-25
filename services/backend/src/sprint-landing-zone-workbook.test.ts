@@ -24,6 +24,7 @@ const rows: SprintMappingWorkbookRow[] = [
     serverName: 'app-server-01', sprintSequence: 3, sprintName: 'Sprint 3', wave: 2, environment: 'Production',
     subscriptionId: 'sub-1', subscriptionName: 'Production', resourceGroupId: '/subscriptions/sub-1/resourceGroups/app-rg',
     networkResourceGroup: 'network-rg', virtualNetwork: 'prod-vnet', subnet: 'app-subnet', networkSecurityGroup: 'app-nsg',
+    ipAllocation: 'DYNAMIC', resiliency: '', resiliencyDetails: '',
   },
 ]
 
@@ -49,11 +50,11 @@ test('mapping workbook contains protected identity fields and editable dropdown 
     assert.equal(lists?.state, 'veryHidden')
     assert.equal(mapping.rowCount, 2)
     assert.notEqual(mapping.getCell('A2').protection?.locked, false)
-    for (const address of ['F2', 'G2', 'H2', 'I2', 'J2', 'K2']) {
+    for (const address of ['F2', 'G2', 'H2', 'I2', 'J2', 'K2', 'L2', 'M2']) {
       const cell = mapping.getCell(address)
       assert.equal(cell.protection.locked, false)
       assert.equal(cell.dataValidation.type, 'list')
-      assert.match(String(cell.dataValidation.formulae?.[0]), /^'Lists'!\$[A-F]\$2:/)
+      assert.match(String(cell.dataValidation.formulae?.[0]), /^'Lists'!\$[A-H]\$2:/)
     }
   })
 })
@@ -67,6 +68,7 @@ test('mapping workbook round trip resolves names to stable IDs', async () => {
       serverName: 'app-server-01', subscriptionId: 'sub-1', subscriptionName: 'Production',
       resourceGroupId: '/subscriptions/sub-1/resourceGroups/app-rg', networkResourceGroup: 'network-rg',
       virtualNetwork: 'prod-vnet', subnet: 'app-subnet', networkSecurityGroup: 'app-nsg',
+      ipAllocation: 'DYNAMIC', resiliency: '', resiliencyDetails: '',
     }])
   })
 })

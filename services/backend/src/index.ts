@@ -2114,7 +2114,7 @@ app.get('/api/sprint-landing-zone-mappings', async (_request, response) => {
     loadSavedTaskPlan(),
     database('landing_zone_resource_groups').select({ subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', resourceGroupName: 'resource_group_name' }).orderBy(['subscription_name', 'resource_group_name']),
     database('landing_zone_networks').select({ subscriptionId: 'subscription_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }).orderBy(['network_resource_group', 'virtual_network', 'subnet']),
-    database('sprint_server_landing_zone_mappings').select({ serverName: 'server_name', sprintSequence: 'sprint_sequence', subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group' }),
+    database('sprint_server_landing_zone_mappings').select({ serverName: 'server_name', sprintSequence: 'sprint_sequence', subscriptionId: 'subscription_id', subscriptionName: 'subscription_name', resourceGroupId: 'resource_group_id', networkResourceGroup: 'network_resource_group', virtualNetwork: 'virtual_network', subnet: 'subnet', networkSecurityGroup: 'network_security_group', ipAllocation: 'ip_allocation', resiliency: 'resiliency', resiliencyDetails: 'resiliency_details' }),
   ])
   const mappings = new Map(mappingRows.map((mapping) => [String(mapping.serverName).trim().toLowerCase(), {
     ...mapping,
@@ -2125,6 +2125,9 @@ app.get('/api/sprint-landing-zone-mappings', async (_request, response) => {
     virtualNetwork: mapping.virtualNetwork ?? '',
     subnet: mapping.subnet ?? '',
     networkSecurityGroup: mapping.networkSecurityGroup ?? '',
+    ipAllocation: mapping.ipAllocation || 'DYNAMIC',
+    resiliency: mapping.resiliency ?? '',
+    resiliencyDetails: mapping.resiliencyDetails ?? '',
   }]))
   const sprints = saved?.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
     sequence: sprint.sequence,
@@ -2160,6 +2163,7 @@ app.post('/api/sprint-landing-zone-mappings/export', async (request, response) =
       serverName: String(value.serverName ?? '').trim(), subscriptionId: String(value.subscriptionId ?? '').trim(), subscriptionName: String(value.subscriptionName ?? '').trim(),
       resourceGroupId: String(value.resourceGroupId ?? '').trim(), networkResourceGroup: String(value.networkResourceGroup ?? '').trim(), virtualNetwork: String(value.virtualNetwork ?? '').trim(),
       subnet: String(value.subnet ?? '').trim(), networkSecurityGroup: String(value.networkSecurityGroup ?? '').trim(),
+      ipAllocation: String(value.ipAllocation ?? '').trim(), resiliency: String(value.resiliency ?? '').trim(), resiliencyDetails: String(value.resiliencyDetails ?? '').trim(),
     }
   })
   try {
@@ -2226,6 +2230,9 @@ app.put('/api/sprint-landing-zone-mappings', async (request, response) => {
       virtualNetwork: String(value.virtualNetwork ?? '').trim(),
       subnet: String(value.subnet ?? '').trim(),
       networkSecurityGroup: String(value.networkSecurityGroup ?? '').trim(),
+      ipAllocation: String(value.ipAllocation ?? '').trim(),
+      resiliency: String(value.resiliency ?? '').trim(),
+      resiliencyDetails: String(value.resiliencyDetails ?? '').trim(),
     }
     mappings.push(mapping)
   }
@@ -2794,7 +2801,7 @@ async function loadMigratedServerTargets(plan: TaskPlan): Promise<Array<{ server
   }))
 }
 
-async function buildSprintFirewallRuleSet(scope: 'all' | number, target: FirewallTarget, excludeCoreInfrastructure: boolean): Promise<{ sprints: SprintScopeOption[]; ruleSet: FirewallRuleSet | null; scopeFound: boolean }> {
+async function buildSprintFirewallRuleSet(scope: 'all' | number, target: FirewallTarget, excludeCoreInfrastructure: boolean, includeEastWestTraffic: boolean): Promise<{ sprints: SprintScopeOption[]; ruleSet: FirewallRuleSet | null; scopeFound: boolean }> {
   const saved = await loadSavedTaskPlan()
   if (!saved) return { sprints: [], ruleSet: null, scopeFound: false }
   const sprints: SprintScopeOption[] = saved.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
@@ -2828,7 +2835,7 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
     .map((row) => ({ type: row.type, ipRange: row.ipRange }))
 
   if (serverNames.length === 0) {
-    return { sprints, ruleSet: buildFirewallRuleSet({ scopeLabel, target, sprintServerCount: 0, inbound: [], outbound: [], coreInfrastructureServerNames: [], coreInfrastructureIps: [], assessmentIps: [], networks, sprintMembership: [], portReferences: [], excludeCoreInfrastructure }), scopeFound: true }
+    return { sprints, ruleSet: buildFirewallRuleSet({ scopeLabel, target, sprintServerCount: 0, inbound: [], outbound: [], coreInfrastructureServerNames: [], coreInfrastructureIps: [], assessmentIps: [], networks, sprintMembership: [], portReferences: [], excludeCoreInfrastructure, includeEastWestTraffic }), scopeFound: true }
   }
 
   const [inboundRows, outboundRows, coreServers, loadBalancerIps, assessmentRows, portReferences, landingZoneMappingRows, migratedServers] = await Promise.all([
@@ -2925,6 +2932,7 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
     sprintMembership,
     portReferences,
     excludeCoreInfrastructure,
+    includeEastWestTraffic,
     landingZone,
     migratedServers,
   })
@@ -2933,7 +2941,7 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
 
 // Cross-references already-imported firewall rulesets against the servers in scope for a sprint (or
 // all sprints), mirroring the sprint/scope resolution used by buildSprintFirewallRuleSet above.
-async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: FirewallTarget, excludeCoreInfrastructure: boolean): Promise<{ ruleSet: FirewallRuleSet | null; scopeFound: boolean; rulesetsScanned: number; rulesScanned: number; nonAllowOrDisabledExcluded: number; manualReviewMatches: ManualReviewMatch[] }> {
+async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: FirewallTarget, excludeCoreInfrastructure: boolean, includeEastWestTraffic: boolean): Promise<{ ruleSet: FirewallRuleSet | null; scopeFound: boolean; rulesetsScanned: number; rulesScanned: number; nonAllowOrDisabledExcluded: number; manualReviewMatches: ManualReviewMatch[] }> {
   const saved = await loadSavedTaskPlan()
   if (!saved) return { ruleSet: null, scopeFound: false, rulesetsScanned: 0, rulesScanned: 0, nonAllowOrDisabledExcluded: 0, manualReviewMatches: [] }
   const sprints: SprintScopeOption[] = saved.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
@@ -2955,7 +2963,7 @@ async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: 
 
   if (serverNames.length === 0) {
     const { ruleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches } = buildImportedFirewallRuleSet({
-      scopeLabel, target, assessmentIps: [], coreInfrastructureIps: [], excludeCoreInfrastructure, sprintMembership: [], landingZone: { placements: [], unmapped: [] }, rulesets: [],
+      scopeLabel, target, assessmentIps: [], coreInfrastructureIps: [], excludeCoreInfrastructure, includeEastWestTraffic, sprintMembership: [], landingZone: { placements: [], unmapped: [] }, rulesets: [],
     })
     return { ruleSet, scopeFound: true, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches }
   }
@@ -3011,7 +3019,7 @@ async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: 
   })
 
   const { ruleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches } = buildImportedFirewallRuleSet({
-    scopeLabel, target, assessmentIps, coreInfrastructureIps, excludeCoreInfrastructure, sprintMembership, landingZone, rulesets, migratedServers,
+    scopeLabel, target, assessmentIps, coreInfrastructureIps, excludeCoreInfrastructure, includeEastWestTraffic, sprintMembership, landingZone, rulesets, migratedServers,
   })
   return { ruleSet, scopeFound: true, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches }
 }
@@ -3049,7 +3057,8 @@ app.get('/api/firewall-rules', async (request, response) => {
     return
   }
   const excludeCoreInfrastructure = request.query.excludeCoreInfrastructure === 'true'
-  const { sprints, ruleSet, scopeFound } = await buildSprintFirewallRuleSet(scope, target, excludeCoreInfrastructure)
+  const includeEastWestTraffic = request.query.includeEastWestTraffic === 'true'
+  const { sprints, ruleSet, scopeFound } = await buildSprintFirewallRuleSet(scope, target, excludeCoreInfrastructure, includeEastWestTraffic)
   if (sprints.length === 0) {
     response.status(404).json({ error: 'A saved migration wave plan is required. Generate and save a wave plan first.' })
     return
@@ -3067,7 +3076,7 @@ app.get('/api/firewall-rules', async (request, response) => {
         return projected.map((rule) => ({ ...rule, nsgName: nsgNamesForRule(rule.localServers, serverNsgNames) }))
       })()
     : ruleSet.rules
-  const { ruleSet: importedRuleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure)
+  const { ruleSet: importedRuleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure, includeEastWestTraffic)
   const importedMatches = importedRuleSet ? {
     scopeLabel: importedRuleSet.scopeLabel,
     target,
@@ -3088,6 +3097,7 @@ app.get('/api/firewall-rules', async (request, response) => {
     scope: scope === 'all' ? 'all' : scope,
     target,
     excludeCoreInfrastructure,
+    includeEastWestTraffic,
     sprints,
     scopeLabel: ruleSet.scopeLabel,
     summary: ruleSet.summary,
@@ -3120,7 +3130,8 @@ app.get('/api/firewall-rules/export', async (request, response) => {
     return
   }
   const excludeCoreInfrastructure = request.query.excludeCoreInfrastructure === 'true'
-  const { sprints, ruleSet, scopeFound } = await buildSprintFirewallRuleSet(scope, target, excludeCoreInfrastructure)
+  const includeEastWestTraffic = request.query.includeEastWestTraffic === 'true'
+  const { sprints, ruleSet, scopeFound } = await buildSprintFirewallRuleSet(scope, target, excludeCoreInfrastructure, includeEastWestTraffic)
   if (sprints.length === 0) {
     response.status(404).json({ error: 'A saved migration wave plan is required. Generate and save a wave plan first.' })
     return
@@ -3165,7 +3176,8 @@ app.get('/api/firewall-rules/imported-matches/export', async (request, response)
     return
   }
   const excludeCoreInfrastructure = request.query.excludeCoreInfrastructure === 'true'
-  const { ruleSet, scopeFound } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure)
+  const includeEastWestTraffic = request.query.includeEastWestTraffic === 'true'
+  const { ruleSet, scopeFound } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure, includeEastWestTraffic)
   if (!scopeFound) {
     response.status(404).json({ error: 'A saved migration wave plan is required, and the sprint sequence must exist in it.' })
     return
@@ -3210,7 +3222,8 @@ app.get('/api/firewall-rules/imported-matches/manual-review/export', async (requ
     return
   }
   const excludeCoreInfrastructure = request.query.excludeCoreInfrastructure === 'true'
-  const { ruleSet, scopeFound, manualReviewMatches } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure)
+  const includeEastWestTraffic = request.query.includeEastWestTraffic === 'true'
+  const { ruleSet, scopeFound, manualReviewMatches } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure, includeEastWestTraffic)
   if (!scopeFound) {
     response.status(404).json({ error: 'A saved migration wave plan is required, and the sprint sequence must exist in it.' })
     return
