@@ -1,5 +1,5 @@
 import ipaddr from 'ipaddr.js'
-import { landingZoneSubnetKeyByServer, type FirewallRule, type FirewallRuleSet, type FirewallTarget, type LandingZoneContext, type NsgProtocol } from './firewall-rules.js'
+import { landingZoneSubnetCidrByServer, landingZoneSubnetKeyByServer, type FirewallRule, type FirewallRuleSet, type FirewallTarget, type LandingZoneContext, type NsgProtocol } from './firewall-rules.js'
 
 // Cross-references already-imported/parsed firewall rulesets (Firewall Rules Import (Preview)) against
 // the servers assigned to a sprint (or all sprints) in the saved migration wave plan, so a user reviewing
@@ -62,6 +62,29 @@ export type ImportedFirewallMatchInput = {
   sprintMembership: Array<{ serverName: string; sprintSequence: number }>
   landingZone: LandingZoneContext
   rulesets: ImportedFirewallRulesetInput[]
+  // Servers whose own sprint has already completed migration (status "Closed"), together with the
+  // Azure subnet CIDR they were placed in. When an imported rule's remote side literally names one of
+  // these servers' old on-prem IPs OR their own recorded hostname/FQDN, that literal is replaced with
+  // its target address so the match still reflects where the peer actually lives today instead of a
+  // pre-migration address that no longer applies.
+  migratedServers?: Array<{ serverName: string; onPremIp: string | null; targetAddress: string; targetLabel: string }>
+}
+
+// A rule whose remote side names a broader CIDR range (not an exact host) that happens to contain a
+// since-migrated server's old on-prem IP. The range is left unsubstituted in the main rule set (see
+// findBroaderCidrMigratedMatches above), so these are surfaced separately for a human to decide whether
+// the rule should be narrowed, split, or left as-is.
+export type ManualReviewMatch = {
+  rulesetId: number
+  ruleId: number
+  ruleExternalId: string
+  ruleName: string | null
+  direction: 'Inbound' | 'Outbound'
+  cidr: string
+  migratedServerName: string | null
+  migratedServerOnPremIp: string | null
+  migratedServerTargetAddress: string | null
+  migratedServerTargetLabel: string | null
 }
 
 export type ImportedFirewallRuleSetResult = {
@@ -72,6 +95,7 @@ export type ImportedFirewallRuleSetResult = {
   // representable as a rule to recreate in Azure and are excluded from the rule set (but counted here
   // for transparency) rather than silently rendered as if they were allow rules.
   nonAllowOrDisabledExcluded: number
+  manualReviewMatches: ManualReviewMatch[]
 }
 
 const MAX_RULES = 6000
@@ -103,8 +127,10 @@ function resolveAddresses(raw: string[], addressObjects: Map<string, ImportedFir
 }
 
 // Parses a resolved address value as either CIDR notation or a plain IP (implicit /32 or /128).
-// Values that are neither (FQDNs, wildcard masks, unresolved group members) cannot be matched by IP
-// and are simply ignored, the same way unresolved peers are excluded from the dependency-based rules.
+// FQDNs/hostnames are matched separately by name (see matchServersByHostname below); anything that is
+// neither an IP/CIDR nor a known server name (wildcard masks, unresolved group members, external FQDNs)
+// simply cannot be matched and is ignored, the same way unresolved peers are excluded from the
+// dependency-based rules.
 function parseNetwork(value: string): ParsedNetwork[] {
   const trimmed = value.trim()
   if (!trimmed) return []
@@ -140,6 +166,29 @@ function matchServersAgainstNetworks(networks: ParsedNetwork[], candidates: Arra
   return matched
 }
 
+// Normalizes a hostname/FQDN literal for name-based comparison: trimmed, lowercased, and with a single
+// trailing root dot (a valid but rarely-used FQDN terminator, e.g. "web01.corp.local.") stripped so it
+// still compares equal to the same name without one.
+function normalizeHostname(value: string): string | null {
+  const trimmed = value.trim().toLowerCase().replace(/\.$/, '')
+  return trimmed || null
+}
+
+// Some firewall vendors (e.g. PAN-OS "fqdn"-type address objects) reference a server by hostname/DNS
+// name instead of by IP. Import records only ever store a server's own recorded name (which itself may
+// already be a hostname or FQDN, since Server Assessment imports accept either), so a literal address
+// entry is considered a match when it is exactly equal (case-insensitive) to a known server's name.
+function matchServersByHostname(addresses: string[], hostnameToServer: Map<string, string>): string[] {
+  if (hostnameToServer.size === 0) return []
+  const matched: string[] = []
+  for (const raw of addresses) {
+    const key = normalizeHostname(raw)
+    const server = key ? hostnameToServer.get(key) : undefined
+    if (server) matched.push(server)
+  }
+  return matched
+}
+
 function anyIpMatchesNetworks(ips: string[], networks: ParsedNetwork[]): boolean {
   if (networks.length === 0) return false
   return ips.some((ip) => {
@@ -147,6 +196,47 @@ function anyIpMatchesNetworks(ips: string[], networks: ParsedNetwork[]): boolean
     const address = ipaddr.process(ip)
     return networks.some((network) => addressMatchesNetwork(address, network))
   })
+}
+
+// Normalizes a literal to a canonical single-host key (e.g. "10.0.0.1" and "010.0.0.1" both -> "10.0.0.1"),
+// for exact host literals only — a bare IP, or an explicit /32 (IPv4) / /128 (IPv6) CIDR, both of which
+// name precisely one address. A broader CIDR range is never collapsed to a single migrated server's
+// address, since doing so would silently drop every *other* address that range legitimately covers.
+function parseHostLiteral(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (ipaddr.isValid(trimmed)) return ipaddr.process(trimmed).toString()
+  try {
+    const [address, prefix] = ipaddr.parseCIDR(trimmed)
+    const isSingleHost = address.kind() === 'ipv4' ? prefix === 32 : prefix === 128
+    return isSingleHost ? address.toString() : null
+  } catch {
+    return null
+  }
+}
+
+// A migrated server whose on-prem IP falls inside a broader CIDR range (not an exact host literal) named
+// by an imported rule cannot be safely auto-substituted (see parseHostLiteral above) — but the user still
+// needs to know that range now partly covers a since-migrated server, so it's surfaced for manual review
+// instead of being silently left as-is.
+function findBroaderCidrMigratedMatches(
+  addresses: string[],
+  migratedServersWithIp: Array<{ serverName: string; onPremIp: string; targetAddress: string; targetLabel: string; address: ipaddr.IPv4 | ipaddr.IPv6 }>,
+): Array<{ cidr: string; server: (typeof migratedServersWithIp)[number] }> {
+  if (migratedServersWithIp.length === 0) return []
+  const matches: Array<{ cidr: string; server: (typeof migratedServersWithIp)[number] }> = []
+  for (const raw of addresses) {
+    const trimmed = raw.trim()
+    if (!trimmed || parseHostLiteral(trimmed)) continue
+    for (const network of parseNetwork(trimmed)) {
+      for (const server of migratedServersWithIp) {
+        if (server.address.kind() === network.address.kind() && addressMatchesNetwork(server.address, network)) {
+          matches.push({ cidr: trimmed, server })
+        }
+      }
+    }
+  }
+  return matches
 }
 
 function toNsgProtocol(raw: string | null | undefined): NsgProtocol {
@@ -212,6 +302,9 @@ type MatchSide = {
   // 'destination' = traffic really arrives at the sprint server(s); 'source' = it really originates from them.
   real: 'destination' | 'source'
   localServers: string[]
+  // The raw (resolved) address list on the sprint server's own side of the rule, before narrowing down
+  // to just the matched server(s)' own address(es) — used to detect leftover/unnecessary entries.
+  localRawAddresses: string[]
   remoteMatchedServers: string[]
   remoteAddresses: string[]
   remoteZones: string[]
@@ -220,13 +313,35 @@ type MatchSide = {
 export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput): ImportedFirewallRuleSetResult {
   const target = input.target
   const sprintIps = input.assessmentIps.filter(({ ip }) => ip)
-  const assessmentIpByServer = new Map(sprintIps.map(({ serverName, ip }) => [serverName, ip]))
   const coreIps = input.coreInfrastructureIps.filter(Boolean)
   const sprintOf = new Map(input.sprintMembership.map(({ serverName, sprintSequence }) => [serverName.trim().toLowerCase(), sprintSequence]))
   const subnetKeyOf = landingZoneSubnetKeyByServer(input.landingZone)
+  const subnetCidrOf = landingZoneSubnetCidrByServer(input.landingZone)
+  const migratedTargetByIp = new Map((input.migratedServers ?? [])
+    .filter((entry): entry is typeof entry & { onPremIp: string } => Boolean(entry.onPremIp) && ipaddr.isValid(entry.onPremIp ?? ''))
+    .map((entry) => [ipaddr.process(entry.onPremIp).toString(), entry]))
+  // A migrated server's own recorded name (which may itself already be a hostname/FQDN) is matched as a
+  // literal exactly like its old on-prem IP is above — no IP is required for a name-based match.
+  const migratedTargetByName = new Map((input.migratedServers ?? [])
+    .flatMap((entry) => {
+      const key = normalizeHostname(entry.serverName)
+      return key ? [[key, entry] as const] : []
+    }))
+  const migratedServersWithIp = (input.migratedServers ?? [])
+    .filter((entry): entry is typeof entry & { onPremIp: string } => Boolean(entry.onPremIp) && ipaddr.isValid(entry.onPremIp ?? ''))
+    .map((entry) => ({ ...entry, address: ipaddr.process(entry.onPremIp) }))
+  // Known sprint-server names/hostnames a literal address entry can be compared against, sourced from
+  // both the full scope membership list and the (IP-bearing) assessment rows, so a server is matchable
+  // by name whether or not it has a resolvable on-prem IP.
+  const hostnameToServer = new Map<string, string>()
+  for (const { serverName } of [...input.sprintMembership, ...sprintIps]) {
+    const key = normalizeHostname(serverName)
+    if (key && !hostnameToServer.has(key)) hostnameToServer.set(key, serverName)
+  }
 
   const rules = new Map<string, FirewallRule>()
   const sprintAddresses = new Set<string>()
+  const manualReviewMatches: ManualReviewMatch[] = []
   let coreInfrastructureExcluded = 0
   let sameSprintExcluded = 0
   let sameSubnetExcluded = 0
@@ -245,8 +360,14 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
       const sourceNetworks = resolvedSourceAddresses.flatMap(parseNetwork)
       const destinationNetworks = resolvedDestinationAddresses.flatMap(parseNetwork)
 
-      const sourceMatchedServers = matchServersAgainstNetworks(sourceNetworks, sprintIps)
-      const destinationMatchedServers = matchServersAgainstNetworks(destinationNetworks, sprintIps)
+      const sourceMatchedServers = [...new Set([
+        ...matchServersAgainstNetworks(sourceNetworks, sprintIps),
+        ...matchServersByHostname(resolvedSourceAddresses, hostnameToServer),
+      ])]
+      const destinationMatchedServers = [...new Set([
+        ...matchServersAgainstNetworks(destinationNetworks, sprintIps),
+        ...matchServersByHostname(resolvedDestinationAddresses, hostnameToServer),
+      ])]
       if (sourceMatchedServers.length === 0 && destinationMatchedServers.length === 0) continue
 
       if (!rule.enabled || !isAllowAction(rule.action)) {
@@ -261,6 +382,7 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
         sides.push({
           real: 'destination',
           localServers: destinationMatchedServers,
+          localRawAddresses: resolvedDestinationAddresses,
           remoteMatchedServers: sourceMatchedServers,
           remoteAddresses: resolvedSourceAddresses,
           remoteZones: rule.sourceZones,
@@ -270,6 +392,7 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
         sides.push({
           real: 'source',
           localServers: sourceMatchedServers,
+          localRawAddresses: resolvedSourceAddresses,
           remoteMatchedServers: destinationMatchedServers,
           remoteAddresses: resolvedDestinationAddresses,
           remoteZones: rule.destinationZones,
@@ -277,10 +400,38 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
       }
 
       for (const side of sides) {
-        const localAddresses = side.localServers
-          .map((server) => assessmentIpByServer.get(server))
-          .filter((value): value is string => Boolean(value))
+        // The sprint server's own side is represented by its post-migration Azure subnet CIDR (from
+        // the Landing Zone Network mapping) rather than its pre-migration on-prem IP; a server with no
+        // landing zone subnet mapping yet is left unresolved rather than falling back to a stale IP.
+        const localAddresses = [...new Set(side.localServers
+          .map((server) => subnetCidrOf.get(server.trim().toLowerCase()))
+          .filter((value): value is string => Boolean(value)))]
+        const localUnresolved = side.localServers.some((server) => !subnetCidrOf.get(server.trim().toLowerCase()))
         for (const address of localAddresses) sprintAddresses.add(address)
+
+        // Direction label: on-prem mirrors the perspective flip used for the dependency-based rules,
+        // so the "Inbound"/"Outbound" badge means the same thing across both tables on the page.
+        const direction: 'Inbound' | 'Outbound' = target === 'on-prem'
+          ? (side.real === 'destination' ? 'Outbound' : 'Inbound')
+          : (side.real === 'destination' ? 'Inbound' : 'Outbound')
+
+        // Surfaced regardless of any exclusion below: even a rule the page won't render still names a
+        // stale broader range, and the user needs to know about it either way.
+        const broaderCidrMatches = findBroaderCidrMigratedMatches(side.remoteAddresses, migratedServersWithIp)
+        for (const match of broaderCidrMatches) {
+          manualReviewMatches.push({
+            rulesetId: ruleset.rulesetId,
+            ruleId: rule.id,
+            ruleExternalId: rule.externalId,
+            ruleName: rule.name,
+            direction,
+            cidr: match.cidr,
+            migratedServerName: match.server.serverName,
+            migratedServerOnPremIp: match.server.onPremIp,
+            migratedServerTargetAddress: match.server.targetAddress,
+            migratedServerTargetLabel: match.server.targetLabel,
+          })
+        }
 
         const remoteNetworks = side.remoteAddresses.flatMap(parseNetwork)
         const touchesCore = anyIpMatchesNetworks(coreIps, remoteNetworks)
@@ -309,18 +460,41 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
           }
         }
 
-        // Direction label: on-prem mirrors the perspective flip used for the dependency-based rules,
-        // so the "Inbound"/"Outbound" badge means the same thing across both tables on the page.
-        const direction: 'Inbound' | 'Outbound' = target === 'on-prem'
-          ? (side.real === 'destination' ? 'Outbound' : 'Inbound')
-          : (side.real === 'destination' ? 'Inbound' : 'Outbound')
+        // Looks up a migrated-server substitution for a raw remote literal by exact on-prem IP first,
+        // falling back to an exact hostname/FQDN match against the server's own recorded name.
+        const findMigratedMatch = (value: string) => {
+          const hostKey = parseHostLiteral(value)
+          const byIp = hostKey ? migratedTargetByIp.get(hostKey) : undefined
+          if (byIp) return byIp
+          const nameKey = normalizeHostname(value)
+          return nameKey ? migratedTargetByName.get(nameKey) : undefined
+        }
 
-        const remoteAddressList = [...new Set(side.remoteAddresses.map((value) => value.trim()).filter(Boolean))]
+        const remoteAddressList = [...new Set([
+          ...side.remoteAddresses.map((value) => {
+            const trimmed = value.trim()
+            if (!trimmed) return ''
+            const migrated = findMigratedMatch(trimmed)
+            // The literal names a since-migrated server's old on-prem IP or hostname exactly: point at its Azure target instead.
+            return migrated ? migrated.targetAddress : trimmed
+          }).filter(Boolean),
+          // A broader range is kept as-is (see findBroaderCidrMigratedMatches above), but the migrated
+          // server it now contains is also added as its own entry so the rule still actually reaches it
+          // at its current Azure address, without narrowing or dropping the original range.
+          ...broaderCidrMatches.map((match) => match.server.targetAddress),
+        ])]
+        const migratedRemoteLabels = [...new Set(side.remoteAddresses.flatMap((value) => {
+          const migrated = findMigratedMatch(value)
+          return migrated ? [migrated.targetLabel] : []
+        }))]
         const remoteResolved = remoteAddressList.length > 0
         const remoteName = side.remoteMatchedServers.length > 0
           ? [...new Set(side.remoteMatchedServers)].sort().join(', ')
+          : migratedRemoteLabels.length > 0 ? migratedRemoteLabels.join(', ')
           : side.remoteZones.length > 0 ? side.remoteZones.join(', ') : (remoteResolved ? remoteAddressList.join(', ') : null)
-        const peerKind: FirewallRule['peerKind'] = side.remoteMatchedServers.length > 0 ? 'server' : 'host'
+        const peerKind: FirewallRule['peerKind'] = side.remoteMatchedServers.length > 0
+          ? 'server'
+          : migratedRemoteLabels.length > 0 ? 'network' : 'host'
 
         const serviceEntries = resolvedServices.length > 0 ? resolvedServices : [{ protocol: '*' as NsgProtocol, port: null, label: 'Any' }]
         const baseName = rule.name ?? rule.externalId
@@ -348,6 +522,7 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
               coreInfrastructure: touchesCore,
               resolved: remoteResolved,
               peerKind,
+              localUnresolved,
               name: serviceEntries.length > 1 ? `${baseName} (${service.label})` : baseName,
             }
             rules.set(key, existing)
@@ -356,6 +531,7 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
           for (const address of localAddresses) if (!existing.localAddresses.includes(address)) existing.localAddresses.push(address)
           existing.connections = existing.localServers.length
           existing.coreInfrastructure = existing.coreInfrastructure || touchesCore
+          existing.localUnresolved = existing.localUnresolved || localUnresolved
         }
       }
     }
@@ -387,10 +563,44 @@ export function buildImportedFirewallRuleSet(input: ImportedFirewallMatchInput):
       sameSubnetExcluded,
       networkSummarized: 0,
       unresolved: ordered.filter((rule) => !rule.resolved).length,
+      localSubnetUnresolved: ordered.filter((rule) => rule.localUnresolved).length,
       sprintServers: sprintIps.length,
     },
     truncated,
   }
 
-  return { ruleSet, rulesetsScanned: input.rulesets.length, rulesScanned, nonAllowOrDisabledExcluded }
+  const dedupedManualReviewMatches = [...new Map(manualReviewMatches
+    .map((match) => [`${match.rulesetId}:${match.ruleId}:${match.direction}:${match.cidr}:${match.migratedServerName ?? ''}`, match]))
+    .values()]
+    .sort((left, right) => left.ruleExternalId.localeCompare(right.ruleExternalId) || (left.migratedServerName ?? '').localeCompare(right.migratedServerName ?? ''))
+
+  return { ruleSet, rulesetsScanned: input.rulesets.length, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches: dedupedManualReviewMatches }
 }
+
+// A FirewallRule produced above always keys its id as `${rulesetId}:${ruleId}:${direction}:...`, so a
+// ManualReviewMatch (recorded per rulesetId/ruleId/direction, before the per-service fan-out) identifies
+// every FirewallRule it applies to by this common prefix.
+function manualReviewRuleKey(rulesetId: number, ruleId: number, direction: 'Inbound' | 'Outbound'): string {
+  return `${rulesetId}:${ruleId}:${direction}`
+}
+
+// Restricts a rule set down to only the rules a ManualReviewMatch was recorded against, for the
+// "Needs manual review" table's own Terraform/Bicep/Excel export, so a reviewer can act on just that
+// subset instead of the full generated or imported rule set.
+export function restrictRuleSetToManualReview(ruleSet: FirewallRuleSet, manualReviewMatches: ManualReviewMatch[]): FirewallRuleSet {
+  const keys = new Set(manualReviewMatches.map((match) => manualReviewRuleKey(match.rulesetId, match.ruleId, match.direction)))
+  const rules = ruleSet.rules.filter((rule) => keys.has(rule.id.split(':').slice(0, 3).join(':')))
+  const inbound = rules.filter((rule) => rule.direction === 'Inbound').length
+  return {
+    ...ruleSet,
+    rules,
+    summary: {
+      ...ruleSet.summary,
+      total: rules.length,
+      inbound,
+      outbound: rules.length - inbound,
+      unresolved: rules.filter((rule) => !rule.resolved).length,
+    },
+  }
+}
+

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react'
-import { Activity, AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Scale, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
+import { Activity, AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ChevronUp, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Scale, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
@@ -193,6 +193,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
   const [inspectingSheets, setInspectingSheets] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [databaseStatus, setDatabaseStatus] = useState<'checking' | 'online' | 'offline'>('checking')
+  const [overviewSectionsCollapsed, setOverviewSectionsCollapsed] = useState(false)
   const uploadAbortController = useRef<AbortController | null>(null)
   const cancellationRequested = useRef(false)
 
@@ -496,7 +497,8 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
 
         {activePage === 'overview' && <div className="page overview-page">
           {error && <div className="error-message"><span>{error}</span><button type="button" onClick={retryConnection}><RefreshCw size={14} /> Retry</button></div>}
-          <section className="summary" aria-label="Estate summary">
+          <div className="overview-collapse-all-row"><button type="button" className="overview-collapse-all" onClick={() => setOverviewSectionsCollapsed((value) => !value)}>{overviewSectionsCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}{overviewSectionsCollapsed ? 'Expand all sections' : 'Collapse all sections'}</button></div>
+          {!overviewSectionsCollapsed && <section className="summary" aria-label="Estate summary">
             <article><span className="metric-icon"><AppWindow /></span><div><span>Applications catalogued</span><strong>{overviewStats ? formatNumber.format(overviewStats.applicationsCatalogued) : '-'}</strong><small>{overviewStats ? `${formatNumber.format(overviewStats.applicationsWithTreatment)} with a treatment set` : 'Application catalog'}</small></div></article>
             <article><span className="metric-icon"><Server /></span><div><span>Servers assessed</span><strong>{overviewStats ? formatNumber.format(overviewStats.serversAssessed) : '-'}</strong><small>Server Assessment imports</small></div></article>
             <article><span className="metric-icon"><ScanSearch /></span><div><span>Environments identified</span><strong>{overviewStats ? formatNumber.format(overviewStats.environmentsIdentified) : '-'}</strong><small>Classified via identification rules</small></div></article>
@@ -505,8 +507,8 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
             <article><span className="metric-icon"><Cloud /></span><div><span>Landing zone resource groups</span><strong>{overviewStats ? formatNumber.format(overviewStats.landingZoneResourceGroups) : '-'}</strong><small>Target subscriptions mapped</small></div></article>
             <article><span className="metric-icon"><ShieldCheck /></span><div><span>Firewall rulesets parsed</span><strong>{overviewStats ? formatNumber.format(overviewStats.firewallRulesetsParsed) : '-'}</strong><small>Ready for rule generation</small></div></article>
             <article><span className="metric-icon"><CalendarRange /></span><div><span>Sprints planned</span><strong>{overviewStats ? formatNumber.format(overviewStats.sprintsPlanned) : '-'}</strong><small>{overviewStats ? `${formatNumber.format(overviewStats.tasksCompleted)}/${formatNumber.format(overviewStats.tasksTotal)} tasks complete` : 'Migration wave plan'}</small></div></article>
-          </section>
-          <section className="overview-grid">
+          </section>}
+          {!overviewSectionsCollapsed && <section className="overview-grid">
             <div className="action-panel"><div className="section-heading"><div><p className="eyebrow">Migration journey</p><h2>Where this workspace fits, end to end</h2><small className="overview-intro">This app doesn't perform discovery &mdash; it imports data already discovered by your own tools, drives landing zone and wave planning, and generates artefacts that feed migration. Discovery, testing, and hand over happen outside this app.</small></div></div>
             <ol className="journey-timeline">
               <li className="outside"><span className="journey-timeline-icon"><ScanSearch size={16} /></span><strong>Discovery</strong><small>Imports only</small></li>
@@ -545,7 +547,7 @@ export default function Dashboard({ auth, onLogout, onAuthChanged }: { auth: { s
               </div></section>
             </div></div>
             <div className="activity-panel"><div className="section-heading"><div><p className="eyebrow">Import activity</p><h2>Latest files</h2></div><a href="#imports">View all</a></div><ImportHistory items={imports.slice(0, 5)} /></div>
-          </section>
+          </section>}
         </div>}
 
         {activePage === 'topology' && <ServerTopology refreshKey={refreshKey} />}

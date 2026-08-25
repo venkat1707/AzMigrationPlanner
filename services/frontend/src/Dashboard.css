@@ -41,6 +41,9 @@ button { letter-spacing: 0; }
 .summary article small { margin-top: 7px; color: #65747a; font-size: 11px; }
 .overview-grid { margin-top: 18px; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, .55fr); gap: 18px; align-items: start; }
 .action-panel, .activity-panel, .workspace, .import-workspace, .import-history { background: var(--surface); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
+.overview-collapse-all-row { margin-bottom: 14px; display: flex; justify-content: flex-end; }
+.overview-collapse-all { height: 34px; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; color: var(--accent); background: var(--accent-soft); border: 1px solid #c7dcfb; border-radius: 4px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.overview-collapse-all:hover { background: #dde9fc; }
 .treatment-page, .coverage-page { display: grid; gap: 16px; }
 .application-catalog-page { max-width: 1180px; margin: 0 auto; display: grid; gap: 16px; }
 .application-catalog-editor, .application-catalog-table { overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
@@ -1474,7 +1477,7 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .firewall-preview-notice strong, .firewall-preview-notice small { display: block; }
 .firewall-preview-notice strong { font-size: 12px; }
 .firewall-preview-notice small { margin-top: 2px; font-size: 11px; line-height: 1.45; }
-.firewall-controls, .firewall-downloads, .firewall-table-section { min-width: 0; padding: 22px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
+.firewall-controls, .firewall-downloads, .firewall-table-section, .firewall-summary-section { min-width: 0; padding: 22px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
 .firewall-filters { display: grid; grid-template-columns: minmax(240px, 420px) 1fr; align-items: end; gap: 16px; }
 .firewall-filters label { display: grid; gap: 6px; color: #415169; font-size: 11px; font-weight: 700; }
 .firewall-filters select { height: 38px; padding: 0 10px; color: var(--ink); background: white; border: 1px solid #c4cfdf; border-radius: 4px; font: inherit; font-size: 12px; }
@@ -1487,6 +1490,8 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .firewall-message.error { color: #8f2d20; background: #fff0ed; border: 1px solid #f2c7c1; }
 .firewall-message.warning { color: #6b4f17; background: #fff9e8; border: 1px solid #ead9a4; }
 .firewall-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.firewall-collapse-all { height: 34px; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; color: var(--accent); background: var(--accent-soft); border: 1px solid #c7dcfb; border-radius: 4px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.firewall-collapse-all:hover { background: #dde9fc; }
 .firewall-stat { padding: 15px; display: grid; gap: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow); }
 .firewall-stat span { color: var(--muted); font-size: 11px; font-weight: 600; }
 .firewall-stat strong { font-size: 22px; }
@@ -1510,6 +1515,9 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .firewall-direction.outbound { color: #1d4ed8; background: #e6efff; }
 .firewall-core-badge { display: inline-flex; padding: 2px 8px; color: #92400e; background: #fef3c7; border-radius: 999px; font-size: 10px; font-weight: 800; }
 .firewall-warn { color: #b45309; font-size: 11px; font-weight: 700; }
+.firewall-flagged-cidr { padding: 1px 5px; color: #92400e; background: #fef3c7; border: 1px solid #fbd7a1; border-radius: 4px; font-family: var(--mono); font-weight: 600; }
+.firewall-added-address { padding: 1px 5px; color: #166534; background: #e4f5ea; border: 1px solid #b7e4c7; border-radius: 4px; font-family: var(--mono); font-weight: 600; }
+.firewall-disclaimer mark.firewall-flagged-cidr, .firewall-disclaimer mark.firewall-added-address { font-family: inherit; font-weight: 700; }
 .firewall-table-note { padding: 10px 14px; color: var(--muted); font-size: 11px; }
 .firewall-empty, .firewall-loading { min-height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #7b899d; text-align: center; gap: 8px; }
 .firewall-empty svg { color: var(--accent); }

@@ -29,7 +29,7 @@ import {
   FirewallRulesetError, getFirewallRulesetDetail, listFirewallRulesetRulesPaged, listFirewallRulesets, listFirewallRulesetsBatch,
   loadLatestCompletedFirewallRulesetsForMatching, startFirewallRulesetParse,
 } from './firewall-ruleset.js'
-import { buildImportedFirewallRuleSet } from './firewall-rule-matching.js'
+import { buildImportedFirewallRuleSet, restrictRuleSetToManualReview, type ManualReviewMatch } from './firewall-rule-matching.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
@@ -2753,6 +2753,47 @@ function parseIpList(value: string | null | undefined): string[] {
   return String(value).split(/[\s,;]+/).map((item) => item.trim()).filter((item) => item.length > 0 && isIP(item) !== 0)
 }
 
+// Servers whose own sprint has already completed migration ("Closed"), together with the Azure subnet
+// they were placed in. Passed into both rule generators so a peer belonging to an earlier, already-
+// migrated sprint gets pointed at where it now actually lives, instead of its stale pre-migration
+// on-prem address (from dependency records or an imported firewall ruleset).
+async function loadMigratedServerTargets(plan: TaskPlan): Promise<Array<{ serverName: string; onPremIp: string | null; targetAddress: string; targetLabel: string }>> {
+  const migratedServerNames = [...new Set(plan.waves
+    .flatMap((wave) => wave.sprints)
+    .filter((sprint) => sprint.status === 'Closed')
+    .flatMap((sprint) => sprint.servers.map((server) => server.name.trim()))
+    .filter((name) => name.length > 0))]
+  if (migratedServerNames.length === 0) return []
+
+  const [mappingRows, assessmentRows] = await Promise.all([
+    database('sprint_server_landing_zone_mappings as m')
+      .whereIn('m.server_name', migratedServerNames)
+      .join('landing_zone_networks as net', function joinNetwork() {
+        this.on('net.subscription_id', '=', 'm.subscription_id')
+          .andOn('net.network_resource_group', '=', 'm.network_resource_group')
+          .andOn('net.virtual_network', '=', 'm.virtual_network')
+          .andOn('net.subnet', '=', 'm.subnet')
+      })
+      .whereNotNull('net.subnet_ip_segment')
+      .select({ serverName: 'm.server_name', subnet: 'm.subnet', targetAddress: 'net.subnet_ip_segment' }) as Promise<Array<{ serverName: string; subnet: string; targetAddress: string }>>,
+    database('server_assessments')
+      .whereIn('server_name', migratedServerNames)
+      .whereNotNull('ip_address')
+      .select({ serverName: 'server_name', ipAddress: 'ip_address' }) as Promise<Array<{ serverName: string; ipAddress: string | null }>>,
+  ])
+
+  const onPremIpByServer = new Map(assessmentRows.flatMap((row) => {
+    const ip = parseIpList(row.ipAddress)[0]
+    return ip ? [[row.serverName, ip] as const] : []
+  }))
+  return mappingRows.map((row) => ({
+    serverName: row.serverName,
+    onPremIp: onPremIpByServer.get(row.serverName) ?? null,
+    targetAddress: row.targetAddress,
+    targetLabel: `${row.subnet} (migrated)`,
+  }))
+}
+
 async function buildSprintFirewallRuleSet(scope: 'all' | number, target: FirewallTarget, excludeCoreInfrastructure: boolean): Promise<{ sprints: SprintScopeOption[]; ruleSet: FirewallRuleSet | null; scopeFound: boolean }> {
   const saved = await loadSavedTaskPlan()
   if (!saved) return { sprints: [], ruleSet: null, scopeFound: false }
@@ -2790,7 +2831,7 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
     return { sprints, ruleSet: buildFirewallRuleSet({ scopeLabel, target, sprintServerCount: 0, inbound: [], outbound: [], coreInfrastructureServerNames: [], coreInfrastructureIps: [], assessmentIps: [], networks, sprintMembership: [], portReferences: [], excludeCoreInfrastructure }), scopeFound: true }
   }
 
-  const [inboundRows, outboundRows, coreServers, loadBalancerIps, assessmentRows, portReferences, landingZoneMappingRows] = await Promise.all([
+  const [inboundRows, outboundRows, coreServers, loadBalancerIps, assessmentRows, portReferences, landingZoneMappingRows, migratedServers] = await Promise.all([
     // Column order matches idx_dependencies_inbound_topology so MySQL groups via the index (no temporary table).
     database('dependency_records')
       .whereIn('destination_server_name', serverNames)
@@ -2825,8 +2866,8 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
         resourceGroupName: 'rg.resource_group_name', location: 'rg.location', virtualNetwork: 'm.virtual_network', subnet: 'm.subnet',
         subnetIpSegment: 'net.subnet_ip_segment', networkSecurityGroup: 'm.network_security_group',
       }) as Promise<Array<{ serverName: string; subscriptionId: string | null; subscriptionName: string | null; resourceGroupName: string | null; location: string | null; virtualNetwork: string | null; subnet: string | null; subnetIpSegment: string | null; networkSecurityGroup: string | null }>>,
+    loadMigratedServerTargets(saved.plan),
   ])
-
   const landingZonePlacementsByKey = new Map<string, LandingZonePlacement>()
   for (const row of landingZoneMappingRows) {
     const key = [row.subscriptionId, row.resourceGroupName, row.virtualNetwork, row.subnet, row.networkSecurityGroup].map((value) => (value ?? '').toLowerCase()).join('|')
@@ -2885,21 +2926,22 @@ async function buildSprintFirewallRuleSet(scope: 'all' | number, target: Firewal
     portReferences,
     excludeCoreInfrastructure,
     landingZone,
+    migratedServers,
   })
   return { sprints, ruleSet, scopeFound: true }
 }
 
 // Cross-references already-imported firewall rulesets against the servers in scope for a sprint (or
 // all sprints), mirroring the sprint/scope resolution used by buildSprintFirewallRuleSet above.
-async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: FirewallTarget, excludeCoreInfrastructure: boolean): Promise<{ ruleSet: FirewallRuleSet | null; scopeFound: boolean; rulesetsScanned: number; rulesScanned: number; nonAllowOrDisabledExcluded: number }> {
+async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: FirewallTarget, excludeCoreInfrastructure: boolean): Promise<{ ruleSet: FirewallRuleSet | null; scopeFound: boolean; rulesetsScanned: number; rulesScanned: number; nonAllowOrDisabledExcluded: number; manualReviewMatches: ManualReviewMatch[] }> {
   const saved = await loadSavedTaskPlan()
-  if (!saved) return { ruleSet: null, scopeFound: false, rulesetsScanned: 0, rulesScanned: 0, nonAllowOrDisabledExcluded: 0 }
+  if (!saved) return { ruleSet: null, scopeFound: false, rulesetsScanned: 0, rulesScanned: 0, nonAllowOrDisabledExcluded: 0, manualReviewMatches: [] }
   const sprints: SprintScopeOption[] = saved.plan.waves.flatMap((wave) => wave.sprints.map((sprint) => ({
     sequence: sprint.sequence, sprint: sprint.sprint, wave: wave.wave, environment: wave.environment, name: sprint.name, serverCount: sprint.serverCount,
   }))).sort((left, right) => left.sequence - right.sequence)
 
   const selectedSprints = scope === 'all' ? sprints : sprints.filter((sprint) => sprint.sequence === scope)
-  if (scope !== 'all' && selectedSprints.length === 0) return { ruleSet: null, scopeFound: false, rulesetsScanned: 0, rulesScanned: 0, nonAllowOrDisabledExcluded: 0 }
+  if (scope !== 'all' && selectedSprints.length === 0) return { ruleSet: null, scopeFound: false, rulesetsScanned: 0, rulesScanned: 0, nonAllowOrDisabledExcluded: 0, manualReviewMatches: [] }
 
   const selectedSequences = new Set(selectedSprints.map((sprint) => sprint.sequence))
   const selectedSprintTasks = saved.plan.waves.flatMap((wave) => wave.sprints).filter((sprint) => selectedSequences.has(sprint.sequence))
@@ -2912,13 +2954,13 @@ async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: 
     : `${selectedSprints[0]?.name ?? `Sprint ${scope}`} - Wave ${selectedSprints[0]?.wave ?? '?'} (${serverNames.length} servers)`
 
   if (serverNames.length === 0) {
-    const { ruleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded } = buildImportedFirewallRuleSet({
+    const { ruleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches } = buildImportedFirewallRuleSet({
       scopeLabel, target, assessmentIps: [], coreInfrastructureIps: [], excludeCoreInfrastructure, sprintMembership: [], landingZone: { placements: [], unmapped: [] }, rulesets: [],
     })
-    return { ruleSet, scopeFound: true, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded }
+    return { ruleSet, scopeFound: true, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches }
   }
 
-  const [coreServers, loadBalancerIps, assessmentRows, rulesets, landingZoneMappingRows] = await Promise.all([
+  const [coreServers, loadBalancerIps, assessmentRows, rulesets, landingZoneMappingRows, migratedServers] = await Promise.all([
     database('core_infrastructure_servers').distinct({ ipAddress: 'ip_address' }) as Promise<Array<{ ipAddress: string | null }>>,
     database('core_infrastructure_load_balancer_ips').pluck('ip_address') as Promise<string[]>,
     database('server_assessments').whereIn('server_name', serverNames).whereNotNull('ip_address').select({ serverName: 'server_name', ipAddress: 'ip_address' }) as Promise<Array<{ serverName: string; ipAddress: string | null }>>,
@@ -2937,6 +2979,7 @@ async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: 
         resourceGroupName: 'rg.resource_group_name', location: 'rg.location', virtualNetwork: 'm.virtual_network', subnet: 'm.subnet',
         subnetIpSegment: 'net.subnet_ip_segment', networkSecurityGroup: 'm.network_security_group',
       }) as Promise<Array<{ serverName: string; subscriptionId: string | null; subscriptionName: string | null; resourceGroupName: string | null; location: string | null; virtualNetwork: string | null; subnet: string | null; subnetIpSegment: string | null; networkSecurityGroup: string | null }>>,
+    loadMigratedServerTargets(saved.plan),
   ])
 
   const landingZonePlacementsByKey = new Map<string, LandingZonePlacement>()
@@ -2967,10 +3010,10 @@ async function buildMatchedImportedFirewallRules(scope: 'all' | number, target: 
     return ip ? [{ serverName: row.serverName, ip }] : []
   })
 
-  const { ruleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded } = buildImportedFirewallRuleSet({
-    scopeLabel, target, assessmentIps, coreInfrastructureIps, excludeCoreInfrastructure, sprintMembership, landingZone, rulesets,
+  const { ruleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches } = buildImportedFirewallRuleSet({
+    scopeLabel, target, assessmentIps, coreInfrastructureIps, excludeCoreInfrastructure, sprintMembership, landingZone, rulesets, migratedServers,
   })
-  return { ruleSet, scopeFound: true, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded }
+  return { ruleSet, scopeFound: true, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches }
 }
 
 function parseFirewallScope(value: unknown): 'all' | number | null {
@@ -3024,7 +3067,7 @@ app.get('/api/firewall-rules', async (request, response) => {
         return projected.map((rule) => ({ ...rule, nsgName: nsgNamesForRule(rule.localServers, serverNsgNames) }))
       })()
     : ruleSet.rules
-  const { ruleSet: importedRuleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure)
+  const { ruleSet: importedRuleSet, rulesetsScanned, rulesScanned, nonAllowOrDisabledExcluded, manualReviewMatches } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure)
   const importedMatches = importedRuleSet ? {
     scopeLabel: importedRuleSet.scopeLabel,
     target,
@@ -3035,6 +3078,11 @@ app.get('/api/firewall-rules', async (request, response) => {
     rulesScanned,
     nonAllowOrDisabledExcluded,
     rules: projectImportedRulesForResponse(importedRuleSet),
+    manualReviewMatches,
+    // The manual-review rules, projected in the same Priority/Name/Port/Protocol/Source/Destination/
+    // Action/Direction(/NSG Name)/Core format as the table above, so the "Needs manual review" section
+    // can render with the same NSG/Azure Firewall/on-prem column layout instead of an ad hoc table.
+    manualReviewRules: projectImportedRulesForResponse(restrictRuleSetToManualReview(importedRuleSet, manualReviewMatches)),
   } : null
   response.json({
     scope: scope === 'all' ? 'all' : scope,
@@ -3138,6 +3186,56 @@ app.get('/api/firewall-rules/imported-matches/export', async (request, response)
   response
     .type('application/zip')
     .attachment(`imported-firewall-rules-${baseName}-${target}-${format}.zip`)
+    .send(archive)
+})
+
+app.get('/api/firewall-rules/imported-matches/manual-review/export', async (request, response) => {
+  const format = String(request.query.format ?? '').toLowerCase()
+  if (format !== 'xlsx' && format !== 'terraform' && format !== 'bicep') {
+    response.status(400).json({ error: 'Choose xlsx, terraform, or bicep as the export format.' })
+    return
+  }
+  const scope = parseFirewallScope(request.query.sprint)
+  if (scope === null) {
+    response.status(400).json({ error: 'sprint must be "all" or a positive sprint sequence.' })
+    return
+  }
+  const target = parseFirewallTarget(request.query.target)
+  if (target === null) {
+    response.status(400).json({ error: 'target must be one of "nsg", "azure-firewall", or "on-prem".' })
+    return
+  }
+  if (target === 'on-prem' && format !== 'xlsx') {
+    response.status(400).json({ error: 'On-prem firewall rules can only be exported as an Excel workbook.' })
+    return
+  }
+  const excludeCoreInfrastructure = request.query.excludeCoreInfrastructure === 'true'
+  const { ruleSet, scopeFound, manualReviewMatches } = await buildMatchedImportedFirewallRules(scope, target, excludeCoreInfrastructure)
+  if (!scopeFound) {
+    response.status(404).json({ error: 'A saved migration wave plan is required, and the sprint sequence must exist in it.' })
+    return
+  }
+  if (!ruleSet) {
+    response.status(404).json({ error: `Sprint sequence ${scope} was not found in the saved plan.` })
+    return
+  }
+  const manualReviewRuleSet = restrictRuleSetToManualReview(ruleSet, manualReviewMatches)
+  if (manualReviewRuleSet.rules.length === 0) {
+    response.status(404).json({ error: 'There are no rules needing manual review for this scope and target.' })
+    return
+  }
+  const baseName = scope === 'all' ? 'all-sprints' : `sprint-${scope}`
+  if (format === 'xlsx') {
+    response
+      .type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      .attachment(`firewall-rules-manual-review-${baseName}-${target}.xlsx`)
+      .send(await createFirewallRulesWorkbookForImportedMatches(manualReviewRuleSet))
+    return
+  }
+  const archive = format === 'terraform' ? await createFirewallTerraformArchive(manualReviewRuleSet) : await createFirewallBicepArchive(manualReviewRuleSet)
+  response
+    .type('application/zip')
+    .attachment(`firewall-rules-manual-review-${baseName}-${target}-${format}.zip`)
     .send(archive)
 })
 

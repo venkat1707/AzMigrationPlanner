@@ -60,15 +60,31 @@ test('VPN peers are summarized to their prefix', () => {
   assert.equal(rule.peerKind, 'network')
 })
 
-test('a local address inside a defined Office/VPN range is summarized to its prefix, same as a remote peer', () => {
+test('a sprint server\'s own side of a rule is represented by its landing-zone subnet CIDR, not its on-prem IP', () => {
   const result = buildFirewallRuleSet(baseInput({
     target: 'nsg',
-    inbound: [{ localServer: 'web01', localIp: '192.168.5.5', remoteServer: 'app01', remoteIp: '10.0.1.1', port: 443, connections: 2 }],
+    landingZone,
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: 'app01', remoteIp: '10.0.1.1', port: 443, connections: 2 }],
   }))
   assert.equal(result.rules.length, 1)
   const rule = result.rules[0]
   assert.ok(rule)
-  assert.deepEqual(rule.localAddresses, ['192.168.0.0/16'])
+  assert.deepEqual(rule.localAddresses, ['10.5.0.0/24'])
+  assert.equal(rule.localUnresolved, false)
+})
+
+test('a sprint server with no landing-zone subnet mapping is flagged unresolved rather than falling back to its on-prem IP', () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    landingZone,
+    inbound: [{ localServer: 'app01', localIp: '10.0.1.1', remoteServer: null, remoteIp: '192.168.5.5', port: 443, connections: 2 }],
+  }))
+  assert.equal(result.rules.length, 1)
+  const rule = result.rules[0]
+  assert.ok(rule)
+  assert.deepEqual(rule.localAddresses, [])
+  assert.equal(rule.localUnresolved, true)
+  assert.equal(result.summary.localSubnetUnresolved, 1)
 })
 
 test('on-prem target flips Azure inbound into an outbound rule', () => {
@@ -198,6 +214,43 @@ test('azure-firewall target excludes same-subnet sprint traffic as well', () => 
   }))
   assert.equal(result.rules.length, 0)
   assert.equal(result.summary.sameSubnetExcluded, 1)
+})
+
+test('a remote peer from an already-migrated (Closed) sprint is pointed at its Azure target subnet instead of its on-prem IP', () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: 'legacydb01', remoteIp: '172.16.1.1', port: 1433, connections: 6 }],
+    migratedServers: [{ serverName: 'legacydb01', onPremIp: '172.16.1.1', targetAddress: '10.9.0.0/24', targetLabel: 'snet-data (migrated)' }],
+  }))
+  assert.equal(result.rules.length, 1)
+  const rule = result.rules[0]
+  assert.ok(rule)
+  assert.equal(rule.remoteAddress, '10.9.0.0/24')
+  assert.equal(rule.remoteName, 'snet-data (migrated)')
+  assert.equal(rule.peerKind, 'network')
+  assert.equal(rule.resolved, true)
+})
+
+test('a remote peer resolved only by its on-prem IP (no server name) still matches an already-migrated server', () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: null, remoteIp: '172.16.1.1', port: 1433, connections: 6 }],
+    migratedServers: [{ serverName: 'legacydb01', onPremIp: '172.16.1.1', targetAddress: '10.9.0.0/24', targetLabel: 'snet-data (migrated)' }],
+  }))
+  assert.equal(result.rules.length, 1)
+  assert.equal(result.rules[0]?.remoteAddress, '10.9.0.0/24')
+  assert.equal(result.rules[0]?.peerKind, 'network')
+})
+
+test('a remote peer not listed as migrated keeps its on-prem address (regression safety)', () => {
+  const result = buildFirewallRuleSet(baseInput({
+    target: 'nsg',
+    inbound: [{ localServer: 'web01', localIp: '10.0.0.1', remoteServer: 'legacydb02', remoteIp: '172.16.1.2', port: 1433, connections: 6 }],
+    migratedServers: [{ serverName: 'legacydb01', onPremIp: '172.16.1.1', targetAddress: '10.9.0.0/24', targetLabel: 'snet-data (migrated)' }],
+  }))
+  assert.equal(result.rules.length, 1)
+  assert.equal(result.rules[0]?.remoteAddress, '172.16.1.2')
+  assert.equal(result.rules[0]?.peerKind, 'server')
 })
 
 test('Terraform NSG export defaults resource group, NSG name, and address space from the landing zone, and associates the mapped subnet', async () => {

@@ -52,6 +52,11 @@ export type FirewallRuleInput = {
   portReferences: PortReference[]
   excludeCoreInfrastructure: boolean
   landingZone?: LandingZoneContext
+  // Servers whose own sprint has already completed migration (status "Closed"), together with the
+  // Azure subnet CIDR they were placed in. When one of these servers shows up as a *remote* peer for
+  // the sprint currently being generated, its stale on-prem address (from dependency records) is
+  // replaced with this target address, since traffic to/from it now actually lands in Azure.
+  migratedServers?: Array<{ serverName: string; onPremIp: string | null; targetAddress: string; targetLabel: string }>
 }
 
 export type NsgProtocol = 'Tcp' | 'Udp' | 'Icmp' | '*'
@@ -74,6 +79,9 @@ export type FirewallRule = {
   coreInfrastructure: boolean
   resolved: boolean
   peerKind: 'host' | 'server' | 'network'
+  // True when at least one of localServers has no Landing Zone Network subnet mapping, so localAddresses
+  // could not be populated with its post-migration Azure subnet CIDR for that server.
+  localUnresolved: boolean
   // Optional pre-assigned name (e.g. an imported rule's own name). When set, projectRules() sanitizes
   // and reuses it instead of synthesizing one from direction/protocol/port/peer.
   name?: string
@@ -95,6 +103,8 @@ export type FirewallRuleSet = {
     sameSubnetExcluded: number
     networkSummarized: number
     unresolved: number
+    // Rules where at least one local (sprint) server has no Landing Zone Network subnet mapping yet.
+    localSubnetUnresolved: number
     sprintServers: number
   }
   truncated: boolean
@@ -200,6 +210,14 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
     .map(({ ip }) => ip))
   const target = input.target
   const subnetKeyOf = landingZoneSubnetKeyByServer(input.landingZone ?? { placements: [], unmapped: [] })
+  const subnetCidrOf = landingZoneSubnetCidrByServer(input.landingZone ?? { placements: [], unmapped: [] })
+  // Already-migrated peers (any sprint marked "Closed"), keyed by server name and, as a fallback, by
+  // their last-known on-prem IP (for flows where the dependency data never resolved a peer server name).
+  const migratedServers = input.migratedServers ?? []
+  const migratedTargetByServer = new Map(migratedServers.map((entry) => [entry.serverName.trim().toLowerCase(), entry]))
+  const migratedTargetByIp = new Map(migratedServers
+    .filter((entry): entry is typeof entry & { onPremIp: string } => Boolean(entry.onPremIp))
+    .map((entry) => [entry.onPremIp, entry]))
   const rules = new Map<string, FirewallRule>()
   const sprintAddresses = new Set<string>()
   let coreInfrastructureExcluded = 0
@@ -212,8 +230,13 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
       const localKey = flow.localServer.trim().toLowerCase()
       const rawLocalAddress = flow.localIp ?? assessmentIp.get(localKey) ?? null
       if (rawLocalAddress) sprintAddresses.add(rawLocalAddress)
-      // A local (sprint) address can itself fall inside a defined Office/VPN range; summarize it the same way a remote peer would be.
-      const localAddress = rawLocalAddress ? matchNetwork(rawLocalAddress, networks)?.cidr ?? rawLocalAddress : null
+      // The local (sprint) server's own side is represented by its post-migration Azure subnet CIDR
+      // (from the Landing Zone Network mapping), not its pre-migration on-prem IP, since that's where
+      // the rule will actually need to apply once the server has moved. If the server has no landing
+      // zone subnet mapping yet, its address is left unresolved rather than falling back to a stale IP.
+      const localSubnetCidr = subnetCidrOf.get(localKey) ?? null
+      const localAddress = localSubnetCidr
+      const localUnresolved = !localSubnetCidr
       let remoteAddress = flow.remoteIp
         ?? (flow.remoteServer ? assessmentIp.get(flow.remoteServer.trim().toLowerCase()) ?? null : null)
       const remoteKeyName = flow.remoteServer ? flow.remoteServer.trim().toLowerCase() : null
@@ -244,7 +267,16 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
 
       let peerKind: FirewallRule['peerKind'] = remoteKeyName ? 'server' : 'host'
       let remoteName = flow.remoteServer ?? null
-      if (remoteAddress) {
+      const migratedMatch = (remoteKeyName ? migratedTargetByServer.get(remoteKeyName) : undefined)
+        ?? (remoteAddress ? migratedTargetByIp.get(remoteAddress) : undefined)
+        ?? null
+      if (migratedMatch) {
+        // This peer's own sprint has already migrated: point the rule at where it actually lives today
+        // (its Azure target subnet) instead of continuing to reference its stale pre-migration on-prem address.
+        remoteAddress = migratedMatch.targetAddress
+        remoteName = migratedMatch.targetLabel
+        peerKind = 'network'
+      } else if (remoteAddress) {
         const network = matchNetwork(remoteAddress, networks)
         if (network) {
           remoteAddress = network.cidr
@@ -276,6 +308,7 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
           coreInfrastructure: isCore,
           resolved: Boolean(remoteAddress),
           peerKind,
+          localUnresolved,
         }
         rules.set(key, rule)
       }
@@ -285,6 +318,7 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
       if (rule.peerKind !== 'network' && peerKind === 'network') rule.peerKind = 'network'
       rule.connections += Number(flow.connections) || 0
       rule.coreInfrastructure = rule.coreInfrastructure || isCore
+      rule.localUnresolved = rule.localUnresolved || localUnresolved
     }
   }
 
@@ -322,6 +356,7 @@ export function buildFirewallRuleSet(input: FirewallRuleInput): FirewallRuleSet 
       sameSubnetExcluded,
       networkSummarized: ordered.filter((rule) => rule.peerKind === 'network').length,
       unresolved: ordered.filter((rule) => !rule.resolved).length,
+      localSubnetUnresolved: ordered.filter((rule) => rule.localUnresolved).length,
       sprintServers: input.sprintServerCount,
     },
     truncated,
@@ -466,6 +501,7 @@ function addOverviewSheet(workbook: ExcelJS.Workbook, ruleSet: FirewallRuleSet):
     { property: 'Same-subnet connections removed', value: ruleSet.summary.sameSubnetExcluded },
     { property: 'Rules summarized to office/VPN prefixes', value: ruleSet.summary.networkSummarized },
     { property: 'Rules with unresolved peer address', value: ruleSet.summary.unresolved },
+    { property: 'Rules with unresolved sprint subnet placement', value: ruleSet.summary.localSubnetUnresolved },
     { property: 'Result truncated', value: ruleSet.truncated ? `Yes (capped at ${MAX_RULES})` : 'No' },
   ])
   styleHeader(overview.getRow(1))
@@ -492,6 +528,18 @@ export function landingZoneSubnetKeyByServer(landingZone: LandingZoneContext): M
     for (const server of placement.servers) serverSubnetKeys.set(server.trim().toLowerCase(), key)
   }
   return serverSubnetKeys
+}
+
+// Server name (lowercased) -> the Azure subnet CIDR it's mapped to, from the sprint's Landing Zone
+// Network mapping. Used to represent a sprint server's own side of a rule by where it will actually
+// live once migrated, instead of its (soon to be stale) pre-migration on-prem IP.
+export function landingZoneSubnetCidrByServer(landingZone: LandingZoneContext): Map<string, string> {
+  const serverSubnetCidrs = new Map<string, string>()
+  for (const placement of landingZone.placements) {
+    if (!placement.subnetIpSegment) continue
+    for (const server of placement.servers) serverSubnetCidrs.set(server.trim().toLowerCase(), placement.subnetIpSegment)
+  }
+  return serverSubnetCidrs
 }
 
 export function nsgNamesForRule(localServers: string[], serverNsgNames: Map<string, string>): string {
