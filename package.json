@@ -19,5 +19,8 @@
     "start": "npm run start --workspace backend",
     "audit:check": "node scripts/audit-check.mjs"
   },
-  "devDependencies": { "archiver": "^7.0.1", "concurrently": "^9.2.1" }
+  "devDependencies": { "archiver": "^7.0.1", "concurrently": "^9.2.1" },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
 }
