@@ -12,6 +12,7 @@ export type MigrationWaveOptions = {
   separateDataHeavyWorkloads: boolean
   excludedApplications: string[]
   excludedServers: string[]
+  excludeUnmappedServers: boolean
   applicationAffinityGroups: string[][]
   serverAffinityGroups: string[][]
   environmentFilters: string[]
@@ -41,6 +42,7 @@ export type DependencyRow = {
 type PlanningServer = {
   name: string
   application: string
+  applicationMapped: boolean
   environment: string
   migrationReadiness: string
   securityReadiness: string | null
@@ -87,6 +89,7 @@ export const defaultMigrationWaveOptions: MigrationWaveOptions = {
   separateDataHeavyWorkloads: false,
   excludedApplications: [],
   excludedServers: [],
+  excludeUnmappedServers: false,
   applicationAffinityGroups: [],
   serverAffinityGroups: [],
   environmentFilters: [],
@@ -150,6 +153,7 @@ export function buildMigrationWavePlan(
     return {
       name: assessment.serverName,
       application: clean(assessment.application, roles[0] ?? 'Unmapped application'),
+      applicationMapped: Boolean(assessment.application?.trim()),
       environment: clean(assessment.environment, 'Unspecified'),
       migrationReadiness,
       securityReadiness: assessment.securityReadiness,
@@ -165,8 +169,9 @@ export function buildMigrationWavePlan(
 
   const excludedApplications = new Set(options.excludedApplications.map(normalize))
   const excludedServers = new Set(options.excludedServers.map(normalize))
-  const excluded = servers.filter((server) => excludedApplications.has(normalize(server.application)) || excludedServers.has(normalize(server.name)))
-  const included = servers.filter((server) => !excludedApplications.has(normalize(server.application)) && !excludedServers.has(normalize(server.name)))
+  const isUnmappedExcluded = (server: PlanningServer) => options.excludeUnmappedServers && !server.applicationMapped
+  const excluded = servers.filter((server) => excludedApplications.has(normalize(server.application)) || excludedServers.has(normalize(server.name)) || isUnmappedExcluded(server))
+  const included = servers.filter((server) => !excludedApplications.has(normalize(server.application)) && !excludedServers.has(normalize(server.name)) && !isUnmappedExcluded(server))
   const schedulable = included.filter(({ readiness }) => readiness !== 'Not ready')
   const deferred = included.filter(({ readiness }) => readiness === 'Not ready')
   const schedulableNames = new Set(schedulable.map(({ name }) => normalize(name)))
@@ -391,7 +396,9 @@ export function buildMigrationWavePlan(
       ...server,
       reason: excludedServers.has(normalize(server.name))
         ? 'Server explicitly excluded from this plan.'
-        : `Application “${server.application}” explicitly excluded from this plan.`,
+        : isUnmappedExcluded(server)
+          ? 'Server is not mapped to an application.'
+          : `Application “${server.application}” explicitly excluded from this plan.`,
     })),
     crossDependenciesByEnvironment,
     crossSprintDependencies,

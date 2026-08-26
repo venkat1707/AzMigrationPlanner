@@ -3394,6 +3394,7 @@ app.post('/api/migration-wave-plan', async (request, response) => {
       || defaultMigrationWaveOptions.separateDataHeavyWorkloads,
     excludedApplications: sanitizeExclusions(request.body?.excludedApplications),
     excludedServers: sanitizeExclusions(request.body?.excludedServers),
+    excludeUnmappedServers: request.body?.excludeUnmappedServers === true,
     applicationAffinityGroups: sanitizeAffinityGroups(request.body?.applicationAffinityGroups),
     serverAffinityGroups: sanitizeAffinityGroups(request.body?.serverAffinityGroups),
     environmentFilters: sanitizeExclusions(request.body?.environmentFilters),
@@ -3413,7 +3414,7 @@ app.post('/api/migration-wave-plan', async (request, response) => {
   let saveMode: PlanSaveMode = saved ? 'replace' : 'initial'
   if (saved) {
     const previousOptions = { ...defaultMigrationWaveOptions, ...(saved.plan.options ?? {}), ...(savedFilters ? parseJsonValue<Partial<MigrationWaveOptions>>(savedFilters.filterJson) : {}) }
-    const planningKeys: Array<keyof MigrationWaveOptions> = ['minimumServers', 'maximumServers', 'autoSizeSprints', 'zeroCrossSprintDependencies', 'considerEnvironments', 'prioritizeEnvironments', 'environmentOrder', 'dataHeavyStorageGb', 'separateDataHeavyWorkloads', 'excludedApplications', 'excludedServers', 'applicationAffinityGroups', 'serverAffinityGroups']
+    const planningKeys: Array<keyof MigrationWaveOptions> = ['minimumServers', 'maximumServers', 'autoSizeSprints', 'zeroCrossSprintDependencies', 'considerEnvironments', 'prioritizeEnvironments', 'environmentOrder', 'dataHeavyStorageGb', 'separateDataHeavyWorkloads', 'excludedApplications', 'excludedServers', 'excludeUnmappedServers', 'applicationAffinityGroups', 'serverAffinityGroups']
     const samePlanningSettings = planningKeys.every((key) => JSON.stringify(previousOptions[key]) === JSON.stringify(options[key]))
     const eligible = (identity: typeof identities[number], value: MigrationWaveOptions) => {
       const environments = new Set(value.environmentFilters.map((item) => item.toLowerCase()))

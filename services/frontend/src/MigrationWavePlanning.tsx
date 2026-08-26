@@ -148,6 +148,7 @@ type PlannerSettings = {
   separateDataHeavyWorkloads: boolean
   excludedApplications: string[]
   excludedServers: string[]
+  excludeUnmappedServers: boolean
   applicationAffinityGroups: string[][]
   serverAffinityGroups: string[][]
   environmentFilters: string[]
@@ -167,6 +168,7 @@ const defaultSettings: PlannerSettings = {
   separateDataHeavyWorkloads: false,
   excludedApplications: [],
   excludedServers: [],
+  excludeUnmappedServers: false,
   applicationAffinityGroups: [],
   serverAffinityGroups: [],
   environmentFilters: [],
@@ -432,6 +434,7 @@ export default function MigrationWavePlanning({ canDeleteTasks }: { canDeleteTas
           <div className="wave-filter-columns">
             <fieldset><legend>Environments</legend><div className="wave-filter-options">{availableEnvironments.map((environment) => <label key={environment}><input type="checkbox" checked={settings.environmentFilters.includes(environment)} onChange={() => setSettings({ ...settings, environmentFilters: toggleSelection(settings.environmentFilters, environment) })} /><span>{environment}</span></label>)}</div><button type="button" className="clear-filter" disabled={settings.environmentFilters.length === 0} onClick={() => setSettings({ ...settings, environmentFilters: [] })}>Clear environment filter</button><small>Selected environments are considered for wave planning. No selection includes all environments.</small></fieldset>
             <fieldset><legend>Treatment plans</legend><div className="wave-filter-options treatment-options">{treatmentPlanOptions.map((treatment) => <label key={treatment}><input type="checkbox" checked={settings.treatmentPlans.includes(treatment)} onChange={() => setSettings({ ...settings, treatmentPlans: toggleSelection(settings.treatmentPlans, treatment) })} /><span>{treatment}</span></label>)}</div><button type="button" className="clear-filter" onClick={() => setSettings({ ...settings, treatmentPlans: ['Rehost'] })}>Reset to Rehost</button><small>Applications without a saved treatment plan are treated as Rehost.</small></fieldset>
+            <fieldset><legend>Application mapping</legend><div className="wave-filter-options"><label><input type="checkbox" checked={settings.excludeUnmappedServers} onChange={(event) => setSettings({ ...settings, excludeUnmappedServers: event.target.checked })} /><span>Exclude servers not mapped to an application</span></label></div><small>Removes servers with no application recorded on their Server Assessment, even when a fallback name (such as an infrastructure role) is shown for them.</small></fieldset>
           </div>
         </section>
         <section className="wave-exclusions" aria-labelledby="wave-exclusions-title">

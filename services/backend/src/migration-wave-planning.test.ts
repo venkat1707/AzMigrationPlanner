@@ -38,6 +38,24 @@ test('filters environments and treatments while omitting previously considered s
   assert.equal(plan.summary.assessedServers, 1)
 })
 
+test('excludeUnmappedServers filters out servers with no application recorded, including those with only an infrastructure role fallback', () => {
+  const assessments = [
+    { serverName: 'app-01', application: 'Orders', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+    { serverName: 'unmapped-01', application: null, environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+    { serverName: 'infra-01', application: '', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+  ]
+  const infrastructureRows = [{ serverName: 'infra-01', category: 'Active Directory' }]
+  const plan = buildMigrationWavePlan(assessments, infrastructureRows, [], {
+    ...defaultMigrationWaveOptions,
+    minimumServers: 1,
+    excludeUnmappedServers: true,
+  })
+
+  assert.deepEqual(plan.waves.flatMap((wave) => wave.sprints).flatMap((sprint) => sprint.servers.map(({ name }) => name)), ['app-01'])
+  assert.deepEqual(plan.excluded.map(({ name }) => name).sort(), ['infra-01', 'unmapped-01'])
+  assert.ok(plan.excluded.every(({ reason }) => reason === 'Server is not mapped to an application.'))
+})
+
 test('auto-size mode groups dependency-connected servers into one sprint even across different applications', () => {
   const assessments = [
     { serverName: 'web-01', application: 'Web App', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
