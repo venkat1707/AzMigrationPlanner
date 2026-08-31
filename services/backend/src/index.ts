@@ -1873,6 +1873,21 @@ app.post('/api/core-infrastructure-servers/refresh', async (_request, response) 
   response.json({ summary })
 })
 
+app.delete('/api/core-infrastructure-servers/:id', async (request, response) => {
+  const id = Number(request.params.id)
+  if (!Number.isInteger(id) || id <= 0) {
+    response.status(400).json({ error: 'A valid server-role assignment id is required.' })
+    return
+  }
+  const deleted = await database('core_infrastructure_servers').where({ id }).delete()
+  if (deleted === 0) {
+    response.status(404).json({ error: 'The server-role assignment was not found.' })
+    return
+  }
+  const summary = await getCoreInfrastructureSummary()
+  response.json({ deleted, summary })
+})
+
 function isValidCidr(value: string) {
   const [address, prefix, extra] = value.split('/')
   if (extra !== undefined || !address || prefix === undefined || !/^\d+$/.test(prefix)) return false

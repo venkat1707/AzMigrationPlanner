@@ -32,6 +32,7 @@ export default function CoreInfrastructureInput() {
   const [uploading, setUploading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [removingId, setRemovingId] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
@@ -106,6 +107,27 @@ export default function CoreInfrastructureInput() {
     }
   }
 
+  const removeServer = async (server: SavedServer) => {
+    if (server.source === 'Assessment'
+      && !window.confirm('This assignment was auto-detected from server assessment data. It will reappear the next time assessment data is imported or refreshed unless the server name, application, or resource tags no longer match a core-infrastructure pattern. Remove it now anyway?')) {
+      return
+    }
+    setRemovingId(server.id)
+    setError('')
+    setMessage('')
+    try {
+      const response = await apiFetch(`/api/core-infrastructure-servers/${server.id}`, { method: 'DELETE' })
+      const payload = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Unable to remove the server-role assignment.')
+      setMessage(`Removed ${server.serverName} (${server.role}) from the core infrastructure inventory.`)
+      setSavedServers((current) => current.filter((item) => item.id !== server.id))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to remove the server-role assignment.')
+    } finally {
+      setRemovingId(null)
+    }
+  }
+
   const uploadInputs = async () => {
     if (!uploadFile) return
     setUploading(true)
@@ -168,8 +190,8 @@ export default function CoreInfrastructureInput() {
 
     <section className="saved-core-infrastructure">
       <header><div><p>Complete infrastructure inventory</p><h2>Saved server-role assignments</h2><small>{savedServers.length} assignments from assessment, manual entry, and uploads</small></div><div className="saved-report-actions"><button type="button" title="Export saved assignments" aria-label="Export saved assignments" disabled={savedServers.length === 0} onClick={() => exportServerAssignments(savedServers)}><Download size={15} /></button><button type="button" title="Refresh saved inventory" aria-label="Refresh saved inventory" onClick={() => void load()}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button></div></header>
-      <div className="table-wrap"><table><thead><tr><th>Server</th><th>Role</th><th>IP address</th><th>Source</th><th>Last updated</th></tr></thead><tbody>
-        {loading ? <tr><td colSpan={5} className="empty-state">Loading saved infrastructure...</td></tr> : savedServers.length === 0 ? <tr><td colSpan={5} className="empty-state">No server-role assignments are stored.</td></tr> : savedServers.map((server) => <tr key={`${server.serverName}-${server.role}`}><td><strong>{server.serverName}</strong></td><td>{server.role}</td><td>{server.ipAddress}</td><td>{server.source}</td><td>{new Date(server.updatedAt).toLocaleString()}</td></tr>)}
+      <div className="table-wrap"><table><thead><tr><th>Server</th><th>Role</th><th>IP address</th><th>Source</th><th>Last updated</th><th></th></tr></thead><tbody>
+        {loading ? <tr><td colSpan={6} className="empty-state">Loading saved infrastructure...</td></tr> : savedServers.length === 0 ? <tr><td colSpan={6} className="empty-state">No server-role assignments are stored.</td></tr> : savedServers.map((server) => <tr key={server.id}><td><strong>{server.serverName}</strong></td><td>{server.role}</td><td>{server.ipAddress}</td><td>{server.source}</td><td>{new Date(server.updatedAt).toLocaleString()}</td><td><button type="button" className="remove-input" title="Remove this server-role assignment" aria-label={`Remove ${server.serverName} ${server.role}`} disabled={removingId === server.id} onClick={() => void removeServer(server)}>{removingId === server.id ? <RefreshCw className="spin" size={14} /> : <Trash2 size={14} />}</button></td></tr>)}
       </tbody></table></div>
     </section>
     <section className="saved-core-infrastructure saved-load-balancers">
