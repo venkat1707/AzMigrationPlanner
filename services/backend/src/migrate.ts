@@ -538,6 +538,29 @@ export async function migrateSchema(): Promise<void> {
     })
   }
 
+  if (!(await database.schema.hasTable('application_server_mappings'))) {
+    await database.schema.createTable('application_server_mappings', (table) => {
+      table.bigIncrements('id').primary()
+      table.string('server_name', 300).notNullable()
+        .references('server_name').inTable('server_assessments').onUpdate('CASCADE').onDelete('CASCADE')
+      table.string('application', 500).notNullable()
+        .references('name').inTable('applications').onUpdate('CASCADE').onDelete('CASCADE')
+      table.boolean('is_primary').notNullable().defaultTo(false)
+      table.dateTime('created_at').notNullable().defaultTo(database.fn.now())
+      table.dateTime('updated_at').notNullable().defaultTo(database.fn.now())
+      table.unique(['server_name', 'application'], { indexName: 'uq_application_server_mappings_pair' })
+      table.index(['application'], 'idx_application_server_mappings_application')
+      table.index(['server_name', 'is_primary'], 'idx_application_server_mappings_primary')
+    })
+    // Backfill: the existing single application column on each server becomes its primary mapping.
+    await database.raw(`
+      INSERT INTO application_server_mappings (server_name, application, is_primary)
+      SELECT server_name, application, TRUE
+      FROM server_assessments
+      WHERE application IS NOT NULL AND TRIM(application) <> ''
+    `)
+  }
+
   if (!(await database.schema.hasTable('dependency_summary'))) {
     await database.schema.createTable('dependency_summary', (table) => {
       table.integer('id').unsigned().primary()

@@ -186,7 +186,9 @@ async function loadHldContext(
   environment: string,
   map: NonNullable<Awaited<ReturnType<typeof buildApplicationMap>>>,
 ) {
-  const assessmentQuery = connection('server_assessments').where({ application }).select('server_name')
+  const assessmentQuery = connection('server_assessments')
+    .whereIn('server_name', connection('application_server_mappings').where({ application }).select('server_name'))
+    .select('server_name')
   if (environment === 'Unspecified') assessmentQuery.where((builder) => builder.whereNull('environment_type').orWhere('environment_type', ''))
   else assessmentQuery.where('environment_type', environment)
 

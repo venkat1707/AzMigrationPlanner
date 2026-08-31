@@ -32,6 +32,7 @@ import {
 import { buildImportedFirewallRuleSet, restrictRuleSetToManualReview, type ManualReviewMatch } from './firewall-rule-matching.js'
 import { importApplicationCatalogFile, listApplicationCatalogWorkbookSheets } from './application-catalog-import.js'
 import { importApplicationServerMappingFile } from './application-server-mapping-import.js'
+import { listApplicationsForServers, removeApplicationMappings } from './application-server-mappings.js'
 import { importServerAssessmentFile, listAssessmentWorkbookSheets } from './server-assessment-import.js'
 import { normalizeSprintSchedule, type SprintSchedule, type SprintScheduleInput } from './sprint-schedule.js'
 import { buildSprintScheduleView, createSprintSchedulePresentation, createSprintScheduleWorkbook, type ScheduleAssessment } from './sprint-schedule-export.js'
@@ -1477,6 +1478,7 @@ app.delete('/api/applications/:name', async (request, response) => {
     return
   }
   await database.transaction(async (transaction) => {
+    await removeApplicationMappings(transaction, name)
     await transaction('server_assessments').where({ application: name }).update({ application: null })
     await transaction('applications').where({ name }).delete()
   })
@@ -1487,11 +1489,14 @@ app.delete('/api/applications', async (_request, response) => {
   const result = await database('applications').count<{ count: number }>({ count: 'name' }).first()
   const deleted = Number(result?.count ?? 0)
   await database.transaction(async (transaction) => {
+    await transaction('application_server_mappings').delete()
     await transaction('server_assessments').whereNotNull('application').update({ application: null })
     await transaction('applications').delete()
   })
   response.json({ deleted })
 })
+
+type ServerCoverageBaseRow = { serverName: string; environment: string | null; application: string | null; ipAddress: string | null }
 
 app.get('/api/server-coverage', async (_request, response) => {
   const baseSelection = {
@@ -1500,11 +1505,13 @@ app.get('/api/server-coverage', async (_request, response) => {
     application: 'assessments.application',
     ipAddress: 'assessments.ip_address',
   }
-  const [unmappedServers, unconnectedServers] = await Promise.all([
+  const [unmappedServers, unconnectedServers, unmappedEnvironmentServers, mappedServerRows] = await Promise.all([
     database('server_assessments as assessments')
       .select(baseSelection)
-      .leftJoin('applications as mapped_applications', 'mapped_applications.name', 'assessments.application')
-      .whereNull('mapped_applications.name')
+      .whereNotExists(function () {
+        this.select(database.raw('1')).from('application_server_mappings as mappings')
+          .whereRaw('mappings.server_name = assessments.server_name')
+      })
       .orderBy('assessments.server_name'),
     database('server_assessments as assessments')
       .select(baseSelection)
@@ -1517,8 +1524,22 @@ app.get('/api/server-coverage', async (_request, response) => {
           .whereRaw('destinations.server_name = assessments.server_name')
       })
       .orderBy('assessments.server_name'),
+    database('server_assessments as assessments')
+      .select(baseSelection)
+      .where((builder) => builder.whereNull('assessments.environment_type').orWhere('assessments.environment_type', ''))
+      .orderBy('assessments.server_name'),
+    database('server_assessments as assessments')
+      .select(baseSelection)
+      .where((builder) => builder.whereNotNull('assessments.application').andWhere('assessments.application', '<>', ''))
+      .andWhere((builder) => builder.whereNotNull('assessments.environment_type').andWhere('assessments.environment_type', '<>', ''))
+      .orderBy('assessments.server_name') as Promise<ServerCoverageBaseRow[]>,
   ])
-  response.json({ unmappedServers, unconnectedServers })
+  const mappingsByServer = await listApplicationsForServers(database, mappedServerRows.map((row) => row.serverName))
+  const mappedServers = mappedServerRows.map((row) => ({
+    ...row,
+    coHostedApplications: (mappingsByServer.get(row.serverName) ?? []).filter((mapping) => !mapping.isPrimary).map((mapping) => mapping.application),
+  }))
+  response.json({ unmappedServers, unconnectedServers, unmappedEnvironmentServers, mappedServers })
 })
 
 app.get('/api/environment-identification', async (_request, response) => {
@@ -1568,11 +1589,16 @@ app.post('/api/environment-identification/apply', async (request, response) => {
 })
 
 async function loadAssessmentIdentities(connection: Knex | Knex.Transaction = database): Promise<AssessmentIdentity[]> {
-  return connection('server_assessments').select({
+  const rows = await connection('server_assessments').select({
     id: 'id', serverName: 'server_name', ipAddress: 'ip_address', application: 'application', resourceTags: 'resource_tags',
     sourceSystem: 'source_system', operatingSystemName: 'operating_system_name', migrationReadiness: 'migration_readiness',
     securityReadiness: 'security_readiness', osSupportStatus: 'os_support_status', currentEnvironment: 'environment_type',
-  }).orderBy('server_name') as Promise<AssessmentIdentity[]>
+  }).orderBy('server_name') as Array<Omit<AssessmentIdentity, 'coHostedApplications'>>
+  const mappingsByServer = await listApplicationsForServers(connection, rows.map(({ serverName }) => serverName))
+  return rows.map((row) => ({
+    ...row,
+    coHostedApplications: (mappingsByServer.get(row.serverName) ?? []).filter((mapping) => !mapping.isPrimary).map((mapping) => mapping.application),
+  }))
 }
 
 function parseStoredRuleValues(value: string | null): string[] {
@@ -2660,15 +2686,47 @@ app.get('/api/migration-wave-plan', async (request, response) => {
   })
 })
 
+function planIsFinalizedAndScheduled(plan: TaskPlan): boolean {
+  return plan.waves.some((wave) => wave.sprints.some((sprint) => Boolean(sprint.targetedStartDate)))
+}
+
+app.delete('/api/migration-wave-plan', async (_request, response) => {
+  const saved = await database('migration_wave_plans').where({ id: 1 }).first({ planJson: 'plan_json' }) as Pick<SavedMigrationWavePlanRow, 'planJson'> | undefined
+  if (!saved) {
+    response.status(404).json({ error: 'There is no saved migration wave plan to delete.' })
+    return
+  }
+  const plan = (typeof saved.planJson === 'string' ? JSON.parse(saved.planJson) : saved.planJson) as TaskPlan
+  if (planIsFinalizedAndScheduled(plan)) {
+    response.status(409).json({ error: 'This plan cannot be deleted because its sprints have already been finalized and scheduled. Remove the sprint schedule dates first if this plan must be deleted.' })
+    return
+  }
+  await database.transaction(async (transaction) => {
+    await transaction('migration_wave_plans').where({ id: 1 }).delete()
+    await transaction('migration_wave_plan_filters').where({ id: 1 }).delete()
+    await transaction('task_comment_audit').delete()
+  })
+  response.status(204).end()
+})
+
+async function loadScheduleAssessments(): Promise<ScheduleAssessment[]> {
+  const rows = await database('server_assessments')
+    .select({ serverName: 'server_name', application: 'application', environment: 'environment_type' })
+    .orderBy('server_name') as Array<{ serverName: string; application: string | null; environment: string | null }>
+  const mappingsByServer = await listApplicationsForServers(database, rows.map(({ serverName }) => serverName))
+  return rows.map((row) => ({
+    ...row,
+    coHostedApplications: (mappingsByServer.get(row.serverName) ?? []).filter((mapping) => !mapping.isPrimary).map((mapping) => mapping.application),
+  }))
+}
+
 app.get('/api/sprint-schedule', async (_request, response) => {
   const saved = await loadSavedTaskPlan()
   if (!saved) {
     response.json({ waves: [], serverTimeline: [], savedAt: null })
     return
   }
-  const assessedServers = await database('server_assessments')
-    .select({ serverName: 'server_name', application: 'application', environment: 'environment_type' })
-    .orderBy('server_name') as ScheduleAssessment[]
+  const assessedServers = await loadScheduleAssessments()
   response.json({ ...buildSprintScheduleView(saved.plan, assessedServers), savedAt: saved.savedAt })
 })
 
@@ -2683,9 +2741,7 @@ app.get('/api/sprint-schedule/export', async (request, response) => {
     response.status(404).json({ error: 'A saved migration wave plan is required.' })
     return
   }
-  const assessedServers = await database('server_assessments')
-    .select({ serverName: 'server_name', application: 'application', environment: 'environment_type' })
-    .orderBy('server_name') as ScheduleAssessment[]
+  const assessedServers = await loadScheduleAssessments()
   const view = buildSprintScheduleView(saved.plan, assessedServers)
   const file = format === 'xlsx'
     ? await createSprintScheduleWorkbook(view)
@@ -3395,6 +3451,7 @@ app.post('/api/migration-wave-plan', async (request, response) => {
     excludedApplications: sanitizeExclusions(request.body?.excludedApplications),
     excludedServers: sanitizeExclusions(request.body?.excludedServers),
     excludeUnmappedServers: request.body?.excludeUnmappedServers === true,
+    excludeCoreInfrastructure: request.body?.excludeCoreInfrastructure === true,
     applicationAffinityGroups: sanitizeAffinityGroups(request.body?.applicationAffinityGroups),
     serverAffinityGroups: sanitizeAffinityGroups(request.body?.serverAffinityGroups),
     environmentFilters: sanitizeExclusions(request.body?.environmentFilters),
@@ -3414,7 +3471,7 @@ app.post('/api/migration-wave-plan', async (request, response) => {
   let saveMode: PlanSaveMode = saved ? 'replace' : 'initial'
   if (saved) {
     const previousOptions = { ...defaultMigrationWaveOptions, ...(saved.plan.options ?? {}), ...(savedFilters ? parseJsonValue<Partial<MigrationWaveOptions>>(savedFilters.filterJson) : {}) }
-    const planningKeys: Array<keyof MigrationWaveOptions> = ['minimumServers', 'maximumServers', 'autoSizeSprints', 'zeroCrossSprintDependencies', 'considerEnvironments', 'prioritizeEnvironments', 'environmentOrder', 'dataHeavyStorageGb', 'separateDataHeavyWorkloads', 'excludedApplications', 'excludedServers', 'excludeUnmappedServers', 'applicationAffinityGroups', 'serverAffinityGroups']
+    const planningKeys: Array<keyof MigrationWaveOptions> = ['minimumServers', 'maximumServers', 'autoSizeSprints', 'zeroCrossSprintDependencies', 'considerEnvironments', 'prioritizeEnvironments', 'environmentOrder', 'dataHeavyStorageGb', 'separateDataHeavyWorkloads', 'excludedApplications', 'excludedServers', 'excludeUnmappedServers', 'excludeCoreInfrastructure', 'applicationAffinityGroups', 'serverAffinityGroups']
     const samePlanningSettings = planningKeys.every((key) => JSON.stringify(previousOptions[key]) === JSON.stringify(options[key]))
     const eligible = (identity: typeof identities[number], value: MigrationWaveOptions) => {
       const environments = new Set(value.environmentFilters.map((item) => item.toLowerCase()))

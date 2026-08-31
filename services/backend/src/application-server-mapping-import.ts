@@ -4,6 +4,7 @@ import { parse } from 'csv-parse'
 import ExcelJS from 'exceljs'
 import type { Knex } from 'knex'
 import { upsertApplications } from './application-catalog-import.js'
+import { addApplicationServerMappings } from './application-server-mappings.js'
 import { prepareAssessmentWorkbook } from './assessment-workbook.js'
 import { refreshCoreInfrastructureSummary } from './core-infrastructure-summary.js'
 import { database } from './db.js'
@@ -184,6 +185,7 @@ export async function importApplicationServerMappingFile(
       const existingRows = await transaction('server_assessments').select('server_name') as Array<{ server_name: string }>
       const existingServerNames = new Set(existingRows.map(({ server_name }) => server_name.trim().toLowerCase()))
       const seenServerNames = new Set<string>()
+      const seenPairs = new Set<string>()
       let batch: MappingRecord[] = []
       let rowsRead = 0
 
@@ -193,10 +195,36 @@ export async function importApplicationServerMappingFile(
           name: record.application,
           description: record.application_description,
         })), 'ApplicationMapping')
-        await transaction('server_assessments')
-          .insert(batch)
-          .onConflict('server_name')
-          .merge(createApplicationMappingUpsertUpdates(transaction))
+
+        // Only the first row per server (unless it matches an already-established primary
+        // application) claims the server_assessments primary slot; later rows for the same
+        // server are recorded as co-hosted mappings without overwriting it.
+        const batchServerNames = [...new Set(batch.map((record) => record.server_name))]
+        const existingPrimaryRows = await transaction('server_assessments')
+          .whereIn('server_name', batchServerNames)
+          .whereNotNull('application')
+          .select('server_name', 'application') as Array<{ server_name: string; application: string }>
+        const existingPrimaryByServer = new Map(existingPrimaryRows.map((row) => [row.server_name, row.application]))
+        const claimedPrimarySlot = new Set<string>()
+        const primaryBatch: MappingRecord[] = []
+        for (const record of batch) {
+          const existingPrimary = existingPrimaryByServer.get(record.server_name)
+          if (existingPrimary && existingPrimary !== record.application) continue
+          if (claimedPrimarySlot.has(record.server_name)) continue
+          claimedPrimarySlot.add(record.server_name)
+          primaryBatch.push(record)
+        }
+        if (primaryBatch.length) {
+          await transaction('server_assessments')
+            .insert(primaryBatch)
+            .onConflict('server_name')
+            .merge(createApplicationMappingUpsertUpdates(transaction))
+        }
+
+        await addApplicationServerMappings(transaction, batch.map((record) => ({
+          serverName: record.server_name,
+          application: record.application,
+        })))
         batch = []
       }
 
@@ -204,15 +232,19 @@ export async function importApplicationServerMappingFile(
         rowsRead++
         const record = toMappingRecord(row, importRunId, rowsRead + 1)
         const serverName = record.server_name.toLowerCase()
-        if (seenServerNames.has(serverName)) {
+        const pairKey = `${serverName}\u0000${record.application.toLowerCase()}`
+        if (seenPairs.has(pairKey)) {
           discarded++
           continue
         }
-        seenServerNames.add(serverName)
-        if (existingServerNames.has(serverName)) updated++
-        else {
-          inserted++
-          existingServerNames.add(serverName)
+        seenPairs.add(pairKey)
+        if (!seenServerNames.has(serverName)) {
+          seenServerNames.add(serverName)
+          if (existingServerNames.has(serverName)) updated++
+          else {
+            inserted++
+            existingServerNames.add(serverName)
+          }
         }
         batch.push(record)
         if (batch.length >= 1_000) await writeBatch()

@@ -21,6 +21,7 @@ export type AssessmentIdentity = {
   serverName: string
   ipAddress: string | null
   application: string | null
+  coHostedApplications: string[]
   resourceTags: string | null
   sourceSystem: string | null
   operatingSystemName: string | null
@@ -100,14 +101,19 @@ function compileRule(rule: EnvironmentRuleInput): (assessment: AssessmentIdentit
   }
   const expected = rule.value.toLocaleLowerCase()
   const matcher = rule.operator === 'glob' ? globToRegExp(rule.value) : null
-  return (assessment) => {
-    const actual = String(assessment[rule.field] ?? '').toLocaleLowerCase()
+  const matchesValue = (rawValue: string): boolean => {
+    const actual = rawValue.toLocaleLowerCase()
     if (rule.operator === 'equals') return actual === expected
     if (rule.operator === 'contains') return actual.includes(expected)
     if (rule.operator === 'startsWith') return actual.startsWith(expected)
     if (rule.operator === 'endsWith') return actual.endsWith(expected)
-    return matcher!.test(String(assessment[rule.field] ?? ''))
+    return matcher!.test(rawValue)
   }
+  // A server can host more than one application, so an application rule must match on any of them, not just the primary one.
+  if (rule.field === 'application') {
+    return (assessment) => [assessment.application, ...assessment.coHostedApplications].some((value) => matchesValue(String(value ?? '')))
+  }
+  return (assessment) => matchesValue(String(assessment[rule.field] ?? ''))
 }
 
 function fieldLabel(field: EnvironmentRuleField): string {

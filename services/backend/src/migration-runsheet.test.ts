@@ -30,7 +30,7 @@ test('normalizeRunsheetTasks drops source backup/snapshot tasks in pre-migration
 })
 
 test('expandRunsheetRows expands per-server tasks once per server and keeps once-tasks singular', () => {
-  const servers: RunsheetServer[] = [{ name: 'srv-01', application: 'App A', environment: 'Prod' }, { name: 'srv-02', application: 'App A', environment: 'Prod' }]
+  const servers: RunsheetServer[] = [{ name: 'srv-01', application: 'App A', environment: 'Prod', coHostedApplications: [] }, { name: 'srv-02', application: 'App A', environment: 'Prod', coHostedApplications: [] }]
   const rows = expandRunsheetRows([
     { phase: 'pre-migration', task: 'CAB approval', description: 'Get sign-off', scope: 'once', suggestedOwner: 'Change Manager', estimatedEffort: '1 day' },
     { phase: 'pre-migration', task: 'Check replication health', description: 'Verify Azure Migrate replication', scope: 'per-server', suggestedOwner: null, estimatedEffort: null },
@@ -55,7 +55,7 @@ test('expandRunsheetRows falls back to "All servers" when the sprint has no serv
 
 test('buildRunsheetWorkbook produces a workbook with an Overview sheet and one sheet per phase', async () => {
   const sprint: RunsheetSprintSummary = { sequence: 1, name: 'Sprint 1', wave: 1, environment: 'Production', targetedStartDate: '2026-01-05', targetedEndDate: '2026-01-26' }
-  const servers: RunsheetServer[] = [{ name: 'srv-01', application: 'App A', environment: 'Prod' }]
+  const servers: RunsheetServer[] = [{ name: 'srv-01', application: 'App A', environment: 'Prod', coHostedApplications: [] }]
   const rows = expandRunsheetRows([
     { phase: 'pre-migration', task: 'Confirm CAB approval', description: 'Obtain change approval.', scope: 'once', suggestedOwner: 'Change Manager', estimatedEffort: '1 day' },
     { phase: 'cutover', task: 'Initiate Azure Migrate failover', description: 'Trigger migration for the VM.', scope: 'per-server', suggestedOwner: 'Migration Engineer', estimatedEffort: '2 hours' },
@@ -81,7 +81,7 @@ test('buildRunsheetWorkbook produces a workbook with an Overview sheet and one s
 
 test('buildRunsheetWorkbook lists load balancers whose topology touches the sprint\'s servers', async () => {
   const sprint: RunsheetSprintSummary = { sequence: 1, name: 'Sprint 1', wave: 1, environment: 'Production', targetedStartDate: null, targetedEndDate: null }
-  const servers: RunsheetServer[] = [{ name: 'srv-01', application: 'App A', environment: 'Prod' }]
+  const servers: RunsheetServer[] = [{ name: 'srv-01', application: 'App A', environment: 'Prod', coHostedApplications: [] }]
   const loadBalancers: RunsheetLoadBalancer[] = [{ virtualServerName: 'vs-app-a', ipAddress: '10.0.0.5', port: 443, protocol: 'HTTPS', poolName: 'pool-app-a', affectedServers: ['srv-01'] }]
   const buffer = await buildRunsheetWorkbook(sprint, servers, [], loadBalancers)
 
@@ -99,7 +99,7 @@ test('buildRunsheetWorkbook lists load balancers whose topology touches the spri
 
 test('buildRunsheetWorkbook notes when no load balancers touch the sprint\'s servers', async () => {
   const sprint: RunsheetSprintSummary = { sequence: 1, name: 'Sprint 1', wave: 1, environment: 'Production', targetedStartDate: null, targetedEndDate: null }
-  const servers: RunsheetServer[] = [{ name: 'srv-01', application: 'App A', environment: 'Prod' }]
+  const servers: RunsheetServer[] = [{ name: 'srv-01', application: 'App A', environment: 'Prod', coHostedApplications: [] }]
   const buffer = await buildRunsheetWorkbook(sprint, servers, [])
 
   const workbook = new ExcelJS.Workbook()

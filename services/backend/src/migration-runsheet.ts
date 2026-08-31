@@ -286,7 +286,7 @@ export function filterOutOfScopeTasks(tasks: RunsheetTask[]): RunsheetTask[] {
   return tasks.filter((task) => task.phase === 'post-migration' || !sourceBackupPattern.test(`${task.task} ${task.description}`))
 }
 
-export type RunsheetServer = { name: string; application: string | null; environment: string | null }
+export type RunsheetServer = { name: string; application: string | null; environment: string | null; coHostedApplications: string[] }
 
 export type RunsheetRow = {
   phase: RunsheetPhase
@@ -352,9 +352,9 @@ export async function buildRunsheetWorkbook(sprint: RunsheetSprintSummary, serve
   overview.addRow(['Migration tooling', 'Azure Migrate'])
   overview.addRow([])
   overview.addRow([`Servers in this sprint (${servers.length})`])
-  const serverHeaderRow = overview.addRow(['Server', 'Application', 'Environment'])
+  const serverHeaderRow = overview.addRow(['Server', 'Application', 'Co-hosted applications', 'Environment'])
   styleHeader(serverHeaderRow)
-  for (const server of servers) overview.addRow([server.name, server.application ?? '—', server.environment ?? '—'])
+  for (const server of servers) overview.addRow([server.name, server.application ?? '—', server.coHostedApplications.join(', ') || '—', server.environment ?? '—'])
   overview.addRow([])
   overview.addRow([`Load balancers in this sprint's topology (${loadBalancers.length})`])
   if (loadBalancers.length > 0) {
@@ -417,13 +417,13 @@ export async function requestMigrationRunsheetWorkbook(connection: Knex, input: 
   const plan = savedPlan?.plan_json ? (typeof savedPlan.plan_json === 'string' ? JSON.parse(savedPlan.plan_json) : savedPlan.plan_json) as {
     waves?: Array<{ wave?: number; environment?: string; sprints?: Array<{
       sequence?: number; sprint?: number; name?: string; targetedStartDate?: string; targetedEndDate?: string
-      servers?: Array<{ name?: string; application?: string; environment?: string }>
+      servers?: Array<{ name?: string; application?: string; environment?: string; coHostedApplications?: string[] }>
     }> }>
   } : null
   if (!plan) throw new MigrationRunsheetError('A saved migration wave plan is required before generating a migration runsheet.', 404)
 
   let matchedWave: { wave?: number; environment?: string } | undefined
-  let selectedSprint: { sequence?: number; sprint?: number; name?: string; targetedStartDate?: string; targetedEndDate?: string; servers?: Array<{ name?: string; application?: string; environment?: string }> } | undefined
+  let selectedSprint: { sequence?: number; sprint?: number; name?: string; targetedStartDate?: string; targetedEndDate?: string; servers?: Array<{ name?: string; application?: string; environment?: string; coHostedApplications?: string[] }> } | undefined
   for (const wave of plan.waves ?? []) {
     const sprint = (wave.sprints ?? []).find((candidate) => candidate.sequence === input.sprintSequence)
     if (sprint) { matchedWave = wave; selectedSprint = sprint; break }
@@ -439,7 +439,7 @@ export async function requestMigrationRunsheetWorkbook(connection: Knex, input: 
     targetedEndDate: selectedSprint.targetedEndDate ?? null,
   }
   const servers: RunsheetServer[] = (selectedSprint.servers ?? [])
-    .map((server) => ({ name: String(server.name ?? '').trim(), application: server.application ?? null, environment: server.environment ?? null }))
+    .map((server) => ({ name: String(server.name ?? '').trim(), application: server.application ?? null, environment: server.environment ?? null, coHostedApplications: server.coHostedApplications ?? [] }))
     .filter((server) => server.name)
   if (servers.length === 0) throw new MigrationRunsheetError('This sprint has no servers assigned, so a migration runsheet cannot be produced.', 404)
   const loadBalancers = await findRelatedLoadBalancers(connection, servers)

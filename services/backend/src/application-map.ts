@@ -46,13 +46,12 @@ const addressMatchesNetwork = (address: ipaddr.IPv4 | ipaddr.IPv6, network: ipad
 }
 
 export async function listApplicationEnvironments(connection: Knex | Knex.Transaction) {
-  const rows = await connection('server_assessments')
-    .whereNotNull('application')
-    .whereRaw("TRIM(application) <> ''")
-    .select({ application: 'application', environment: 'environment_type' })
-    .count({ serverCount: 'id' })
-    .groupBy('application', 'environment_type')
-    .orderBy([{ column: 'application', order: 'asc' }, { column: 'environment_type', order: 'asc' }]) as Array<{
+  const rows = await connection('application_server_mappings as mappings')
+    .join('server_assessments as assessments', 'assessments.server_name', 'mappings.server_name')
+    .select({ application: 'mappings.application', environment: 'assessments.environment_type' })
+    .count({ serverCount: 'assessments.id' })
+    .groupBy('mappings.application', 'assessments.environment_type')
+    .orderBy([{ column: 'mappings.application', order: 'asc' }, { column: 'assessments.environment_type', order: 'asc' }]) as Array<{
       application: string
       environment: string | null
       serverCount: string | number
@@ -71,7 +70,7 @@ export async function buildApplicationMap(
   environment: string,
 ) {
   const assessmentQuery = connection('server_assessments')
-    .where({ application })
+    .whereIn('server_name', connection('application_server_mappings').where({ application }).select('server_name'))
     .select({
       serverName: 'server_name', application: 'application', environmentType: 'environment_type', ipAddress: 'ip_address',
     })

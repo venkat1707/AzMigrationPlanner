@@ -1,4 +1,5 @@
 import type { Knex } from 'knex'
+import { listApplicationsForServers } from './application-server-mappings.js'
 
 export type MigrationWaveOptions = {
   minimumServers: number
@@ -13,6 +14,7 @@ export type MigrationWaveOptions = {
   excludedApplications: string[]
   excludedServers: string[]
   excludeUnmappedServers: boolean
+  excludeCoreInfrastructure: boolean
   applicationAffinityGroups: string[][]
   serverAffinityGroups: string[][]
   environmentFilters: string[]
@@ -31,6 +33,8 @@ type AssessmentRow = {
   totalIssues: number | null
   recommendedComputeSku: string | null
   treatmentPlan?: string | null
+  /** Additional applications co-hosted on this server beyond the primary `application`. */
+  coHostedApplications?: string[]
 }
 
 export type DependencyRow = {
@@ -43,6 +47,8 @@ type PlanningServer = {
   name: string
   application: string
   applicationMapped: boolean
+  /** Additional applications co-hosted on this server beyond the primary `application`. */
+  coHostedApplications: string[]
   environment: string
   migrationReadiness: string
   securityReadiness: string | null
@@ -70,6 +76,12 @@ type SprintDraft = {
   pool: 'infrastructure' | 'application'
   units: WorkUnit[]
   servers: PlanningServer[]
+  /** Rationale notes appended when this draft absorbed another sprint's servers (see mergeCoHostedApplicationSprints). */
+  mergeNotes?: string[]
+  /** The size this draft was originally packed against: options.maximumServers in manual mode, or the auto-computed safety ceiling in auto-size mode. Used by relocateMergeOverflow to detect merge-caused overflow. */
+  sizeCeiling: number
+  /** Applications that triggered a co-host merge into this draft (see mergeCoHostedApplicationSprints); these must never be relocated back out by relocateMergeOverflow. */
+  mergedApplications?: string[]
 }
 
 const clean = (value: string | null | undefined, fallback: string) => value?.trim() || fallback
@@ -90,6 +102,7 @@ export const defaultMigrationWaveOptions: MigrationWaveOptions = {
   excludedApplications: [],
   excludedServers: [],
   excludeUnmappedServers: false,
+  excludeCoreInfrastructure: false,
   applicationAffinityGroups: [],
   serverAffinityGroups: [],
   environmentFilters: [],
@@ -111,11 +124,16 @@ export async function createMigrationWavePlan(
   }) as AssessmentRow[]
 
   const serverNames = assessments.map(({ serverName }) => serverName)
-  const [infrastructureRows, dependencies] = await Promise.all([
+  const [infrastructureRows, dependencies, mappingsByServer] = await Promise.all([
     connection('core_infrastructure_servers')
       .select({ serverName: 'server_name', category: 'category' }) as Promise<Array<{ serverName: string; category: string }>>,
     loadDependencyPairs(connection, serverNames),
+    listApplicationsForServers(connection, serverNames),
   ])
+  for (const assessment of assessments) {
+    const mappings = mappingsByServer.get(assessment.serverName) ?? []
+    assessment.coHostedApplications = mappings.filter((mapping) => !mapping.isPrimary).map((mapping) => mapping.application)
+  }
 
   return buildMigrationWavePlan(assessments, infrastructureRows, dependencies, options)
 }
@@ -154,6 +172,7 @@ export function buildMigrationWavePlan(
       name: assessment.serverName,
       application: clean(assessment.application, roles[0] ?? 'Unmapped application'),
       applicationMapped: Boolean(assessment.application?.trim()),
+      coHostedApplications: assessment.coHostedApplications ?? [],
       environment: clean(assessment.environment, 'Unspecified'),
       migrationReadiness,
       securityReadiness: assessment.securityReadiness,
@@ -170,8 +189,9 @@ export function buildMigrationWavePlan(
   const excludedApplications = new Set(options.excludedApplications.map(normalize))
   const excludedServers = new Set(options.excludedServers.map(normalize))
   const isUnmappedExcluded = (server: PlanningServer) => options.excludeUnmappedServers && !server.applicationMapped
-  const excluded = servers.filter((server) => excludedApplications.has(normalize(server.application)) || excludedServers.has(normalize(server.name)) || isUnmappedExcluded(server))
-  const included = servers.filter((server) => !excludedApplications.has(normalize(server.application)) && !excludedServers.has(normalize(server.name)) && !isUnmappedExcluded(server))
+  const isCoreInfrastructureExcluded = (server: PlanningServer) => options.excludeCoreInfrastructure && server.serverType === 'Infrastructure'
+  const excluded = servers.filter((server) => excludedApplications.has(normalize(server.application)) || excludedServers.has(normalize(server.name)) || isUnmappedExcluded(server) || isCoreInfrastructureExcluded(server))
+  const included = servers.filter((server) => !excludedApplications.has(normalize(server.application)) && !excludedServers.has(normalize(server.name)) && !isUnmappedExcluded(server) && !isCoreInfrastructureExcluded(server))
   const schedulable = included.filter(({ readiness }) => readiness !== 'Not ready')
   const deferred = included.filter(({ readiness }) => readiness === 'Not ready')
   const schedulableNames = new Set(schedulable.map(({ name }) => normalize(name)))
@@ -218,6 +238,8 @@ export function buildMigrationWavePlan(
     rebalanceMinimums(drafts, options)
     optimizeDependencyPacking(drafts, options)
   }
+  mergeCoHostedApplicationSprints(drafts)
+  relocateMergeOverflow(drafts, options)
   const assignment = new Map<string, { sprint: number; wave: number; environment: string; application: string }>()
   let sprintSequence = 0
   const waves = environmentOrder.map((environment, waveIndex) => {
@@ -398,7 +420,9 @@ export function buildMigrationWavePlan(
         ? 'Server explicitly excluded from this plan.'
         : isUnmappedExcluded(server)
           ? 'Server is not mapped to an application.'
-          : `Application “${server.application}” explicitly excluded from this plan.`,
+          : isCoreInfrastructureExcluded(server)
+            ? 'Server is core infrastructure, excluded from this plan.'
+            : `Application “${server.application}” explicitly excluded from this plan.`,
     })),
     crossDependenciesByEnvironment,
     crossSprintDependencies,
@@ -695,7 +719,7 @@ function packUnits(units: WorkUnit[], environment: string, options: MigrationWav
     if (draft) {
       draft.units.push(unit)
       draft.servers.push(...unit.servers)
-    } else drafts.push({ environment, pool: 'application', units: [unit], servers: [...unit.servers] })
+    } else drafts.push({ environment, pool: 'application', units: [unit], servers: [...unit.servers], sizeCeiling: options.maximumServers })
   }
 }
 
@@ -712,7 +736,7 @@ function packUnitsAuto(units: WorkUnit[], environment: string, pool: 'infrastruc
   const orderedUnits = [...units].sort((left, right) => right.servers.length - left.servers.length || compareWorkUnits(left, right))
   for (const unit of orderedUnits) {
     if (unit.servers.length >= adaptiveTarget) {
-      drafts.push({ environment, pool, units: [unit], servers: [...unit.servers] })
+      drafts.push({ environment, pool, units: [unit], servers: [...unit.servers], sizeCeiling: adaptiveTarget })
       continue
     }
     // Prefer a draft that already holds a unit this one depends on (a ceiling-cut weakest link):
@@ -723,7 +747,7 @@ function packUnitsAuto(units: WorkUnit[], environment: string, pool: 'infrastruc
     if (draft) {
       draft.units.push(unit)
       draft.servers.push(...unit.servers)
-    } else drafts.push({ environment, pool, units: [unit], servers: [...unit.servers] })
+    } else drafts.push({ environment, pool, units: [unit], servers: [...unit.servers], sizeCeiling: adaptiveTarget })
   }
 }
 
@@ -784,6 +808,136 @@ function swapUnits(left: WorkUnit, leftDraft: SprintDraft, right: WorkUnit, righ
 
 function refreshDraftServers(draft: SprintDraft) {
   draft.servers = draft.units.flatMap(({ servers }) => servers)
+}
+
+/**
+ * A server can host more than one application. If two sprints (within the same environment and
+ * pool, so this never crosses an environment boundary or mixes infrastructure with application
+ * sprints) each contain a server for the same application - whether that application is the
+ * server's primary application or one it co-hosts - those sprints are merged into the earliest
+ * one so every server for a shared application always migrates together.
+ */
+function mergeCoHostedApplicationSprints(drafts: SprintDraft[]): void {
+  const parent = drafts.map((_, index) => index)
+  const find = (index: number): number => {
+    while (parent[index] !== index) {
+      parent[index] = parent[parent[index]!]!
+      index = parent[index]!
+    }
+    return index
+  }
+  const union = (a: number, b: number) => {
+    const rootA = find(a)
+    const rootB = find(b)
+    if (rootA !== rootB) parent[Math.max(rootA, rootB)] = Math.min(rootA, rootB)
+  }
+
+  const draftIndexesByApplication = new Map<string, number[]>()
+  drafts.forEach((draft, index) => {
+    for (const server of draft.servers) {
+      const applications = new Set([server.application, ...server.coHostedApplications])
+      for (const application of applications) {
+        const key = `${draft.environment}\u0000${draft.pool}\u0000${normalize(application)}`
+        const indexes = draftIndexesByApplication.get(key)
+        if (indexes) { if (!indexes.includes(index)) indexes.push(index) }
+        else draftIndexesByApplication.set(key, [index])
+      }
+    }
+  })
+  const mergedApplicationsByRoot = new Map<number, Set<string>>()
+  for (const [key, indexes] of draftIndexesByApplication) {
+    if (indexes.length < 2) continue
+    for (let i = 1; i < indexes.length; i++) union(indexes[0]!, indexes[i]!)
+    const application = key.split('\u0000')[2]!
+    const root = find(indexes[0]!)
+    const applications = mergedApplicationsByRoot.get(root) ?? new Set<string>()
+    applications.add(application)
+    mergedApplicationsByRoot.set(root, applications)
+  }
+
+  const groups = new Map<number, number[]>()
+  drafts.forEach((_, index) => {
+    const root = find(index)
+    const members = groups.get(root) ?? []
+    members.push(index)
+    groups.set(root, members)
+  })
+
+  const merged: SprintDraft[] = []
+  for (const [root, members] of groups) {
+    const primary = drafts[members[0]!]!
+    if (members.length === 1) {
+      merged.push(primary)
+      continue
+    }
+    const applications = [...(mergedApplicationsByRoot.get(root) ?? [])].sort()
+    primary.units = members.flatMap((index) => drafts[index]!.units)
+    primary.servers = members.flatMap((index) => drafts[index]!.servers)
+    primary.mergedApplications = [...new Set([...(primary.mergedApplications ?? []), ...applications])]
+    primary.mergeNotes = [
+      `Merged with ${members.length - 1} other sprint${members.length - 1 === 1 ? '' : 's'} because ${applications.length === 1 ? 'application' : 'applications'} `
+        + `${applications.map((application) => `“${application}”`).join(', ')} would otherwise have servers split across sprints in the same environment.`,
+    ]
+    merged.push(primary)
+  }
+  drafts.length = 0
+  drafts.push(...merged)
+}
+
+/**
+ * A co-host merge can push a sprint past its size ceiling (options.maximumServers in manual mode, or
+ * the auto-computed safety ceiling in auto-size mode) by pulling in application groups that have
+ * nothing to do with the shared application that triggered the merge. This peels those "edge"
+ * groups back off, one whole application at a time (an application's servers are never split across
+ * sprints), preferring the group with the weakest observed dependency ties to the rest of the
+ * sprint, and relocates it to another same-environment, same-pool sprint with spare capacity - or a
+ * new sprint if none fits. The application(s) that actually caused the merge are never moved, or the
+ * merge would be immediately undone.
+ */
+function relocateMergeOverflow(drafts: SprintDraft[], options: MigrationWaveOptions): void {
+  for (const draft of drafts) {
+    if (!draft.mergedApplications?.length) continue
+    const protectedApplications = new Set(draft.mergedApplications.map(normalize))
+    // The recorded merge trigger may be an application a unit only co-hosts rather than its primary
+    // application, so a unit is protected if ANY of its servers carry the trigger application at all.
+    const isProtected = (unit: WorkUnit) => unit.servers.some((server) =>
+      [server.application, ...server.coHostedApplications].some((application) => protectedApplications.has(normalize(application))))
+    const rank = (units: WorkUnit[]) => units
+      .map((unit) => ({ unit, attachment: dependencyWeight(unit, draft) }))
+      .sort((left, right) => left.attachment - right.attachment || right.unit.servers.length - left.unit.servers.length)
+    while (draft.servers.length > draft.sizeCeiling) {
+      const unprotected = rank(draft.units.filter((unit) => !isProtected(unit)))
+      // Keeping every merge-triggering application together is a soft preference, not an absolute
+      // rule: if nothing else is left to relocate and more than one application remains in this
+      // sprint, one of the merge-triggering applications is relocated as a last resort so the sprint
+      // still honors the size limit instead of staying oversized indefinitely.
+      const lastResort = unprotected.length === 0 && draft.units.length > 1 ? rank(draft.units) : []
+      const weakest = unprotected[0] ?? lastResort[0]
+      if (!weakest) break
+      const destination = drafts
+        .filter((candidate) => candidate !== draft
+          && candidate.environment === draft.environment
+          && candidate.pool === draft.pool
+          && candidate.servers.length + weakest.unit.servers.length <= candidate.sizeCeiling
+          && canCombine(candidate.units, [weakest.unit], options))
+        .sort((left, right) => dependencyWeight(weakest.unit, right) - dependencyWeight(weakest.unit, left)
+          || (right.sizeCeiling - right.servers.length) - (left.sizeCeiling - left.servers.length))[0]
+        ?? (() => {
+          const created: SprintDraft = { environment: draft.environment, pool: draft.pool, units: [], servers: [], sizeCeiling: draft.sizeCeiling }
+          drafts.push(created)
+          return created
+        })()
+      const splitProtectedApplication = unprotected.length === 0
+      const relocationNote = splitProtectedApplication
+        ? `Split “${weakest.unit.application}” (${weakest.unit.servers.length} server${weakest.unit.servers.length === 1 ? '' : 's'}) away from the co-host merge to keep this sprint within the ${draft.sizeCeiling}-server limit; every other application sharing a server with the merge trigger had already been relocated.`
+        : `Relocated “${weakest.unit.application}” (${weakest.unit.servers.length} server${weakest.unit.servers.length === 1 ? '' : 's'}) to relieve overflow caused by merging co-hosted application sprints; it had no observed dependency ties to the rest of this sprint.`
+      moveUnit(weakest.unit, draft, destination)
+      draft.mergeNotes = [...(draft.mergeNotes ?? []), relocationNote]
+      destination.mergeNotes = [...(destination.mergeNotes ?? []), splitProtectedApplication
+        ? `Absorbed “${weakest.unit.application}” (${weakest.unit.servers.length} server${weakest.unit.servers.length === 1 ? '' : 's'}) split from an oversized co-host merge to honor the sprint size limit.`
+        : `Absorbed “${weakest.unit.application}” (${weakest.unit.servers.length} server${weakest.unit.servers.length === 1 ? '' : 's'}) relocated from an oversized co-host merge.`]
+    }
+  }
 }
 
 function rebalanceMinimums(drafts: SprintDraft[], options: MigrationWaveOptions) {

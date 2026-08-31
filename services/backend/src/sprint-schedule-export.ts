@@ -25,6 +25,7 @@ export type ScheduleAssessment = {
   serverName: string
   application: string | null
   environment: string | null
+  coHostedApplications: string[]
 }
 
 export type SchedulePlan = {
@@ -39,7 +40,7 @@ export type SchedulePlan = {
       targetedStartDate?: string
       targetedEndDate?: string
       status?: string
-      servers: Array<{ name: string; application: string; environment: string }>
+      servers: Array<{ name: string; application: string; environment: string; coHostedApplications?: string[] }>
     }>
   }>
 }
@@ -63,6 +64,7 @@ export type SprintScheduleView = {
     serverName: string
     application: string | null
     environment: string | null
+    coHostedApplications: string[]
     wave: number | null
     sprintSequence: number | null
     sprintName: string | null
@@ -103,7 +105,7 @@ export function buildSprintScheduleView(plan: SchedulePlan, assessedServers: Sch
         sprint: sprint.sprint,
         name: sprint.name,
         serverCount: sprint.serverCount,
-        applications: [...new Set(sprint.servers.map(({ application }) => application).filter(Boolean))].sort(),
+        applications: [...new Set(sprint.servers.flatMap(({ application, coHostedApplications }) => [application, ...(coHostedApplications ?? [])]).filter(Boolean))].sort(),
         targetedStartDate: sprint.targetedStartDate ?? null,
         targetedEndDate: sprint.targetedEndDate ?? null,
         status: sprint.status ?? 'Scheduled',
@@ -178,17 +180,19 @@ export async function createSprintScheduleWorkbook(view: SprintScheduleView): Pr
 
   const serverSheet = workbook.addWorksheet('Server Timeline', { views: [{ state: 'frozen', ySplit: 1 }] })
   serverSheet.columns = [
-    { header: 'Server', key: 'serverName' }, { header: 'Application', key: 'application' }, { header: 'Assessment Environment', key: 'assessmentEnvironment' },
+    { header: 'Server', key: 'serverName' }, { header: 'Application', key: 'application' }, { header: 'Co-hosted Applications', key: 'coHostedApplications' },
+    { header: 'Assessment Environment', key: 'assessmentEnvironment' },
     { header: 'Wave', key: 'wave' }, { header: 'Sprint Sequence', key: 'sprintSequence' }, { header: 'Sprint', key: 'sprintName' },
     { header: 'Targeted Start', key: 'targetedStartDate' }, { header: 'Targeted End', key: 'targetedEndDate' }, { header: 'Assignment Status', key: 'status' },
   ]
   for (const server of view.serverTimeline) serverSheet.addRow({
     ...server,
+    coHostedApplications: server.coHostedApplications.join(', '),
     assessmentEnvironment: server.environment,
     status: server.sprintSequence === null ? 'Not assigned to a saved sprint' : 'Assigned',
   })
   styleHeader(serverSheet.getRow(1))
-  serverSheet.autoFilter = { from: 'A1', to: 'I1' }
+  serverSheet.autoFilter = { from: 'A1', to: 'J1' }
   fitColumns(serverSheet)
 
   const sprints = scheduledSprints(view)

@@ -84,6 +84,8 @@ button { letter-spacing: 0; }
 .coverage-section h2 { margin: 0; color: #2a4057; font-size: 13px; }
 .coverage-section p { margin: 4px 0 0; color: var(--muted); font-size: 9px; }
 .coverage-section > header > strong { min-width: 32px; color: #315f8c; font-size: 18px; text-align: right; }
+.coverage-section > header .coverage-header-actions { flex: 0 0 auto; display: flex; gap: 6px; }
+.coverage-header-actions .icon-button { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; color: #315f8c; background: #eef2f8; border: 1px solid #c4cfdf; border-radius: 4px; cursor: pointer; }
 .coverage-empty, .coverage-loading { min-height: 120px; display: grid; place-content: center; justify-items: center; gap: 8px; color: #76869a; font-size: 10px; }
 .coverage-message { margin: 14px 18px 0; padding: 9px 10px; display: flex; align-items: center; gap: 7px; border: 1px solid; border-radius: 4px; font-size: 10px; }
 .coverage-message.failed { color: #8a3540; background: #fff1f2; border-color: #fecdd3; }

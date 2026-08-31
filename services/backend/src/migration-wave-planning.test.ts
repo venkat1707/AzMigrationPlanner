@@ -56,6 +56,27 @@ test('excludeUnmappedServers filters out servers with no application recorded, i
   assert.ok(plan.excluded.every(({ reason }) => reason === 'Server is not mapped to an application.'))
 })
 
+test('excludeCoreInfrastructure filters out servers with a recorded infrastructure role, leaving application servers untouched', () => {
+  const assessments = [
+    { serverName: 'app-01', application: 'Orders', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+    { serverName: 'dc-01', application: null, environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+    { serverName: 'fileshare-01', application: '', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 100, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
+  ]
+  const infrastructureRows = [
+    { serverName: 'dc-01', category: 'Active Directory' },
+    { serverName: 'fileshare-01', category: 'File Server' },
+  ]
+  const plan = buildMigrationWavePlan(assessments, infrastructureRows, [], {
+    ...defaultMigrationWaveOptions,
+    minimumServers: 1,
+    excludeCoreInfrastructure: true,
+  })
+
+  assert.deepEqual(plan.waves.flatMap((wave) => wave.sprints).flatMap((sprint) => sprint.servers.map(({ name }) => name)), ['app-01'])
+  assert.deepEqual(plan.excluded.map(({ name }) => name).sort(), ['dc-01', 'fileshare-01'])
+  assert.ok(plan.excluded.every(({ reason }) => reason === 'Server is core infrastructure, excluded from this plan.'))
+})
+
 test('auto-size mode groups dependency-connected servers into one sprint even across different applications', () => {
   const assessments = [
     { serverName: 'web-01', application: 'Web App', environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null, storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null },
@@ -248,4 +269,61 @@ test('zero cross-sprint dependency mode keeps an oversized dependency chain in o
   const sprintFor = (name: string) => plan.waves.flatMap((wave) => wave.sprints).find((sprint) => sprint.servers.some((server) => server.name === name))
   assert.equal(sprintFor('chain-20')?.sequence, sprintFor('chain-21')?.sequence)
   assert.equal(plan.summary.crossSprintDependencies, 0)
+})
+
+function coHostMergeOverflowAssessments() {
+  const server = (name: string, application: string, coHostedApplications?: string[]) => ({
+    serverName: name, application, environment: 'Prod', migrationReadiness: 'Ready', securityReadiness: null,
+    storageGb: 10, databaseServer: false, totalIssues: 0, recommendedComputeSku: null,
+    ...(coHostedApplications ? { coHostedApplications } : {}),
+  })
+  const assessments = [
+    server('alpha-01', 'Alpha', ['Shared']),
+    server('alpha-02', 'Alpha'),
+    server('alpha-03', 'Alpha'),
+    server('bravo-01', 'Bravo'),
+    server('bravo-02', 'Bravo'),
+    server('charlie-01', 'Charlie', ['Shared']),
+    server('charlie-02', 'Charlie'),
+    server('charlie-03', 'Charlie'),
+    server('delta-01', 'Delta'),
+    server('delta-02', 'Delta'),
+  ]
+  // Same-application dependency edges so each application's servers cluster into a single
+  // work unit (manual mode otherwise only clusters servers that are dependency-connected);
+  // these never create cross-unit dependency weight since both ends land in the same unit.
+  const dependencies = [
+    { sourceServer: 'alpha-01', destinationServer: 'alpha-02', connectionCount: 1 },
+    { sourceServer: 'alpha-02', destinationServer: 'alpha-03', connectionCount: 1 },
+    { sourceServer: 'bravo-01', destinationServer: 'bravo-02', connectionCount: 1 },
+    { sourceServer: 'charlie-01', destinationServer: 'charlie-02', connectionCount: 1 },
+    { sourceServer: 'charlie-02', destinationServer: 'charlie-03', connectionCount: 1 },
+    { sourceServer: 'delta-01', destinationServer: 'delta-02', connectionCount: 1 },
+  ]
+  return { assessments, dependencies }
+}
+
+test('a co-host merge that exceeds the sprint maximum automatically relocates edge application groups with no dependency ties, without ever moving the merge-trigger applications', () => {
+  const { assessments, dependencies } = coHostMergeOverflowAssessments()
+  const plan = buildMigrationWavePlan(assessments, [], dependencies, {
+    ...defaultMigrationWaveOptions,
+    minimumServers: 1,
+    maximumServers: 6,
+  })
+
+  const sprintFor = (name: string) => plan.waves.flatMap((wave) => wave.sprints).find((sprint) => sprint.servers.some((server) => server.name === name))
+  const mergedSprint = sprintFor('alpha-01')
+  assert.equal(mergedSprint?.sequence, sprintFor('charlie-01')?.sequence)
+  assert.deepEqual(mergedSprint?.applications, ['Alpha', 'Charlie'])
+  assert.equal(mergedSprint?.serverCount, 6)
+  assert.ok(!mergedSprint?.exceptions.some((exception) => exception.includes('Exceeds the')))
+
+  const relocatedSprint = sprintFor('bravo-01')
+  assert.equal(relocatedSprint?.sequence, sprintFor('delta-01')?.sequence)
+  assert.notEqual(relocatedSprint?.sequence, mergedSprint?.sequence)
+  assert.equal(relocatedSprint?.serverCount, 4)
+  assert.deepEqual(relocatedSprint?.applications, ['Bravo', 'Delta'])
+  // Relocation/merge notes are tracked internally (draft.mergeNotes) but intentionally
+  // excluded from the user-facing exceptions list to keep the sprint output uncluttered.
+  assert.ok(!relocatedSprint?.exceptions.length)
 })

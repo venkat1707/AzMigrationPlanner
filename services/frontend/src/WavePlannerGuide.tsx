@@ -23,6 +23,7 @@ export default function WavePlannerGuide() {
           <div><dt>Readiness</dt><dd>Comes from your Server Assessment data. Only servers marked "Ready" or "Ready with conditions" are planned; anything else is set aside as <strong>deferred</strong> so it doesn't block the rest of the plan.</dd></div>
           <div><dt>Data-heavy server</dt><dd>Any database server, or any server whose assessed storage is above a size you choose (2048 GB by default). These are flagged because moving a lot of data is slower and riskier, so you may want to spread them out.</dd></div>
           <div><dt>Affinity group</dt><dd>A list of applications or servers you tell the planner must always land in the same sprint, no matter what else the automatic logic would decide.</dd></div>
+          <div><dt>Co-hosted applications</dt><dd>Two or more applications that share at least one server (for example, a shared file server or monitoring agent). The planner always keeps their sprints merged into one, ahead of your size guardrails &mdash; see "Co-hosted applications" below.</dd></div>
           <div><dt>Cross-sprint dependency</dt><dd>Two servers that talk to each other but ended up in different sprints. Not necessarily a mistake, but worth reviewing &mdash; especially if the "downstream" side is scheduled after the "upstream" side.</dd></div>
           <div><dt>Severe warning</dt><dd>A special case of the above: a database and the application that uses it are split across two different <em>waves</em>. This is called out separately because it's the riskiest kind of split.</dd></div>
         </dl>
@@ -37,6 +38,7 @@ export default function WavePlannerGuide() {
           <li><strong>Find natural groups.</strong> Servers are clustered by observed network dependencies (who talks to whom) and by application, so a working system's pieces stay together &mdash; see "The math behind sprint sizing" below for exactly how this clustering works.</li>
           <li><strong>Order the environments.</strong> Decides which environment's wave comes first (for example, Dev before Test before Production), unless you've turned environment separation off.</li>
           <li><strong>Pack sprints.</strong> Fits the groups from step 3 into sprints, respecting your size guardrails (or an automatic size, if you've turned that on) and, if enabled, keeping data-heavy workloads apart.</li>
+          <li><strong>Merge co-hosted applications.</strong> Applications that share a server always end up in one combined sprint, even if that goes over your maximum &mdash; then any unrelated application dragged along by that merge is relocated back out to relieve the overflow. See "Co-hosted applications" below.</li>
           <li><strong>Tidy up and report.</strong> Merges any sprint that came out too small if it safely can, then reports any dependency that still ended up crossing a sprint or wave boundary as a warning for you to review.</li>
         </ol>
       </section>
@@ -120,6 +122,15 @@ export default function WavePlannerGuide() {
           <strong>Example</strong>
           <p>Suppose after the initial packing, Sprint 2 and Sprint 5 each hold a small group of servers, and it turns out those two groups actually depend heavily on each other. Pass 1 of the refinement loop scans everything, finds that swapping these two groups would remove more cross-sprint dependency weight than any other possible move, and makes that one swap. Pass 2 scans again from scratch (now that the layout has changed) and finds a smaller, second improvement elsewhere, and makes it. Pass 3 finds no further improving move anywhere, so the loop stops after 3 passes &mdash; nowhere near the 250-pass safety limit.</p>
         </div>
+
+        <h3 id="doc-cohosted"><Layers3 size={18} /> Step 5: co-hosted applications, and relieving any overflow they cause</h3>
+        <p>Two applications are <strong>co-hosted</strong> when they share at least one server &mdash; for example, both point at the same shared file server, or both have the same monitoring agent installed. This is checked once, right after sprints are packed (and, in fixed min/max mode, after the refinement loop above has finished). Every sprint that ends up holding a piece of a co-hosted server group is combined into a single sprint, regardless of your minimum/maximum boxes or the automatic ceiling &mdash; splitting a shared server across two different change windows is treated as riskier than a temporarily oversized sprint.</p>
+        <p>If that merge pushes the combined sprint above its size limit, the planner immediately works to relieve the overflow, one whole application at a time (an application's own servers are never split up to do this): it looks at every <em>other</em> application riding along in that sprint that has no real reason to be there &mdash; anything except the applications that actually share the server &mdash; ranks them by how weakly connected they are to the rest of the sprint, and relocates the weakest one to another same-environment sprint with spare room, or a brand-new sprint if nothing fits. This repeats until the sprint is back within its limit. Only if every unrelated application has already been moved out and the sprint is still oversized will one of the actual co-hosted applications be relocated as a last resort, purely so the size limit is still honored &mdash; this is intentionally rare.</p>
+        <div className="doc-example">
+          <strong>Example</strong>
+          <p>Billing, Reporting, and Payroll all point to the same shared file server, so their sprints are merged into one. That merge also happens to combine an unrelated application, Intranet, that was previously packed alongside Reporting purely by chance. If the merged sprint now exceeds your 20-server maximum, the planner relocates Intranet out to a sprint with room (or a new one) &mdash; Billing, Reporting, and Payroll themselves are never separated, since they're the reason the sprints had to merge in the first place.</p>
+        </div>
+        <p>These merges and relocations happen automatically and are not listed sprint-by-sprint in the plan output &mdash; what you see is already the final result, and every sprint you see still respects your configured maximum (or the automatic ceiling) because of this step.</p>
       </section>
 
       <section className="doc-section" aria-labelledby="doc-environments">
@@ -224,6 +235,7 @@ export default function WavePlannerGuide() {
           <li><strong>Excluded servers</strong>: left out on purpose, because you excluded the server or its application, or because its treatment plan wasn't selected in the planning scope.</li>
           <li><strong>Cross-sprint dependency</strong>: two servers that depend on each other ended up in different sprints. Flagged as "scheduled later" when the depended-on server is planned after the server that needs it &mdash; worth double-checking before you commit to the schedule.</li>
           <li><strong>Severe warning</strong>: a database and one of its consuming applications are split across two different <em>waves</em> (not just sprints), which is the highest-risk version of the above and is called out on every affected wave.</li>
+          <li><strong>Co-hosted application merges</strong>: when applications sharing a server get merged into one sprint (and any overflow relocated back out to relieve it &mdash; see "Co-hosted applications" above), this happens silently. It isn't listed sprint-by-sprint, so every sprint you see already reflects the final, correctly-sized outcome.</li>
         </ul>
       </section>
     </article>

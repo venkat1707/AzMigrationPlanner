@@ -50,13 +50,13 @@ test('sprint schedules reject invalid ranges and calendar dates', () => {
 test('server timelines include every assessed server and follow current sprint assignments', () => {
   const plan = schedulePlan()
   const assessed = [
-    { serverName: 'APP-01', application: 'Billing', environment: 'Dev' },
-    { serverName: 'UNPLANNED-01', application: 'Archive', environment: 'Prod' },
+    { serverName: 'APP-01', application: 'Billing', environment: 'Dev', coHostedApplications: [] },
+    { serverName: 'UNPLANNED-01', application: 'Archive', environment: 'Prod', coHostedApplications: [] },
   ]
   const initial = buildSprintScheduleView(plan, assessed)
   assert.equal(initial.serverTimeline.length, 2)
   assert.deepEqual(initial.serverTimeline[0], {
-    serverName: 'APP-01', application: 'Billing', environment: 'Dev', wave: 1, sprintSequence: 1,
+    serverName: 'APP-01', application: 'Billing', environment: 'Dev', coHostedApplications: [], wave: 1, sprintSequence: 1,
     sprintName: 'Sprint 1', targetedStartDate: '2026-08-03', targetedEndDate: '2026-08-24',
   })
   assert.equal(initial.serverTimeline[1]?.sprintSequence, null)
@@ -70,7 +70,7 @@ test('server timelines include every assessed server and follow current sprint a
 })
 
 test('schedule exports generate Excel sheets and a PowerPoint archive', async () => {
-  const view = buildSprintScheduleView(schedulePlan(), [{ serverName: 'APP-01', application: 'Billing', environment: 'Dev' }])
+  const view = buildSprintScheduleView(schedulePlan(), [{ serverName: 'APP-01', application: 'Billing', environment: 'Dev', coHostedApplications: [] }])
   const excel = await createSprintScheduleWorkbook(view)
   const workbook = new ExcelJS.Workbook()
   await workbook.xlsx.load(excel.buffer.slice(excel.byteOffset, excel.byteOffset + excel.byteLength) as ArrayBuffer)

@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { AlertTriangle, Boxes, CalendarRange, CheckCircle2, ChevronDown, ClipboardCheck, Database, Download, HardDrive, Layers3, MessageSquare, Play, RefreshCw, Save, Server, Undo2, UserRound, X } from 'lucide-react'
+import { AlertTriangle, Boxes, CalendarRange, CheckCircle2, ChevronDown, ClipboardCheck, Database, Download, HardDrive, Layers3, MessageSquare, Play, RefreshCw, Save, Server, Trash2, Undo2, UserRound, X } from 'lucide-react'
 import { apiFetch } from './auth-client'
 
 type PlanningServer = {
@@ -34,6 +34,9 @@ type MigrationSprint = {
   taskCreated?: boolean
   comment?: string
   task?: TaskAssignment
+  targetedStartDate?: string
+  targetedEndDate?: string
+  status?: string
 }
 
 type TaskStatus = 'Assigned' | 'In Review' | 'Blocked' | 'Completed'
@@ -149,6 +152,7 @@ type PlannerSettings = {
   excludedApplications: string[]
   excludedServers: string[]
   excludeUnmappedServers: boolean
+  excludeCoreInfrastructure: boolean
   applicationAffinityGroups: string[][]
   serverAffinityGroups: string[][]
   environmentFilters: string[]
@@ -169,6 +173,7 @@ const defaultSettings: PlannerSettings = {
   excludedApplications: [],
   excludedServers: [],
   excludeUnmappedServers: false,
+  excludeCoreInfrastructure: false,
   applicationAffinityGroups: [],
   serverAffinityGroups: [],
   environmentFilters: [],
@@ -207,6 +212,8 @@ export default function MigrationWavePlanning({ canDeleteTasks }: { canDeleteTas
   const [error, setError] = useState('')
   const [discardConfirmation, setDiscardConfirmation] = useState(false)
   const [resetTasksConfirmation, setResetTasksConfirmation] = useState(false)
+  const [deletePlanConfirmation, setDeletePlanConfirmation] = useState(false)
+  const [deletingPlan, setDeletingPlan] = useState(false)
   const [regeneratedPlan, setRegeneratedPlan] = useState(false)
   const [createDependencyTasksOnSave, setCreateDependencyTasksOnSave] = useState(false)
   const [saveMode, setSaveMode] = useState<'initial' | 'append' | 'replace'>('initial')
@@ -360,6 +367,37 @@ export default function MigrationWavePlanning({ canDeleteTasks }: { canDeleteTas
     setSaveMode('initial')
   }
 
+  const deletePlan = async () => {
+    setDeletingPlan(true)
+    try {
+      const response = await apiFetch('/api/migration-wave-plan', { method: 'DELETE' })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: string }
+        throw new Error(payload.error ?? 'Unable to delete the migration wave plan.')
+      }
+      setPlan(null)
+      setSavedPlan(null)
+      setSavedAt(null)
+      setSavedPlanSavedAt(null)
+      setSettings(defaultSettings)
+      setEnvironmentOrder(defaultSettings.environmentOrder.join(', '))
+      setExcludedApplications('')
+      setExcludedServers('')
+      setApplicationAffinityGroups('')
+      setServerAffinityGroups('')
+      setSelectedWave(1)
+      setSaveMode('initial')
+      setRegeneratedPlan(false)
+      setError('')
+      setDeletePlanConfirmation(false)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to delete the migration wave plan.')
+      setDeletePlanConfirmation(false)
+    } finally {
+      setDeletingPlan(false)
+    }
+  }
+
   const updateSprintComment = (sequence: number, comment: string) => {
     if (!plan) return
     setPlan({
@@ -395,6 +433,7 @@ export default function MigrationWavePlanning({ canDeleteTasks }: { canDeleteTas
   }
 
   const activeWave = plan?.waves.find(({ wave }) => wave === selectedWave) ?? plan?.waves[0]
+  const planIsScheduled = Boolean(savedPlan?.waves.some((wave) => wave.sprints.some((sprint) => Boolean(sprint.targetedStartDate))))
   const activeEnvironmentDependencies = plan && activeWave
     ? activeWave.environment === 'All environments'
       ? plan.crossSprintDependencies
@@ -434,7 +473,7 @@ export default function MigrationWavePlanning({ canDeleteTasks }: { canDeleteTas
           <div className="wave-filter-columns">
             <fieldset><legend>Environments</legend><div className="wave-filter-options">{availableEnvironments.map((environment) => <label key={environment}><input type="checkbox" checked={settings.environmentFilters.includes(environment)} onChange={() => setSettings({ ...settings, environmentFilters: toggleSelection(settings.environmentFilters, environment) })} /><span>{environment}</span></label>)}</div><button type="button" className="clear-filter" disabled={settings.environmentFilters.length === 0} onClick={() => setSettings({ ...settings, environmentFilters: [] })}>Clear environment filter</button><small>Selected environments are considered for wave planning. No selection includes all environments.</small></fieldset>
             <fieldset><legend>Treatment plans</legend><div className="wave-filter-options treatment-options">{treatmentPlanOptions.map((treatment) => <label key={treatment}><input type="checkbox" checked={settings.treatmentPlans.includes(treatment)} onChange={() => setSettings({ ...settings, treatmentPlans: toggleSelection(settings.treatmentPlans, treatment) })} /><span>{treatment}</span></label>)}</div><button type="button" className="clear-filter" onClick={() => setSettings({ ...settings, treatmentPlans: ['Rehost'] })}>Reset to Rehost</button><small>Applications without a saved treatment plan are treated as Rehost.</small></fieldset>
-            <fieldset><legend>Application mapping</legend><div className="wave-filter-options"><label><input type="checkbox" checked={settings.excludeUnmappedServers} onChange={(event) => setSettings({ ...settings, excludeUnmappedServers: event.target.checked })} /><span>Exclude servers not mapped to an application</span></label></div><small>Removes servers with no application recorded on their Server Assessment, even when a fallback name (such as an infrastructure role) is shown for them.</small></fieldset>
+            <fieldset><legend>Application mapping</legend><div className="wave-filter-options"><label><input type="checkbox" checked={settings.excludeUnmappedServers} onChange={(event) => setSettings({ ...settings, excludeUnmappedServers: event.target.checked })} /><span>Exclude servers not mapped to an application</span></label><label><input type="checkbox" checked={settings.excludeCoreInfrastructure} onChange={(event) => setSettings({ ...settings, excludeCoreInfrastructure: event.target.checked })} /><span>Exclude core infrastructure servers</span></label></div><small>Removes servers with no application recorded on their Server Assessment, even when a fallback name (such as an infrastructure role) is shown for them. Excluding core infrastructure removes servers with a recorded infrastructure role (such as domain controllers or shared file servers) entirely from wave planning.</small></fieldset>
           </div>
         </section>
         <section className="wave-exclusions" aria-labelledby="wave-exclusions-title">
@@ -466,6 +505,7 @@ export default function MigrationWavePlanning({ canDeleteTasks }: { canDeleteTas
             {!savedAt && savedPlan && <button type="button" className="discard" onClick={() => setDiscardConfirmation(true)}><Undo2 size={15} />Discard changes</button>}
             <button type="button" className="primary" disabled={saving || Boolean(savedAt)} onClick={openSaveConfirmation}>{savedAt ? <CheckCircle2 size={15} /> : <Save size={15} />}{saving ? 'Saving...' : savedAt ? 'Saved' : 'Save plan'}</button>
             <button type="button" onClick={() => downloadWavePlanCsv(plan, plan.waves, 'all-environments-wave-plan.csv')}><Download size={15} />Export total plan</button>
+            {savedPlan && canDeleteTasks && <button type="button" className="discard" title={planIsScheduled ? 'This plan cannot be deleted because its sprints have already been finalized and scheduled.' : 'Delete the saved plan and all associated tasks'} disabled={planIsScheduled} onClick={() => setDeletePlanConfirmation(true)}><Trash2 size={15} />Delete plan</button>}
           </div>
         </section>
         <section className="wave-plan-summary" aria-label="Migration plan summary">
@@ -510,6 +550,10 @@ export default function MigrationWavePlanning({ canDeleteTasks }: { canDeleteTas
       <header><span><Undo2 size={20} /></span><div><h2 id="discard-plan-title">Discard unsaved changes?</h2><p>The last saved migration plan will replace the plan currently displayed.</p></div><button type="button" title="Close confirmation" onClick={() => setDiscardConfirmation(false)}><X size={18} /></button></header>
       <footer><button className="cancel-button" type="button" onClick={() => setDiscardConfirmation(false)}>No, keep current plan</button><button className="discard-confirm-button" type="button" onClick={discardChanges}>Yes, discard changes</button></footer>
     </section></div>}
+    {deletePlanConfirmation && <div className="modal-backdrop" role="presentation"><section className="wave-change-dialog discard-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-plan-title">
+      <header><span><Trash2 size={20} /></span><div><h2 id="delete-plan-title">Delete the saved migration plan?</h2><p>This permanently deletes the saved wave plan and every task associated with it, including sprint assignments, statuses, comments, cross-dependency task decisions, and task comment history. This cannot be undone.</p></div><button type="button" title="Close confirmation" disabled={deletingPlan} onClick={() => setDeletePlanConfirmation(false)}><X size={18} /></button></header>
+      <footer><button className="cancel-button" type="button" disabled={deletingPlan} onClick={() => setDeletePlanConfirmation(false)}>No, keep this plan</button><button className="discard-confirm-button" type="button" disabled={deletingPlan} onClick={() => void deletePlan()}>{deletingPlan ? 'Deleting...' : 'Yes, delete plan and all tasks'}</button></footer>
+    </section></div>}
     {resetTasksConfirmation && plan && <div className="modal-backdrop" role="presentation"><section className={`wave-change-dialog save-plan-dialog${regeneratedPlan ? ' reset-tasks-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="save-plan-title">
       <header><span>{regeneratedPlan ? <AlertTriangle size={20} /> : <Save size={20} />}</span><div><h2 id="save-plan-title">{regeneratedPlan ? 'Replace the saved plan and all tasks?' : saveMode === 'append' ? 'Add newly eligible workloads?' : 'Save generated migration plan?'}</h2><p>{regeneratedPlan ? 'This change can affect the current wave plan. Existing assignments, statuses, comments, and task history will be deleted. Choose which unassigned tasks to create from the replacement plan.' : saveMode === 'append' ? 'Only servers and applications never considered by an earlier saved plan will be added. Existing waves and tasks remain unchanged.' : 'Choose which unassigned tasks to create with this migration plan.'}</p></div><button type="button" title="Close confirmation" disabled={saving} onClick={closeSaveConfirmation}><X size={18} /></button></header>
       <div className="save-plan-task-options" aria-label="Task creation options"><label><input type="checkbox" checked={createDependencyTasksOnSave} onChange={(event) => setCreateDependencyTasksOnSave(event.target.checked)} /><span><strong>Create cross-dependency tasks</strong><small>{saveMode === 'append' ? 'Create unassigned tasks for dependencies newly introduced by these workloads.' : `Create ${plan.crossSprintDependencies.length} unassigned task${plan.crossSprintDependencies.length === 1 ? '' : 's'}, one for each detected cross-sprint dependency.`}</small></span></label></div>
@@ -537,7 +581,7 @@ function SprintCard({ sprint, wave, plan, users, saving, onCommentChange, onTask
   return <article className={`migration-sprint ${sprint.exceptions.length ? 'has-exceptions' : ''}`}>
     <header><div><span>Sprint {sprint.sequence}</span><h3>{sprint.applications.slice(0, 2).join(' + ')}{sprint.applications.length > 2 ? ` +${sprint.applications.length - 2}` : ''}</h3></div><div className="sprint-header-actions"><button type="button" title={`Export Sprint ${sprint.sequence}`} aria-label={`Export Sprint ${sprint.sequence}`} onClick={() => downloadWavePlanCsv(plan, [{ ...wave, sprints: [sprint], serverCount: sprint.serverCount, sprintCount: 1 }], `${safeFileName(wave.environment)}-sprint-${sprint.sequence}.csv`)}><Download size={14} /></button><strong>{sprint.serverCount}<small>servers</small></strong></div></header>
     <div className="sprint-metrics"><span><Boxes size={14} />{sprint.applications.length} applications</span><span><HardDrive size={14} />{formatStorage(sprint.totalStorageGb)}</span><span><Database size={14} />{sprint.dataHeavyServerCount} data-heavy</span><span><CheckCircle2 size={14} />{sprint.readiness.conditional} conditional</span></div>
-    {sprint.exceptions.length > 0 && <div className="sprint-exceptions">{sprint.exceptions.map((exception) => <p key={exception}><AlertTriangle size={13} />{exception}</p>)}</div>}
+    {sprint.exceptions.length > 0 && <div className="sprint-exceptions">{sprint.exceptions.map((exception, index) => <p key={`${index}-${exception}`}><AlertTriangle size={13} />{exception}</p>)}</div>}
     <div className="sprint-comment"><TaskFields users={users} task={sprint.task} onChange={onTaskChange} /><label><MessageSquare size={13} />Sprint comment<textarea rows={3} maxLength={4000} value={sprint.comment ?? ''} onChange={(event) => onCommentChange(event.target.value)} placeholder="Add delivery notes, ownership, prerequisites, or decisions." /></label><button type="button" disabled={saving} onClick={onSaveTask}><Save size={13} />{saving ? 'Saving...' : 'Save task'}</button></div>
     <details className="sprint-rationale"><summary><span>Why this grouping?</span><ChevronDown size={15} /></summary><ul>{sprint.groupingRationale.map((reason) => <li key={reason}>{reason}</li>)}</ul></details>
     <details><summary><span>View assigned servers</span><ChevronDown size={15} /></summary><div className="sprint-server-list">{sprint.servers.map((server) => <div key={server.name}><span className={`server-kind ${server.serverType.toLowerCase()}`}>{server.serverType === 'Infrastructure' ? 'INF' : server.serverType === 'Database' ? 'DB' : 'APP'}</span><span><strong>{server.name}</strong><small>{server.application} · {server.environment}</small></span><span className="server-plan-meta">{server.dataHeavy && <em>Data-heavy</em>}<small>{server.recommendedComputeSku ?? 'SKU unavailable'}</small></span></div>)}</div></details>
