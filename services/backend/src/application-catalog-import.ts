@@ -77,6 +77,14 @@ function toApplicationRecord(row: RawApplicationRow, rowNumber: number): Applica
   return { name, description, firstName, lastName, emailAddress }
 }
 
+function missingApplication(row: RawApplicationRow): boolean {
+  return !cellText(row.APPLICATION)
+}
+
+function skippedApplicationWarning(count: number): string {
+  return `Skipped ${count} row${count === 1 ? '' : 's'} without an APPLICATION value.`
+}
+
 async function* csvRows(filePath: string, validation: CatalogValidation): AsyncGenerator<RawApplicationRow> {
   const parser = createReadStream(filePath).pipe(parse({
     bom: true, relax_column_count: true, relax_quotes: true, skip_empty_lines: true, trim: true,
@@ -159,10 +167,17 @@ export async function inspectApplicationCatalogFile(
 ): Promise<{ rowCount: number; warnings: string[] }> {
   const validation: CatalogValidation = { warnings: new Set() }
   let rowCount = 0
+  let skippedMissing = 0
   for await (const row of rowsForFile(filePath, validation, sheetName)) {
+    if (missingApplication(row)) {
+      skippedMissing++
+      continue
+    }
     rowCount++
     toApplicationRecord(row, rowCount + 1)
   }
+  if (skippedMissing) validation.warnings.add(skippedApplicationWarning(skippedMissing))
+  if (!rowCount) throw new Error('Application catalog does not contain any rows with an APPLICATION value.')
   return { rowCount, warnings: [...validation.warnings] }
 }
 
@@ -188,6 +203,10 @@ export async function importApplicationCatalogFile(
       let rowsRead = 0
       for await (const row of rowsForFile(filePath, validation, sheetName)) {
         rowsRead++
+        if (missingApplication(row)) {
+          discarded++
+          continue
+        }
         const record = toApplicationRecord(row, rowsRead + 1)
         const normalizedName = record.name.toLowerCase()
         if (seenNames.has(normalizedName)) {

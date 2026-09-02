@@ -47,12 +47,25 @@ test('application catalog accepts application names and optional descriptions', 
   }
 })
 
-test('application catalog rejects rows without an application name', async () => {
+test('application catalog skips rows without an application name when valid rows remain', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'application-catalog-'))
+  const filePath = join(directory, 'applications.csv')
+  try {
+    await writeFile(filePath, 'Application,Description\nBilling,Billing application\n,Missing name\n')
+    const report = await inspectApplicationCatalogFile(filePath)
+    assert.equal(report.rowCount, 1)
+    assert.match(report.warnings.join(' '), /Skipped 1 row without an APPLICATION value/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('application catalog rejects files containing no application names', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'application-catalog-'))
   const filePath = join(directory, 'applications.csv')
   try {
     await writeFile(filePath, 'Application,Description\n,Missing name\n')
-    await assert.rejects(inspectApplicationCatalogFile(filePath), /APPLICATION is required at row 2/)
+    await assert.rejects(inspectApplicationCatalogFile(filePath), /does not contain any rows with an APPLICATION value/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
