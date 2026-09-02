@@ -358,8 +358,19 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .assessment-result header strong { font-size: 12px; }
 .assessment-result header small { margin-top: 3px; color: var(--muted); font-size: 10px; }
 .assessment-result dl { margin: 0; padding: 11px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.assessment-result.mapping-result dl { grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); }
 .assessment-result dl > div { min-width: 0; padding: 10px; display: flex; align-items: center; gap: 8px; background: white; border: 1px solid #dce4ef; border-radius: 4px; }
+.assessment-result .import-summary-box { position: relative; padding-right: 34px; }
 .assessment-result dl svg { width: 28px; height: 28px; padding: 6px; border-radius: 4px; }
+.assessment-result .summary-info-button { position: absolute; top: 7px; right: 7px; width: 24px; height: 24px; padding: 0; display: grid; place-items: center; color: #52647c; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }
+.assessment-result .summary-info-button:hover, .assessment-result .summary-info-button:focus-visible, .assessment-result .summary-info-button[aria-expanded="true"] { color: var(--accent); background: var(--accent-soft); outline: none; }
+.assessment-result .summary-info-button svg { width: 18px; height: 18px; padding: 2px; color: currentColor; background: transparent; }
+.assessment-result .summary-info-popover { position: absolute; z-index: 20; top: 34px; right: 7px; width: min(260px, calc(100vw - 56px)); padding: 12px 34px 12px 12px; display: block; color: var(--ink); background: white; border: 1px solid #b9c8db; border-radius: 6px; box-shadow: 0 10px 28px rgba(30, 50, 75, .18); }
+.assessment-result .summary-info-popover strong { display: block; font-size: 11px; }
+.assessment-result .summary-info-popover p { margin: 5px 0 0; color: #52647c; font-size: 10px; font-weight: 400; line-height: 1.45; }
+.assessment-result .summary-info-popover > button { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0; display: grid; place-items: center; color: #52647c; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }
+.assessment-result .summary-info-popover > button:hover, .assessment-result .summary-info-popover > button:focus-visible { color: var(--accent); background: var(--accent-soft); outline: none; }
+.assessment-result .summary-info-popover > button svg { width: 15px; height: 15px; padding: 1px; color: currentColor; background: transparent; }
 .assessment-result dl span { min-width: 0; }
 .assessment-result dt { overflow: hidden; color: var(--muted); font-size: 9px; font-weight: 700; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .assessment-result dd { margin: 3px 0 0; color: var(--ink); font-size: 16px; font-weight: 700; }
@@ -367,6 +378,7 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .assessment-result .updated svg { color: #1d4ed8; background: #e8f0ff; }
 .assessment-result .discarded svg { color: #855d1d; background: #f8efdc; }
 .assessment-result .database-servers svg { color: #334b6b; background: #e8edf4; }
+.assessment-result .additional-mappings svg { color: #6941a5; background: #f1eafa; }
 .file-queue button { width: 30px; height: 30px; display: grid; place-items: center; color: var(--muted); background: transparent; border: 0; cursor: pointer; }
 .sheet-picker { margin-top: 14px; display: grid; gap: 6px; color: #415169; font-size: 11px; font-weight: 700; }
 .sheet-picker select { width: 100%; height: 40px; padding: 0 10px; color: var(--ink); background: white; border: 1px solid #c4cfdf; border-radius: 4px; outline: none; font: inherit; font-size: 12px; }

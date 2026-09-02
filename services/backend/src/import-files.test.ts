@@ -128,12 +128,27 @@ test('Application mapping CSV accepts business-friendly column aliases', async (
 })
 
 test('Application mapping maps every supported server identity header to SERVER_NAME', async () => {
-  for (const serverHeader of ['FQDN', 'Machine', 'Machine Name', 'Server Name', 'Server']) {
+  for (const serverHeader of ['FQDN', 'Machine', 'Machine Name', 'Name', 'Server Name', 'Server']) {
     await withCsv(`Application,${serverHeader}\nBilling,billing-01.contoso.com`, async (filePath) => {
       const report = await inspectApplicationServerMappingFile(filePath)
       assert.equal(report.rowCount, 1, serverHeader)
     })
   }
+})
+
+test('Application mapping skips rows without an application when valid mappings remain', async () => {
+  await withCsv('Name,App Name\nbilling-01,Billing\nunmapped-01,', async (filePath) => {
+    const report = await inspectApplicationServerMappingFile(filePath)
+    assert.equal(report.rowCount, 1)
+    assert.match(report.warnings.join(' '), /Name -> SERVER_NAME/)
+    assert.match(report.warnings.join(' '), /Skipped 1 row without an APPLICATION value/)
+  })
+})
+
+test('Application mapping rejects files containing no application mappings', async () => {
+  await withCsv('Name,App Name\nunmapped-01,', async (filePath) => {
+    await assert.rejects(inspectApplicationServerMappingFile(filePath), /does not contain any rows with an APPLICATION value/)
+  })
 })
 
 test('Server Assessment maps FQDN to SERVER_NAME', async () => {

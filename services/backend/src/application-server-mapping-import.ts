@@ -29,6 +29,12 @@ export type ApplicationMappingImportResult = {
   importRunId: number
   fileName: string
   rowsImported: number
+  sourceRows: number
+  uniqueServers: number
+  mappingsAccepted: number
+  additionalMappings: number
+  unmappedRowsSkipped: number
+  duplicatePairsSkipped: number
   inserted: number
   updated: number
   discarded: number
@@ -44,6 +50,7 @@ const mappingHeaderContract = {
     FQDN: 'SERVER_NAME',
     MACHINE: 'SERVER_NAME',
     MACHINE_NAME: 'SERVER_NAME',
+    NAME: 'SERVER_NAME',
     HOSTNAME: 'SERVER_NAME',
     SERVER: 'SERVER_NAME',
     IP: 'IP_ADDRESS',
@@ -84,6 +91,14 @@ function toMappingRecord(row: RawMappingRow, importRunId: number, rowNumber: num
     ip_address: cellText(row.IP_ADDRESS) || null,
     application_description: cellText(row.APPLICATION_DESCRIPTION) || null,
   }
+}
+
+function missingApplication(row: RawMappingRow): boolean {
+  return !cellText(row.APPLICATION)
+}
+
+function skippedApplicationWarning(count: number): string {
+  return `Skipped ${count} row${count === 1 ? '' : 's'} without an APPLICATION value.`
 }
 
 async function* csvRows(filePath: string, validation: MappingValidation): AsyncGenerator<RawMappingRow> {
@@ -159,10 +174,17 @@ export async function inspectApplicationServerMappingFile(
 ): Promise<{ rowCount: number; warnings: string[] }> {
   const validation: MappingValidation = { warnings: new Set() }
   let rowCount = 0
+  let skippedMissingApplication = 0
   for await (const row of rowsForFile(filePath, validation, sheetName)) {
+    if (missingApplication(row)) {
+      skippedMissingApplication++
+      continue
+    }
     rowCount++
     toMappingRecord(row, 0, rowCount + 1)
   }
+  if (skippedMissingApplication) validation.warnings.add(skippedApplicationWarning(skippedMissingApplication))
+  if (!rowCount) throw new Error('Application to Server Mapping does not contain any rows with an APPLICATION value.')
   return { rowCount, warnings: [...validation.warnings] }
 }
 
@@ -179,6 +201,10 @@ export async function importApplicationServerMappingFile(
   let inserted = 0
   let updated = 0
   let discarded = 0
+  let sourceRows = 0
+  let mappingsAccepted = 0
+  let unmappedRowsSkipped = 0
+  let duplicatePairsSkipped = 0
   const validation: MappingValidation = { warnings: new Set(preflight.warnings) }
   try {
     await database.transaction(async (transaction) => {
@@ -230,14 +256,22 @@ export async function importApplicationServerMappingFile(
 
       for await (const row of rowsForFile(filePath, validation, sheetName)) {
         rowsRead++
+        sourceRows++
+        if (missingApplication(row)) {
+          discarded++
+          unmappedRowsSkipped++
+          continue
+        }
         const record = toMappingRecord(row, importRunId, rowsRead + 1)
         const serverName = record.server_name.toLowerCase()
         const pairKey = `${serverName}\u0000${record.application.toLowerCase()}`
         if (seenPairs.has(pairKey)) {
           discarded++
+          duplicatePairsSkipped++
           continue
         }
         seenPairs.add(pairKey)
+        mappingsAccepted++
         if (!seenServerNames.has(serverName)) {
           seenServerNames.add(serverName)
           if (existingServerNames.has(serverName)) updated++
@@ -249,16 +283,31 @@ export async function importApplicationServerMappingFile(
         batch.push(record)
         if (batch.length >= 1_000) await writeBatch()
         if (rowsRead % 100 === 0) {
-          await transaction('import_runs').where({ id: importRunId }).update({ rows_imported: inserted + updated })
+          await transaction('import_runs').where({ id: importRunId }).update({ rows_imported: mappingsAccepted })
         }
       }
       await writeBatch()
       await refreshCoreInfrastructureSummary(transaction)
       await transaction('import_runs').where({ id: importRunId }).update({
-        status: 'Completed', rows_imported: inserted + updated, completed_at: database.fn.now(),
+        status: 'Completed', rows_imported: mappingsAccepted, completed_at: database.fn.now(),
       })
     })
-    return { importRunId, fileName, rowsImported: inserted + updated, inserted, updated, discarded, warnings: [...validation.warnings] }
+    const uniqueServers = inserted + updated
+    return {
+      importRunId,
+      fileName,
+      rowsImported: mappingsAccepted,
+      sourceRows,
+      uniqueServers,
+      mappingsAccepted,
+      additionalMappings: mappingsAccepted - uniqueServers,
+      unmappedRowsSkipped,
+      duplicatePairsSkipped,
+      inserted,
+      updated,
+      discarded,
+      warnings: [...validation.warnings],
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await database('import_runs').where({ id: importRunId }).update({

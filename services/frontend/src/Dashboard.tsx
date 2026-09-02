@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react'
-import { Activity, AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, BookOpen, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ChevronUp, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, LayoutDashboard, LogOut, Network, RefreshCw, Route, Scale, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
+import { Activity, AlertCircle, AppWindow, ArrowLeft, ArrowRight, ArrowUpRight, BookOpen, Bot, Boxes, CalendarClock, CalendarRange, CheckCircle2, ChevronDown, ChevronUp, CircleStop, ClipboardCheck, ClipboardList, Cloud, Database, Download, FileSpreadsheet, Info, LayoutDashboard, LogOut, Network, RefreshCw, Route, Scale, ScanSearch, Search, Server, ServerOff, Settings2, Shield, ShieldCheck, TableProperties, Trash2, Upload, UserRoundCog, WandSparkles, Waypoints, X, type LucideIcon } from 'lucide-react'
 import ServerTopology from './ServerTopology'
 import ApplicationMap from './ApplicationMap'
 import DataCleanup from './DataCleanup'
@@ -58,6 +58,12 @@ type UploadResult = {
   fileName: string
   status: 'Accepted' | 'Completed' | 'Failed'
   rowsImported?: number
+  sourceRows?: number
+  uniqueServers?: number
+  mappingsAccepted?: number
+  additionalMappings?: number
+  unmappedRowsSkipped?: number
+  duplicatePairsSkipped?: number
   inserted?: number
   updated?: number
   discarded?: number
@@ -700,14 +706,37 @@ function UploadResults({ items }: { items: UploadResult[] }) {
     if (!isAssessmentResult) {
       return <div className={status.toLowerCase()} key={result.fileName}>{status === 'Completed' ? <CheckCircle2 size={17} /> : status === 'Failed' ? <AlertCircle size={17} /> : <RefreshCw className="spin" size={17} />}<span><strong>{result.fileName}</strong><small>{status === 'Completed' ? `${formatNumber.format(result.rowsImported ?? 0)} rows imported${result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}` : status === 'Accepted' ? 'Upload complete. Import queued for background processing.' : result.error ?? 'The import response was incomplete. Refresh import history to confirm the result.'}</small></span></div>
     }
+    if (result.mappingsAccepted !== undefined) {
+      return <section className="assessment-result mapping-result" key={result.fileName}>
+        <header><CheckCircle2 size={19} /><span><strong>{result.fileName}</strong><small>Import complete · {formatNumber.format(result.mappingsAccepted)} application mappings accepted across {formatNumber.format(result.uniqueServers ?? 0)} unique servers{result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}</small></span></header>
+        <dl>
+          <ImportSummaryBox className="inserted" icon={CheckCircle2} label="New servers" value={result.inserted ?? 0} help="Servers in this file that did not already exist and were added to the assessment inventory." />
+          <ImportSummaryBox className="updated" icon={RefreshCw} label="Existing servers updated" value={result.updated ?? 0} help="Unique servers already in the inventory whose application mapping was refreshed by this import." />
+          <ImportSummaryBox className="database-servers" icon={Server} label="Unique servers" value={result.uniqueServers ?? 0} help="Distinct server names found in accepted mappings. A server is counted once even when it hosts several applications." />
+          <ImportSummaryBox className="additional-mappings" icon={Waypoints} label="Additional app mappings" value={result.additionalMappings ?? 0} help="Accepted mappings beyond one primary application per server. These represent co-hosted applications and are retained." />
+          <ImportSummaryBox className="discarded" icon={X} label="Unmapped rows skipped" value={result.unmappedRowsSkipped ?? 0} help="Rows that had a server name but no application value. They cannot form an application-to-server mapping." />
+          <ImportSummaryBox className="discarded" icon={X} label="Duplicate pairs skipped" value={result.duplicatePairsSkipped ?? 0} help="Repeated instances of the same server and application pair within this upload. One copy is retained." />
+        </dl>
+      </section>
+    }
     return <section className="assessment-result" key={result.fileName}>
       <header><CheckCircle2 size={19} /><span><strong>{result.fileName}</strong><small>Import complete · {formatNumber.format(result.rowsImported ?? 0)} records accepted{result.warnings?.length ? ` · ${result.warnings.join(' ')}` : ''}</small></span></header>
       <dl>
-        <div className="inserted"><CheckCircle2 size={16} /><span><dt>Inserted</dt><dd>{formatNumber.format(result.inserted ?? 0)}</dd></span></div>
-        <div className="updated"><RefreshCw size={16} /><span><dt>Updated</dt><dd>{formatNumber.format(result.updated ?? 0)}</dd></span></div>
-        <div className="discarded"><X size={16} /><span><dt>Discarded</dt><dd>{formatNumber.format(result.discarded ?? 0)}</dd></span></div>
-        <div className="database-servers"><Database size={16} /><span><dt>Database servers</dt><dd>{formatNumber.format(result.databaseServers ?? 0)}</dd></span></div>
+        <ImportSummaryBox className="inserted" icon={CheckCircle2} label="Inserted" value={result.inserted ?? 0} help="Valid records that were not already present and were added by this import." />
+        <ImportSummaryBox className="updated" icon={RefreshCw} label="Updated" value={result.updated ?? 0} help="Valid records that matched existing data and refreshed it with values from this import." />
+        <ImportSummaryBox className="discarded" icon={X} label="Discarded" value={result.discarded ?? 0} help="Rows not stored as separate records, usually because their unique identity was repeated within the uploaded file." />
+        <ImportSummaryBox className="database-servers" icon={Database} label="Database servers" value={result.databaseServers ?? 0} help="Imported servers identified as database workloads from their assessment attributes." />
       </dl>
     </section>
   })}</div>
+}
+
+function ImportSummaryBox({ className, icon: Icon, label, value, help }: { className: string; icon: LucideIcon; label: string; value: number; help: string }) {
+  const [open, setOpen] = useState(false)
+  return <div className={`import-summary-box ${className}`}>
+    <Icon className="summary-metric-icon" size={16} />
+    <span><dt>{label}</dt><dd>{formatNumber.format(value)}</dd></span>
+    <button type="button" className="summary-info-button" aria-label={`Explain ${label}`} aria-expanded={open} onClick={() => setOpen((current) => !current)}><Info size={14} /></button>
+    {open && <div className="summary-info-popover" role="note"><strong>{label}</strong><p>{help}</p><button type="button" onClick={() => setOpen(false)} aria-label={`Close ${label} explanation`}><X size={13} /></button></div>}
+  </div>
 }
