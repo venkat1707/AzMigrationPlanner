@@ -152,7 +152,7 @@ export default function CoreInfrastructureInput() {
   return <div className="page core-input-page">
     <form className="core-input-form" onSubmit={submit}>
       <section className="core-upload-section">
-        <span className="core-upload-icon"><FileSpreadsheet size={20} /></span><div><strong>Upload infrastructure inventory</strong><small>CSV or XLSX columns: server_name, role, ip_address, load_balancer_ip. Rows may contain a server assignment, an LB IP, or both.</small></div>
+        <span className="core-upload-icon"><FileSpreadsheet size={20} /></span><div><strong>Upload infrastructure inventory</strong><small>CSV or XLSX columns: server_name (or Name/Hostname), role (or Server Role/Category), ip_address (or IP), and optional load_balancer_ip. The workbook may include a title or instructions sheet.</small></div>
         <label className="core-file-picker"><Upload size={14} />{uploadFile ? uploadFile.name : 'Choose file'}<input type="file" accept=".csv,.xlsx" onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)} /></label>
         <button type="button" className="secondary-command" disabled={!uploadFile || uploading} onClick={() => void uploadInputs()}>{uploading ? <RefreshCw className="spin" size={14} /> : <Upload size={14} />}{uploading ? 'Uploading...' : 'Upload'}</button>
       </section>

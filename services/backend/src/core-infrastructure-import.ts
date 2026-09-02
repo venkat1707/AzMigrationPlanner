@@ -12,10 +12,33 @@ export type ImportedCoreInfrastructure = {
 type RawRow = Record<string, unknown>
 
 const normalizeHeader = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
+const headerAliases = {
+  serverName: new Set(['servername', 'server', 'name', 'hostname', 'host', 'machinename', 'machine', 'computername']),
+  role: new Set(['role', 'serverrole', 'infrastructurerole', 'category', 'type', 'servertype', 'function', 'serverfunction']),
+  ipAddress: new Set(['ipaddress', 'ipaddresses', 'serverip', 'serveripaddress', 'ip', 'ipv4', 'ipv4address']),
+  loadBalancerIp: new Set(['loadbalancerip', 'loadbalanceripaddress', 'lbip', 'vip', 'virtualip', 'virtualipaddress']),
+}
 const cellText = (value: unknown) => {
   if (value === null || value === undefined) return ''
   if (typeof value === 'object' && 'text' in value) return String((value as { text: unknown }).text).trim()
+  if (typeof value === 'object' && 'result' in value) return String((value as { result: unknown }).result ?? '').trim()
+  if (typeof value === 'object' && 'richText' in value) {
+    return (value as { richText: Array<{ text?: unknown }> }).richText.map(({ text }) => String(text ?? '')).join('').trim()
+  }
   return String(value).trim()
+}
+
+const aliasedValue = (values: Map<string, string>, aliases: Set<string>) => {
+  for (const alias of aliases) {
+    const value = values.get(alias)
+    if (value !== undefined) return value
+  }
+  return ''
+}
+
+const recognizedHeaderCount = (headers: string[]) => {
+  const normalized = new Set(headers.map(normalizeHeader))
+  return Object.values(headerAliases).filter((aliases) => [...aliases].some((alias) => normalized.has(alias))).length
 }
 
 function parseRows(rows: RawRow[]): ImportedCoreInfrastructure {
@@ -23,10 +46,10 @@ function parseRows(rows: RawRow[]): ImportedCoreInfrastructure {
   const loadBalancerIps = new Set<string>()
   rows.forEach((row, index) => {
     const values = new Map(Object.entries(row).map(([header, value]) => [normalizeHeader(header), cellText(value)]))
-    const serverName = values.get('servername') ?? values.get('server') ?? ''
-    const role = values.get('role') ?? values.get('category') ?? ''
-    const ipAddress = values.get('ipaddress') ?? values.get('serverip') ?? ''
-    const loadBalancerIp = values.get('loadbalancerip') ?? values.get('lbip') ?? ''
+    const serverName = aliasedValue(values, headerAliases.serverName)
+    const role = aliasedValue(values, headerAliases.role)
+    const ipAddress = aliasedValue(values, headerAliases.ipAddress)
+    const loadBalancerIp = aliasedValue(values, headerAliases.loadBalancerIp)
     const hasServerValue = Boolean(serverName || role || ipAddress)
     if (hasServerValue && (!serverName || !role || isIP(ipAddress) === 0)) {
       throw new Error(`Row ${index + 2} requires server_name, role, and a valid ip_address.`)
@@ -53,12 +76,22 @@ async function csvRows(filePath: string): Promise<RawRow[]> {
 async function excelRows(filePath: string): Promise<RawRow[]> {
   const workbook = new ExcelJS.Workbook()
   await workbook.xlsx.readFile(filePath)
-  const worksheet = workbook.worksheets[0]
-  if (!worksheet) return []
-  const headers = (worksheet.getRow(1).values as unknown[]).slice(1).map(cellText)
+  let selected: { worksheet: ExcelJS.Worksheet; headerRow: number; headers: string[]; score: number } | null = null
+  for (const worksheet of workbook.worksheets) {
+    const rowsToInspect = Math.min(25, worksheet.rowCount)
+    for (let rowNumber = 1; rowNumber <= rowsToInspect; rowNumber++) {
+      const headers = (worksheet.getRow(rowNumber).values as unknown[]).slice(1).map(cellText)
+      const score = recognizedHeaderCount(headers)
+      if (score > (selected?.score ?? 0)) selected = { worksheet, headerRow: rowNumber, headers, score }
+    }
+  }
+  if (!selected || selected.score === 0) {
+    throw new Error('No supported columns were found. Include server_name, role, ip_address, or load_balancer_ip headers.')
+  }
+  const { worksheet, headerRow, headers } = selected
   const rows: RawRow[] = []
   worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return
+    if (rowNumber <= headerRow) return
     const values = (row.values as unknown[]).slice(1)
     if (values.every((value) => !cellText(value))) return
     rows.push(Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ''])))
