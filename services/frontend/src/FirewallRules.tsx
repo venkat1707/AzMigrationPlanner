@@ -381,7 +381,7 @@ export default function FirewallRules({ embedded = false }: { embedded?: boolean
     [visibleRules, currentRulesPage],
   )
 
-  const importedRules = importedMatches?.rules ?? []
+  const importedRules = useMemo(() => importedMatches?.rules ?? [], [importedMatches])
   const visibleImportedRules = useMemo(() => {
     const term = importedSearch.trim().toLowerCase()
     return importedRules.filter((rule) => {

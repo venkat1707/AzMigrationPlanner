@@ -41,7 +41,7 @@ const ruleKey = (rule: Rule) => JSON.stringify([
   rule.value.trim().toLocaleLowerCase(),
 ])
 
-export function mergeEnvironmentRules(existing: Rule[], imported: Rule[]): { rules: Rule[]; added: number; duplicates: number } {
+function mergeEnvironmentRules(existing: Rule[], imported: Rule[]): { rules: Rule[]; added: number; duplicates: number } {
   const retained = existing.length === 1 && !existing[0]!.environment.trim() && !existing[0]!.value.trim() ? [] : existing
   const keys = new Set(retained.map(ruleKey))
   const additions = imported.filter((rule) => {
