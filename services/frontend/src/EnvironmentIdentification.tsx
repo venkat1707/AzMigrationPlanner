@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { AlertTriangle, ArrowDown, ArrowUp, CheckCircle2, Plus, RefreshCw, Save, Search, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { AlertTriangle, ArrowDown, ArrowUp, CheckCircle2, Download, FileSpreadsheet, Plus, RefreshCw, Save, Search, Trash2, Upload } from 'lucide-react'
 import { apiFetch } from './auth-client'
 
 type RuleField = 'serverName' | 'ipAddress' | 'application' | 'resourceTags' | 'sourceSystem' | 'operatingSystemName' | 'migrationReadiness' | 'securityReadiness' | 'osSupportStatus'
@@ -33,6 +33,25 @@ const operatorOptions: Array<{ value: RuleOperator; label: string }> = [
   { value: 'glob', label: 'Matches pattern' }, { value: 'cidr', label: 'Is in CIDR range' },
 ]
 const emptyRule = (priority: number): Rule => ({ environment: '', priority, field: 'application', operator: 'equals', value: '' })
+const ruleKey = (rule: Rule) => JSON.stringify([
+  rule.priority,
+  rule.environment.trim().toLocaleLowerCase(),
+  rule.field,
+  rule.operator,
+  rule.value.trim().toLocaleLowerCase(),
+])
+
+export function mergeEnvironmentRules(existing: Rule[], imported: Rule[]): { rules: Rule[]; added: number; duplicates: number } {
+  const retained = existing.length === 1 && !existing[0]!.environment.trim() && !existing[0]!.value.trim() ? [] : existing
+  const keys = new Set(retained.map(ruleKey))
+  const additions = imported.filter((rule) => {
+    const key = ruleKey(rule)
+    if (keys.has(key)) return false
+    keys.add(key)
+    return true
+  })
+  return { rules: [...retained, ...additions], added: additions.length, duplicates: imported.length - additions.length }
+}
 
 export default function EnvironmentIdentification({ canModify }: { canModify: boolean }) {
   const [rules, setRules] = useState<Rule[]>([emptyRule(10)])
@@ -40,8 +59,11 @@ export default function EnvironmentIdentification({ canModify }: { canModify: bo
   const [statusFilter, setStatusFilter] = useState<'all' | MatchStatus>('all')
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState<'preview' | 'apply' | null>(null)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importing, setImporting] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const importInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     apiFetch('/api/environment-identification')
@@ -77,6 +99,32 @@ export default function EnvironmentIdentification({ canModify }: { canModify: bo
 
   const requestRules = () => rules.map((rule) => ({ ...rule, environment: rule.environment.trim(), value: rule.value.trim() }))
 
+  const importRules = async () => {
+    if (!importFile) return
+    setImporting(true)
+    setError('')
+    setMessage('')
+    try {
+      const body = new FormData()
+      body.append('file', importFile)
+      const response = await apiFetch('/api/environment-identification/import', { method: 'POST', body })
+      const payload = await response.json() as { rules?: Rule[]; imported?: number; error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Unable to import environment rules.')
+      if (!payload.rules?.length) throw new Error('The file contains no environment rules.')
+      const merged = mergeEnvironmentRules(rules, payload.rules)
+      setRules(merged.rules)
+      setPreview(null)
+      setStatusFilter('all')
+      setMessage(`Added ${merged.added} imported rule${merged.added === 1 ? '' : 's'} without changing the existing rules.${merged.duplicates ? ` Skipped ${merged.duplicates} exact duplicate${merged.duplicates === 1 ? '' : 's'}.` : ''} Review and preview before applying.`)
+      setImportFile(null)
+      if (importInput.current) importInput.current.value = ''
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to import environment rules.')
+    } finally {
+      setImporting(false)
+    }
+  }
+
   const run = async (action: 'preview' | 'apply') => {
     setWorking(action)
     setError('')
@@ -106,6 +154,13 @@ export default function EnvironmentIdentification({ canModify }: { canModify: bo
         <div><p className="eyebrow">Identification rules</p><h2>Prioritized environment rules</h2><span>Choose any available assessment field. Lower priority numbers run first; lower-priority matches act as fallbacks.</span></div>
         <button type="button" className="secondary-command" disabled={!canModify || loading} onClick={() => { setRules((current) => [...current, emptyRule(Math.max(0, ...current.map(({ priority }) => priority)) + 10)]); setPreview(null) }}><Plus size={15} /> Add rule</button>
       </header>
+      <div className="environment-rule-import">
+        <span className="environment-rule-import-icon"><FileSpreadsheet size={20} /></span>
+        <div><strong>Import rules</strong><small>CSV or XLSX columns: Priority, Environment, Field, Operator, Value. Imported rules are added to the existing rules; exact duplicates are skipped. Nothing is saved until Apply is selected.</small></div>
+        <a className="secondary-command environment-template-download" href="/environment-identification-rules-template.xlsx" download><Download size={14} />Download Excel template</a>
+        <label className="core-file-picker"><Upload size={14} />{importFile ? importFile.name : 'Choose file'}<input ref={importInput} type="file" accept=".csv,.xlsx" disabled={!canModify || importing} onChange={(event) => setImportFile(event.target.files?.[0] ?? null)} /></label>
+        <button type="button" className="secondary-command" disabled={!canModify || !importFile || importing} onClick={() => void importRules()}>{importing ? <RefreshCw className="spin" size={14} /> : <Upload size={14} />}{importing ? 'Importing...' : 'Import rules'}</button>
+      </div>
       <div className="environment-rule-header" aria-hidden="true"><span>Priority</span><span>Environment</span><span>Assessment field</span><span>Condition</span><span>Value</span><span /></div>
       <div className="environment-rule-rows">
         {rules.map((rule, index) => <div className="environment-rule-row" key={index}>

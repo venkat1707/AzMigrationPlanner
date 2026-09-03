@@ -1697,6 +1697,12 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 .environment-section-heading h2 { margin: 2px 0 4px; font-size: 19px; }
 .environment-section-heading p { margin: 0; }
 .environment-section-heading span { color: var(--muted); font-size: 12px; }
+.environment-rule-import { margin-bottom: 18px; padding: 13px; display: grid; grid-template-columns: auto minmax(260px, 1fr) auto auto auto; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; }
+.environment-rule-import-icon { width: 36px; height: 36px; display: grid; place-items: center; color: var(--accent); border-radius: 5px; background: var(--accent-soft); }
+.environment-rule-import > div { display: grid; gap: 3px; }
+.environment-rule-import > div strong { font-size: 13px; }
+.environment-rule-import > div small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.environment-template-download { min-height: 34px; padding: 0 11px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
 .environment-rule-header, .environment-rule-row { display: grid; grid-template-columns: 76px minmax(110px, .75fr) minmax(150px, 1fr) minmax(140px, .9fr) minmax(180px, 1.25fr) 96px; gap: 10px; }
 .environment-rule-header { padding: 0 0 7px; color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
 .environment-rule-row { padding: 12px 0; align-items: center; border-top: 1px solid var(--line); }
@@ -1746,6 +1752,8 @@ td code { padding: 3px 6px; color: #334155; background: #eef3fa; border-radius: 
 @media (max-width: 600px) {
 	.environment-rule-editor, .environment-preview { padding: 16px; }
 	.environment-section-heading, .environment-rule-actions { align-items: stretch; flex-direction: column; }
+	.environment-rule-import { grid-template-columns: auto 1fr; }
+	.environment-rule-import .core-file-picker, .environment-rule-import > button, .environment-template-download { grid-column: 1 / -1; justify-content: center; }
 	.environment-rule-actions > div { display: grid; }
 }
 .mobile-navigation { display: none; }

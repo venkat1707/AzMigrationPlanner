@@ -51,6 +51,7 @@ import { deriveResourceGroup, parseResourceGroupFile, type LandingZoneResourceGr
 import { deriveNetwork, networkKey, parseNetworkFile, type LandingZoneNetworkInput, type DerivedLandingZoneNetwork } from './landing-zone-network.js'
 import { createSprintMappingWorkbook, parseSprintMappingWorkbook, saveSprintMappings, validateSprintMappings, type LandingZoneNetworkOption, type LandingZoneResourceGroupOption, type SprintMappingInput } from './sprint-landing-zone-workbook.js'
 import { identifyServerEnvironments, validateEnvironmentRules, type AssessmentIdentity, type EnvironmentRuleInput } from './environment-identification.js'
+import { parseEnvironmentRulesFile } from './environment-rules-import.js'
 import { registerAuthentication, requireAdmin } from './auth.js'
 import { saveApplicationTreatmentPlans } from './application-treatment-plans.js'
 
@@ -90,6 +91,15 @@ const workbookUpload = multer({
   }),
   fileFilter: uploadFileFilter,
   limits: { files: 1, fileSize: 100 * 1024 * 1024 },
+})
+
+const environmentRulesUpload = multer({
+  storage: multer.diskStorage({
+    destination: tmpdir(),
+    filename: (_request, file, callback) => callback(null, `${crypto.randomUUID()}${extname(file.originalname).toLowerCase()}`),
+  }),
+  fileFilter: uploadFileFilter,
+  limits: { files: 1, fileSize: 10 * 1024 * 1024 },
 })
 
 const corelightUpload = multer({
@@ -147,7 +157,7 @@ function safeImportError(error: unknown, fallback: string): string {
   console.error(error)
   if (!(error instanceof Error)) return fallback
   const message = error.message.trim()
-  return /^(?:Row \d+|Missing required|Duplicate|Unknown column|The (?:CSV|Excel|workbook)|Select )/i.test(message) ? message.slice(0, 500) : fallback
+  return /^(?:Row \d+|Rule \d+|Missing required|Duplicate|Unknown column|The (?:CSV|Excel|workbook)|Select )/i.test(message) ? message.slice(0, 500) : fallback
 }
 
 // Strips control characters (CR/LF/etc.) from user-supplied filenames before they reach logs or storage, preventing log-line forging and keeping stored names within column limits.
@@ -1547,6 +1557,24 @@ app.get('/api/environment-identification', async (_request, response) => {
     .select({ environment: 'environment', priority: 'priority', field: 'rule_field', operator: 'rule_operator', value: 'rule_value', namePatterns: 'name_patterns', ipRanges: 'ip_ranges' })
     .orderBy([{ column: 'priority', order: 'asc' }, { column: 'sort_order', order: 'asc' }]) as Array<{ environment: string; priority: number; field: string | null; operator: string | null; value: string | null; namePatterns: string | null; ipRanges: string | null }>
   response.json({ rules: rows.flatMap(expandStoredEnvironmentRule) })
+})
+
+app.post('/api/environment-identification/import', environmentRulesUpload.single('file'), async (request, response) => {
+  const file = request.file
+  if (!file) {
+    response.status(400).json({ error: 'Select a CSV or XLSX file.' })
+    return
+  }
+  try {
+    // Parsing and allow-list validation happen without constructing or executing SQL. The returned
+    // strings remain plain JSON data and React renders them with its built-in text escaping.
+    const rules = await parseEnvironmentRulesFile(file.path)
+    response.json({ rules, imported: rules.length })
+  } catch (error) {
+    response.status(400).json({ error: safeImportError(error, 'Unable to import environment rules.') })
+  } finally {
+    await unlink(file.path).catch(() => undefined)
+  }
 })
 
 app.post('/api/environment-identification/preview', async (request, response) => {
